@@ -9,7 +9,7 @@ import { checkoutPullRequest, openPrDiff, PR_SCHEME, PrContentProvider, PrFileAr
 import { PullRequestPanel } from './pullRequests/prPanel';
 import { ReviewedFiles } from './pullRequests/reviewed';
 import { SidebarProvider } from './sidebar/sidebarProvider';
-import { guarded, shortRef } from './util';
+import { guarded } from './util';
 import { assignWorkItemToMe, changeWorkItemState, commentOnWorkItem, createBranchForWorkItem, createWorkItem } from './workItems/wiCommands';
 import { readWatchers, WatchEvent, Watchers, writeWatchers } from './watchers/watchers';
 import { WatchersPanel } from './watchers/watchersPanel';

@@ -4,6 +4,8 @@ import * as T from './types';
 
 const ADO_RESOURCE_SCOPE = '499b84ac-1321-427f-aa17-267ca6975798/.default';
 const API_VERSION = '7.1';
+/** A hung connection must not block polling loops (watchers, log streaming) forever. */
+const REQUEST_TIMEOUT_MS = 60_000;
 export const PAT_SECRET_KEY = 'azureDevOps.pat';
 
 export class AdoError extends Error {
@@ -95,7 +97,9 @@ export class AdoClient {
     if (body !== undefined) {
       headers['Content-Type'] = opts.contentType ?? 'application/json';
     }
-    const res = await fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+    const res = await fetch(url, {
+      method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
     const contentType = res.headers.get('content-type') ?? '';
     if (res.status === 401 || res.status === 203 || contentType.includes('text/html')) {
       throw new AdoError('Azure DevOps rejected the credentials.', 401, true);

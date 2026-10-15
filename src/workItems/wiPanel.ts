@@ -11,7 +11,6 @@ interface LinkedPr {
 /** Detail view of a single work item with state switching, assignment and comments. */
 export class WorkItemPanel {
   private static readonly panels = new Map<number, WorkItemPanel>();
-  private item?: WorkItem;
   private linkedPrs: LinkedPr[] = [];
   private activePrs?: Promise<PullRequest[]>;
 
@@ -117,7 +116,6 @@ export class WorkItemPanel {
           ({ artifact, pr: await this.client.getPullRequestById(artifact.prId).catch(() => undefined) }))),
       ]);
       this.linkedPrs = linkedPrs;
-      this.item = item;
       this.panel.title = `#${item.id} ${item.fields['System.Title']}`;
       this.panel.webview.html = panelHtml(this.panel.webview, this.extensionUri, this.panel.title,
         this.bodyHtml(item, states, comments, linkedPrs), SCRIPT);

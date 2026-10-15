@@ -4,7 +4,7 @@ import { ConnectionManager, normalizeOrgUrl } from '../connection';
 import { buildDto, timelineTree } from '../pipelines/timeline';
 import { summarizeChecks } from '../pullRequests/checks';
 import { changeVersion, ReviewedFiles } from '../pullRequests/reviewed';
-import { Build, PullRequest, TimelineRecord, WorkItem, WorkItemState } from '../types';
+import { PullRequest, WorkItem, WorkItemState } from '../types';
 import { errorMessage, nonce, shortRef } from '../util';
 
 export interface BuiltinQuery {
