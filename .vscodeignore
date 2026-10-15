@@ -11,3 +11,4 @@ media/screenshots/**
 sonar-project.properties
 out/test/**
 coverage/**
+AGENTS.md
