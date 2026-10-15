@@ -1,0 +1,851 @@
+{
+  "name": "devops-deck",
+  "displayName": "DevOps Deck for Azure DevOps",
+  "description": "Review pull requests, manage work items and watch pipelines (with live logs) from inside VS Code.",
+  "version": "0.1.0",
+  "publisher": "davidw475",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DavidW475/devops-deck.git"
+  },
+  "bugs": {
+    "url": "https://github.com/DavidW475/devops-deck/issues"
+  },
+  "homepage": "https://github.com/DavidW475/devops-deck#readme",
+  "engines": {
+    "vscode": "^1.140.0"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "In untrusted workspaces, organization, project, tenant, queries and watchers from workspace settings are ignored.",
+      "restrictedConfigurations": [
+        "azureDevOps.organization",
+        "azureDevOps.project",
+        "azureDevOps.tenantId",
+        "azureDevOps.workItems.queries",
+        "azureDevOps.watchers"
+      ]
+    }
+  },
+  "categories": [
+    "Other",
+    "SCM Providers"
+  ],
+  "keywords": [
+    "azure devops",
+    "pull request",
+    "work items",
+    "pipelines",
+    "code review"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "azureDevOps",
+          "title": "DevOps Deck",
+          "icon": "media/ado.svg"
+        }
+      ]
+    },
+    "views": {
+      "azureDevOps": [
+        {
+          "type": "webview",
+          "id": "azureDevOps.dashboard",
+          "name": "Dashboard"
+        },
+        {
+          "id": "azureDevOps.watchers",
+          "name": "Watchers"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "azureDevOps.refresh",
+        "title": "Refresh",
+        "category": "DevOps Deck",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "azureDevOps.configure",
+        "title": "Select Project",
+        "category": "DevOps Deck",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "azureDevOps.signIn",
+        "title": "Sign In with Microsoft",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.setPat",
+        "title": "Use Personal Access Token",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.watchers.showEvents",
+        "title": "Show Watcher Events",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.watchers.checkNow",
+        "title": "Check Watchers Now",
+        "category": "DevOps Deck",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "azureDevOps.watchers.configure",
+        "title": "Configure Watchers",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.watchers.create",
+        "title": "New Watcher",
+        "category": "DevOps Deck",
+        "icon": "$(add)"
+      },
+      {
+        "command": "azureDevOps.watchers.edit",
+        "title": "Edit Watcher",
+        "category": "DevOps Deck",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "azureDevOps.watchers.pause",
+        "title": "Pause Watcher",
+        "category": "DevOps Deck",
+        "icon": "$(debug-pause)"
+      },
+      {
+        "command": "azureDevOps.watchers.resume",
+        "title": "Resume Watcher",
+        "category": "DevOps Deck",
+        "icon": "$(play)"
+      },
+      {
+        "command": "azureDevOps.watchers.delete",
+        "title": "Delete Watcher",
+        "category": "DevOps Deck",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "azureDevOps.watchers.openEvent",
+        "title": "Open Watcher Event",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.wi.create",
+        "title": "New Work Item",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.wi.openById",
+        "title": "Open Work Item by ID",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.pipelines.run",
+        "title": "Run Pipeline",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.pr.openOverview",
+        "title": "Open Pull Request",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.pr.openDiff",
+        "title": "Open Pull Request Diff",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.pr.checkout",
+        "title": "Checkout Pull Request",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.pr.openInBrowser",
+        "title": "Open Pull Request in Browser",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.pr.submitComment",
+        "title": "Comment",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.pr.resolveThread",
+        "title": "Resolve",
+        "category": "DevOps Deck",
+        "icon": "$(check)"
+      },
+      {
+        "command": "azureDevOps.pr.reactivateThread",
+        "title": "Reactivate",
+        "category": "DevOps Deck",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "azureDevOps.pr.markReviewed",
+        "title": "Mark File as Reviewed",
+        "category": "DevOps Deck",
+        "icon": "$(circle-large-outline)"
+      },
+      {
+        "command": "azureDevOps.pr.unmarkReviewed",
+        "title": "Mark File as Not Reviewed",
+        "category": "DevOps Deck",
+        "icon": "$(pass-filled)"
+      },
+      {
+        "command": "azureDevOps.pr.suggestChange",
+        "title": "Suggest a Change",
+        "category": "DevOps Deck",
+        "icon": "$(lightbulb)"
+      },
+      {
+        "command": "azureDevOps.pr.addComment",
+        "title": "Add Pull Request Comment",
+        "category": "DevOps Deck",
+        "icon": "$(comment)"
+      },
+      {
+        "command": "azureDevOps.pr.editComment",
+        "title": "Edit",
+        "category": "DevOps Deck",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "azureDevOps.pr.deleteComment",
+        "title": "Delete",
+        "category": "DevOps Deck",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "azureDevOps.pr.saveComment",
+        "title": "Save",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.pr.cancelEdit",
+        "title": "Cancel",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.wi.open",
+        "title": "Open Work Item",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.wi.openInBrowser",
+        "title": "Open Work Item in Browser",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.wi.changeState",
+        "title": "Change Work Item State",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.wi.assignToMe",
+        "title": "Assign Work Item to Me",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.wi.comment",
+        "title": "Comment on Work Item",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.wi.createBranch",
+        "title": "Create Branch for Work Item",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.pipelines.rerun",
+        "title": "Run Pipeline Again",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.pipelines.cancel",
+        "title": "Cancel Pipeline Run",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.pipelines.openRun",
+        "title": "Open Run Overview",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.pipelines.streamLogs",
+        "title": "Stream Pipeline Logs",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.pipelines.openLog",
+        "title": "Open Step Log",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.pipelines.openInBrowser",
+        "title": "Open Run in Browser",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.pipelines.openDefinition",
+        "title": "Open Pipeline in Browser",
+        "category": "DevOps Deck"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "azureDevOps.pr.addComment",
+        "key": "ctrl+alt+c",
+        "mac": "cmd+alt+c",
+        "when": "editorTextFocus && resourceScheme == ado-pr"
+      },
+      {
+        "command": "azureDevOps.pr.suggestChange",
+        "key": "ctrl+alt+s",
+        "mac": "cmd+alt+s",
+        "when": "editorTextFocus && resourceScheme == ado-pr"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "azureDevOps.refresh",
+          "when": "view == azureDevOps.dashboard",
+          "group": "navigation@1"
+        },
+        {
+          "command": "azureDevOps.configure",
+          "when": "view == azureDevOps.dashboard",
+          "group": "navigation@2"
+        },
+        {
+          "command": "azureDevOps.signIn",
+          "when": "view == azureDevOps.dashboard",
+          "group": "auth@1"
+        },
+        {
+          "command": "azureDevOps.setPat",
+          "when": "view == azureDevOps.dashboard",
+          "group": "auth@2"
+        },
+        {
+          "command": "azureDevOps.watchers.create",
+          "when": "view == azureDevOps.watchers",
+          "group": "navigation@1"
+        },
+        {
+          "command": "azureDevOps.watchers.checkNow",
+          "when": "view == azureDevOps.watchers",
+          "group": "navigation@2"
+        },
+        {
+          "command": "azureDevOps.watchers.showEvents",
+          "when": "view == azureDevOps.watchers",
+          "group": "more@1"
+        }
+      ],
+      "comments/commentThread/context": [
+        {
+          "command": "azureDevOps.pr.submitComment",
+          "group": "inline",
+          "when": "commentController == azureDevOps.pr"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "azureDevOps.pr.addComment",
+          "when": "resourceScheme == ado-pr",
+          "group": "1_ado@1"
+        },
+        {
+          "command": "azureDevOps.pr.suggestChange",
+          "when": "resourceScheme == ado-pr",
+          "group": "1_ado@2"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "azureDevOps.pr.addComment",
+          "when": "resourceScheme == ado-pr",
+          "group": "navigation@1"
+        },
+        {
+          "command": "azureDevOps.pr.suggestChange",
+          "when": "resourceScheme == ado-pr",
+          "group": "navigation@2"
+        },
+        {
+          "command": "azureDevOps.pr.markReviewed",
+          "when": "resourceScheme == ado-pr && !azureDevOps.fileReviewed",
+          "group": "navigation@3"
+        },
+        {
+          "command": "azureDevOps.pr.unmarkReviewed",
+          "when": "resourceScheme == ado-pr && azureDevOps.fileReviewed",
+          "group": "navigation@3"
+        }
+      ],
+      "comments/comment/title": [
+        {
+          "command": "azureDevOps.pr.editComment",
+          "group": "inline@1",
+          "when": "commentController == azureDevOps.pr && comment == ado-comment-mine"
+        },
+        {
+          "command": "azureDevOps.pr.deleteComment",
+          "group": "inline@2",
+          "when": "commentController == azureDevOps.pr && comment == ado-comment-mine"
+        }
+      ],
+      "comments/comment/context": [
+        {
+          "command": "azureDevOps.pr.cancelEdit",
+          "group": "inline@1",
+          "when": "commentController == azureDevOps.pr"
+        },
+        {
+          "command": "azureDevOps.pr.saveComment",
+          "group": "inline@2",
+          "when": "commentController == azureDevOps.pr"
+        }
+      ],
+      "comments/commentThread/title": [
+        {
+          "command": "azureDevOps.pr.resolveThread",
+          "group": "inline",
+          "when": "commentController == azureDevOps.pr && commentThread == ado-thread-active"
+        },
+        {
+          "command": "azureDevOps.pr.reactivateThread",
+          "group": "inline",
+          "when": "commentController == azureDevOps.pr && commentThread == ado-thread-resolved"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "azureDevOps.pr.openOverview",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.pr.openDiff",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.pr.checkout",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.pr.openInBrowser",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.pr.submitComment",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.pr.resolveThread",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.pr.reactivateThread",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.pr.addComment",
+          "when": "resourceScheme == ado-pr"
+        },
+        {
+          "command": "azureDevOps.pr.suggestChange",
+          "when": "resourceScheme == ado-pr"
+        },
+        {
+          "command": "azureDevOps.pr.markReviewed",
+          "when": "resourceScheme == ado-pr && !azureDevOps.fileReviewed"
+        },
+        {
+          "command": "azureDevOps.pr.unmarkReviewed",
+          "when": "resourceScheme == ado-pr && azureDevOps.fileReviewed"
+        },
+        {
+          "command": "azureDevOps.pr.editComment",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.pr.deleteComment",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.pr.saveComment",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.pr.cancelEdit",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.wi.open",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.wi.openInBrowser",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.wi.changeState",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.wi.assignToMe",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.wi.comment",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.wi.createBranch",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.pipelines.rerun",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.pipelines.cancel",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.pipelines.openRun",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.pipelines.streamLogs",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.pipelines.openLog",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.pipelines.openInBrowser",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.pipelines.openDefinition",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.watchers.edit",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.watchers.pause",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.watchers.resume",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.watchers.delete",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.watchers.openEvent",
+          "when": "false"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "azureDevOps.watchers.pause",
+          "when": "view == azureDevOps.watchers && viewItem == watcher-enabled",
+          "group": "inline@1"
+        },
+        {
+          "command": "azureDevOps.watchers.resume",
+          "when": "view == azureDevOps.watchers && viewItem == watcher-disabled",
+          "group": "inline@1"
+        },
+        {
+          "command": "azureDevOps.watchers.edit",
+          "when": "view == azureDevOps.watchers && viewItem =~ /^watcher-/",
+          "group": "inline@2"
+        },
+        {
+          "command": "azureDevOps.watchers.edit",
+          "when": "view == azureDevOps.watchers && viewItem =~ /^watcher-/",
+          "group": "1_edit@1"
+        },
+        {
+          "command": "azureDevOps.watchers.pause",
+          "when": "view == azureDevOps.watchers && viewItem == watcher-enabled",
+          "group": "1_edit@2"
+        },
+        {
+          "command": "azureDevOps.watchers.resume",
+          "when": "view == azureDevOps.watchers && viewItem == watcher-disabled",
+          "group": "1_edit@2"
+        },
+        {
+          "command": "azureDevOps.watchers.delete",
+          "when": "view == azureDevOps.watchers && viewItem =~ /^watcher-/",
+          "group": "9_delete@1"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "DevOps Deck",
+      "properties": {
+        "azureDevOps.organization": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Organization name or URL, e.g. `contoso` or `https://dev.azure.com/contoso`. Leave empty to detect it from the git remote."
+        },
+        "azureDevOps.project": {
+          "type": "string",
+          "default": "",
+          "description": "Project name. Leave empty to detect it from the git remote."
+        },
+        "azureDevOps.authMethod": {
+          "type": "string",
+          "enum": [
+            "microsoft",
+            "pat"
+          ],
+          "enumDescriptions": [
+            "Sign in with your Microsoft (Entra ID) account via VS Code",
+            "Personal Access Token stored in VS Code's secret storage"
+          ],
+          "default": "microsoft",
+          "description": "How to authenticate against Azure DevOps."
+        },
+        "azureDevOps.tenantId": {
+          "type": "string",
+          "default": "",
+          "description": "Entra ID tenant of the organization. Only needed if it differs from your account's home tenant."
+        },
+        "azureDevOps.workItems.queries": {
+          "type": "array",
+          "default": [],
+          "markdownDescription": "Custom WIQL queries shown in the work item dropdown (replaces the built-in ones). Example: `{ \"name\": \"Current sprint\", \"wiql\": \"SELECT [System.Id] FROM WorkItems WHERE [System.IterationPath] = @CurrentIteration('[Project]\\\\Team')\" }`",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "wiql"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "wiql": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "azureDevOps.refreshInterval": {
+          "type": "number",
+          "default": 60,
+          "minimum": 0,
+          "markdownDescription": "Seconds between automatic background refreshes of the visible sidebar tab. Refreshing pauses while the VS Code window is not focused and catches up when you return or switch tabs. Values below 10 are treated as 10; `0` turns automatic refresh off."
+        },
+        "azureDevOps.watchers": {
+          "type": "array",
+          "default": [],
+          "markdownDescription": "Watchers check Azure DevOps in the background and run actions when work items or pull requests change. See the README for examples.",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "type"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Shown in notifications"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "workItem",
+                  "pullRequest"
+                ]
+              },
+              "enabled": {
+                "type": "boolean",
+                "default": true
+              },
+              "interval": {
+                "type": "number",
+                "default": 300,
+                "minimum": 60,
+                "description": "Seconds between checks (at least 60)"
+              },
+              "events": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "created",
+                    "changed",
+                    "pushed",
+                    "voted",
+                    "completed",
+                    "abandoned"
+                  ]
+                },
+                "markdownDescription": "Work items: `created`, `changed` (default both). Pull requests: `created` (default), `pushed`, `voted`, `completed`, `abandoned`."
+              },
+              "where": {
+                "type": "string",
+                "markdownDescription": "Work items: WIQL condition, e.g. `[System.WorkItemType] = 'Bug' AND [System.AssignedTo] = @Me`"
+              },
+              "fields": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "markdownDescription": "Work items: only report `changed` when one of these fields changed, e.g. `[\"System.State\", \"System.AssignedTo\"]`"
+              },
+              "repository": {
+                "type": [
+                  "string",
+                  "array"
+                ],
+                "items": {
+                  "type": "string"
+                },
+                "description": "Pull requests: repository name(s)"
+              },
+              "targetBranch": {
+                "type": "string",
+                "markdownDescription": "Pull requests: target branch, `*` as wildcard, e.g. `release/*`"
+              },
+              "sourceBranch": {
+                "type": "string",
+                "markdownDescription": "Pull requests: source branch, `*` as wildcard"
+              },
+              "createdBy": {
+                "type": "string",
+                "markdownDescription": "Pull requests: author, `@me` or a display name / e-mail"
+              },
+              "reviewer": {
+                "type": "string",
+                "markdownDescription": "Pull requests: reviewer, `@me` or a display name / e-mail"
+              },
+              "titleContains": {
+                "type": "string",
+                "description": "Pull requests: text the title must contain"
+              },
+              "includeDrafts": {
+                "type": "boolean",
+                "default": true,
+                "description": "Pull requests: also report drafts"
+              },
+              "ignoreOwnChanges": {
+                "type": "boolean",
+                "default": true,
+                "description": "Skip changes you made yourself"
+              },
+              "actions": {
+                "type": "array",
+                "default": [
+                  "notify"
+                ],
+                "items": {
+                  "oneOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "notify",
+                        "open",
+                        "browser"
+                      ],
+                      "enumDescriptions": [
+                        "Show a notification with Open / Open in Browser buttons",
+                        "Open the work item or pull request in VS Code",
+                        "Open it in the browser"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "command"
+                      ],
+                      "properties": {
+                        "command": {
+                          "type": "string",
+                          "description": "VS Code command to run once per event"
+                        },
+                        "args": {
+                          "type": "array",
+                          "description": "Arguments; ${id}, ${title}, ${url}, ${kind}, ${watcher} and ${message} are replaced"
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "description": "What to do for each event"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "azureDevOps.pipelines.refreshInterval": {
+          "type": "number",
+          "default": 10,
+          "minimum": 5,
+          "description": "Seconds between sidebar refreshes while a pipeline run is in progress."
+        },
+        "azureDevOps.pipelines.logPollInterval": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "description": "Seconds between polls when streaming pipeline logs."
+        },
+        "azureDevOps.pipelines.showTimestamps": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show timestamps in pipeline logs."
+        }
+      }
+    },
+    "viewsWelcome": [
+      {
+        "view": "azureDevOps.watchers",
+        "contents": "Watchers check Azure DevOps in the background and notify you when work items or pull requests change, for example new bugs assigned to you or pull requests waiting for your review.\n[Create Watcher](command:azureDevOps.watchers.create)"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile",
+    "package": "vsce package",
+    "test": "npm run compile && node --test --enable-source-maps --require ./out/test/setup.js \"out/test/**/*.test.js\"",
+    "test:coverage": "npm run compile && node -e \"require('fs').mkdirSync('coverage',{recursive:true})\" && node --test --enable-source-maps --experimental-test-coverage --test-coverage-exclude=\"out/test/**\" --require ./out/test/setup.js --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov --test-reporter-destination=coverage/lcov.info \"out/test/**/*.test.js\""
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@types/vscode": "^1.140.0",
+    "@vscode/vsce": "^4.0.0",
+    "typescript": "^7.0.2"
+  }
+}

@@ -1,0 +1,13 @@
+src/**
+.vscode/**
+**/*.map
+tsconfig.json
+node_modules/**
+.devcontainer/**
+.gitignore
+media/icon.svg
+media/screenshots/**
+.github/**
+sonar-project.properties
+out/test/**
+coverage/**

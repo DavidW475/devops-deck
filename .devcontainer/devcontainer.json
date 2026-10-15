@@ -1,0 +1,20 @@
+{
+  "name": "DevOps Deck",
+  "image": "mcr.microsoft.com/devcontainers/typescript-node:1-22-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/azure-cli:1": {}
+  },
+  "postCreateCommand": "npm install && npm run compile",
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "typescript.tsdk": "node_modules/typescript/lib"
+      },
+      "extensions": [
+        "Anthropic.claude-code",
+        "GitHub.vscode-github-actions"
+      ]
+    }
+  },
+  "remoteUser": "node"
+}
