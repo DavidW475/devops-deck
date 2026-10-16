@@ -2,14 +2,15 @@ import * as assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { AdoClient } from '../client';
 import { ConnectionManager } from '../connection';
-import { IdentityRef, PullRequest, WorkItem, WorkItemUpdate } from '../types';
-import { matchesPullRequest, PullRequestWatcherConfig, WatcherConfig, Watchers, watcherSummary } from '../watchers/watchers';
+import { Build, IdentityRef, PullRequest, WorkItem, WorkItemUpdate } from '../types';
+import { buildEvent, matchesBuild, matchesPullRequest, PipelineWatcherConfig, PullRequestWatcherConfig, WatcherConfig, Watchers, watcherSummary } from '../watchers/watchers';
 import * as vscode from './vscodeStub';
 
 const ME: IdentityRef = { id: 'me', displayName: 'Alex Morgan', uniqueName: 'alex@contoso.com' };
 const LENA: IdentityRef = { id: 'lena', displayName: 'Lena Hoffmann', uniqueName: 'lena@contoso.com' };
 const MARCO: IdentityRef = { id: 'marco', displayName: 'Marco Rossi' };
 const now = () => new Date().toISOString();
+const byText = (a: string, b: string) => a.localeCompare(b);
 
 function pr(id: number, opts: Partial<PullRequest> = {}): PullRequest {
   return {
@@ -27,6 +28,35 @@ function wi(id: number, rev: number, by: IdentityRef, createdMinutesAgo: number,
     },
   };
 }
+
+function build(id: number, opts: Partial<Build> = {}): Build {
+  return {
+    id, buildNumber: `2026.${id}`, status: 'completed', result: 'failed', definition: { id: 1, name: 'Contoso CI' },
+    sourceBranch: 'refs/heads/main', requestedFor: LENA, startTime: now(), finishTime: now(), ...opts,
+  };
+}
+
+describe('matchesBuild and buildEvent', () => {
+  const c = (x: Partial<PipelineWatcherConfig>): PipelineWatcherConfig => ({ name: 'w', type: 'pipeline', ...x });
+  it('filters by pipeline name, branch and who started the run', () => {
+    const b = build(1, { sourceBranch: 'refs/heads/release/2.0' });
+    assert.ok(matchesBuild(c({}), b, ME));
+    assert.ok(matchesBuild(c({ pipeline: ['other', 'contoso *'] }), b, ME));
+    assert.ok(!matchesBuild(c({ pipeline: 'Fabrikam*' }), b, ME));
+    assert.ok(matchesBuild(c({ branch: 'release/*' }), b, ME));
+    assert.ok(!matchesBuild(c({ branch: 'main' }), b, ME));
+    assert.ok(!matchesBuild(c({ requestedBy: '@me' }), b, ME));
+    assert.ok(matchesBuild(c({ requestedBy: 'Lena Hoffmann' }), b, ME));
+  });
+
+  it('maps results to events', () => {
+    assert.equal(buildEvent(build(1)), 'failed');
+    assert.equal(buildEvent(build(1, { result: 'partiallySucceeded' })), 'failed');
+    assert.equal(buildEvent(build(1, { result: 'succeeded' })), 'succeeded');
+    assert.equal(buildEvent(build(1, { status: 'inProgress', result: undefined })), 'started');
+    assert.equal(buildEvent(build(1, { status: 'notStarted', result: undefined, startTime: undefined })), undefined);
+  });
+});
 
 describe('matchesPullRequest', () => {
   const c = (x: Partial<PullRequestWatcherConfig>): PullRequestWatcherConfig => ({ name: 'w', type: 'pullRequest', ...x });
@@ -59,6 +89,7 @@ describe('watcherSummary', () => {
   it('describes type, events and interval', () => {
     assert.equal(watcherSummary({ name: 'a', type: 'workItem' }), 'Work items · created, changed · every 5 min');
     assert.equal(watcherSummary({ name: 'b', type: 'pullRequest', events: ['voted'], interval: 30 }), 'Pull requests · voted · every 1 min');
+    assert.equal(watcherSummary({ name: 'c', type: 'pipeline' }), 'Pipelines · failed · every 5 min');
   });
 });
 
@@ -69,6 +100,8 @@ describe('Watchers', () => {
   let closed: Record<number, PullRequest>;
   let requests: string[];
   let watchers: Watchers;
+  let finished: Build[];
+  let started: Build[];
 
   const client = {
     getMe: async () => { requests.push('me'); return ME; },
@@ -77,6 +110,7 @@ describe('Watchers', () => {
     getWorkItemUpdates: async (id: number) => { requests.push('updates'); return items[id].updates; },
     listActivePullRequests: async () => { requests.push('prs'); return active; },
     getPullRequest: async (_r: string, id: number) => { requests.push('pr'); return closed[id]; },
+    listBuildsSince: async (_since: Date, order: string) => { requests.push(`builds:${order}`); return order === 'finished' ? finished : started; },
     webUrl: (kind: string, a: string | number, b?: number) => `https://dev.azure.com/contoso/${kind}/${b ?? a}`,
   } as unknown as AdoClient;
   const connections = { current: { orgUrl: 'https://dev.azure.com/contoso', project: 'p' }, onDidChange: () => ({ dispose() { /* stub */ } }) } as unknown as ConnectionManager;
@@ -107,6 +141,8 @@ describe('Watchers', () => {
     active = [];
     closed = {};
     requests = [];
+    finished = [];
+    started = [];
   });
   afterEach(() => watchers?.dispose());
 
@@ -120,7 +156,7 @@ describe('Watchers', () => {
 
     changed = [];
     const quiet = await check();
-    assert.deepEqual(quiet.requests.sort(), ['prs', 'wiql'], 'one shared PR request for both PR watchers');
+    assert.deepEqual(quiet.requests.toSorted(byText), ['prs', 'wiql'], 'one shared PR request for both PR watchers');
     assert.deepEqual(quiet.messages, []);
   });
 
@@ -172,7 +208,7 @@ describe('Watchers', () => {
     closed[11] = pr(11, { status: 'completed', targetRefName: 'refs/heads/release/1.0', reviewers: [], closedBy: MARCO });
     const { requests: req, messages } = await check();
     assert.deepEqual(req, ['prs', 'pr']);
-    assert.deepEqual(messages.sort(), [
+    assert.deepEqual(messages.toSorted(byText), [
       'Mine: Marco Rossi: Approved on PR !10: PR 10',
       'Mine: New PR !12 in web-shop by Lena Hoffmann: PR 12',
       'Mine: PR !10 has new changes: PR 10',
@@ -200,5 +236,42 @@ describe('Watchers', () => {
     assert.equal(watchers.unseenCount, 1);
     watchers.markSeen();
     assert.equal(watchers.unseenCount, 0);
+  });
+
+  it('reports failed pipeline runs once, including my own, with one request per check', async () => {
+    start([{ name: 'CI', type: 'pipeline', branch: 'main' }, { name: 'Green', type: 'pipeline', events: ['succeeded'] }]);
+    assert.deepEqual((await check()).messages, [], 'runs from before the start are not reported');
+
+    finished = [build(1, { requestedFor: ME }), build(2, { result: 'succeeded' }), build(3, { sourceBranch: 'refs/heads/dev' })];
+    const { requests: req, messages } = await check();
+    assert.deepEqual(req, ['builds:finished']);
+    assert.deepEqual(messages.toSorted(byText), [
+      'CI: Contoso CI #2026.1 failed on main (Alex Morgan)',
+      'Green: Contoso CI #2026.2 succeeded on main (Lena Hoffmann)',
+    ]);
+    assert.deepEqual((await check()).messages, [], 'overlapping query windows do not repeat events');
+  });
+
+  it('keeps the pipeline query window when a check fails', async () => {
+    start([{ name: 'CI', type: 'pipeline' }]);
+    await check();
+    const realList = (client as unknown as { listBuildsSince: unknown }).listBuildsSince;
+    let since: Date | undefined;
+    (client as unknown as { listBuildsSince: unknown }).listBuildsSince = async (s: Date) => { since = s; throw new Error('503'); };
+    await check();
+    const failedFrom = since!;
+    (client as unknown as { listBuildsSince: unknown }).listBuildsSince = async (s: Date) => { since = s; return []; };
+    await check();
+    (client as unknown as { listBuildsSince: unknown }).listBuildsSince = realList;
+    assert.equal(since!.getTime(), failedFrom.getTime(), 'the retry asks from the same point in time');
+  });
+
+  it('asks for started runs only when a watcher wants them', async () => {
+    start([{ name: 'Starts', type: 'pipeline', events: ['started'] }]);
+    await check();
+    started = [build(5, { status: 'inProgress', result: undefined })];
+    const { requests: req, messages } = await check();
+    assert.deepEqual(req.toSorted(byText), ['builds:finished', 'builds:started']);
+    assert.deepEqual(messages, ['Starts: Contoso CI #2026.5 started on main (Lena Hoffmann)']);
   });
 });

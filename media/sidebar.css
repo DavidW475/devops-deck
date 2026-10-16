@@ -104,25 +104,29 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 
 /* ---------- tabs ---------- */
 .tabs {
-  position: relative; display: grid; grid-template-columns: repeat(3, 1fr);
+  position: relative; display: flex;
   margin: 0 12px; padding: 3px; border-radius: 10px;
   background: color-mix(in srgb, var(--fg) 6%, var(--bg));
   border: 1px solid var(--border);
 }
 .tab-indicator {
   position: absolute; top: 3px; bottom: 3px; left: 3px;
-  width: calc((100% - 6px) / 3);
-  transform: translateX(calc(var(--idx, 0) * 100%));
+  /* position and width of the active tab, set from sidebar.js */
+  width: var(--w, 25%);
+  transform: translateX(var(--x, 0));
   border-radius: 7px;
   background: var(--vscode-editor-background);
   box-shadow: 0 1px 3px rgb(0 0 0 / .18), 0 0 0 1px var(--border);
-  transition: transform .28s var(--ease);
+  transition: transform .28s var(--ease), width .28s var(--ease);
 }
 .tab {
   position: relative; z-index: 1; display: flex; align-items: center; justify-content: center; gap: 6px;
   height: 28px; padding: 0 6px; border-radius: 7px; color: var(--muted); font-weight: 500; font-size: 12px;
-  transition: color .2s; min-width: 0;
+  transition: color .2s; min-width: 0; flex: 1 1 0;
 }
+/* Only the active tab shows its label, so four tabs fit a narrow sidebar; the others show icon and count. */
+.tab.active { flex: 2.2 1 0; }
+.tab:not(.active) .tab-label { display: none; }
 .tab .i { width: 14px; height: 14px; }
 .tab:hover, .tab.active { color: var(--fg); }
 .tab-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -132,7 +136,7 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
   background: var(--vscode-badge-background); color: var(--vscode-badge-foreground);
 }
 .tab:not(.active) .badge { background: var(--border-strong); color: var(--fg); }
-@media (max-width: 300px) { .tab-label { display: none; } }
+@media (max-width: 260px) { .tab-label { display: none; } .tab.active { flex: 1 1 0; } }
 
 /* ---------- toolbar ---------- */
 .toolbar { padding: 10px 12px 6px; display: flex; flex-direction: column; gap: 8px; }
@@ -146,7 +150,7 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 .search .i { width: 14px; height: 14px; }
 .search input { flex: 1; min-width: 0; border: 0; outline: none; background: none; color: var(--vscode-input-foreground); font: inherit; }
 .search input::placeholder { color: var(--vscode-input-placeholderForeground); }
-.filters { min-height: 26px; }
+.filters { min-height: 26px; display: flex; flex-direction: column; gap: 8px; }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
 .chip {
   height: 24px; padding: 0 10px; border-radius: 99px; font-size: 11.5px; font-weight: 500;
@@ -212,6 +216,14 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 }
 .card:hover .card-actions, .card:focus-within .card-actions, .card.open .card-actions { opacity: 1; transform: none; }
 @media (hover: none) { .card-actions { opacity: 1; transform: none; } }
+/* Work item cards have five actions: a floating row on hover instead of a column that makes every card tall. */
+.card.wi .card-actions {
+  position: absolute; top: 6px; right: 6px; z-index: 2; flex-direction: row; margin: 0; padding: 2px;
+  border-radius: 8px; background: var(--card-hover); border: 1px solid var(--border); box-shadow: 0 6px 16px -8px rgb(0 0 0 / .6);
+  pointer-events: none;
+}
+.card.wi:hover .card-actions, .card.wi:focus-within .card-actions { pointer-events: auto; }
+@media (hover: none) { .card.wi .card-actions { position: static; box-shadow: none; pointer-events: auto; } }
 
 .tag {
   display: inline-flex; align-items: center; height: 17px; padding: 0 6px; margin-right: 4px; border-radius: 5px;
@@ -428,3 +440,43 @@ button.crumb:hover { background: var(--card-hover); color: var(--fg); }
 .folder-flag.running { color: var(--info); }
 .folder-count { min-width: 20px; padding: 0 6px; border-radius: 99px; background: var(--border-strong); font-size: 11px; text-align: center; }
 .folder-chevron { width: 14px; height: 14px; color: var(--muted); }
+
+/* ---------- several projects ---------- */
+.proj { padding: 0 6px; border-radius: 99px; font-size: 10.5px; line-height: 16px; background: color-mix(in srgb, var(--purple) 16%, transparent); color: var(--fg);
+  white-space: nowrap; max-width: 120px; overflow: hidden; text-overflow: ellipsis; margin-right: 4px; }
+.more-proj { font-weight: 500; font-size: 11px; color: var(--muted); }
+.tick { flex: none; width: 18px; height: 18px; margin-left: auto; padding: 0; display: grid; place-items: center; border-radius: 5px;
+  border: 1px solid var(--border-strong); background: transparent; color: var(--accent-fg); }
+.tick.on { background: var(--accent); border-color: var(--accent); }
+.tick .i { width: 12px; height: 12px; }
+.picker-foot:empty { display: none; }
+.picker-foot { padding: 6px 4px 2px; display: flex; justify-content: flex-end; }
+
+/* ---------- sprint ---------- */
+.sprint-head { margin: 0 0 10px; padding: 10px 12px; border-radius: var(--radius); background: var(--card); border: 1px solid var(--border); }
+.sprint-title { display: flex; align-items: baseline; gap: 8px; justify-content: space-between; }
+.bar { position: relative; height: 6px; margin-top: 8px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.bar-done { position: absolute; inset: 0 auto 0 0; background: var(--ok); border-radius: 3px; transition: width .3s var(--ease); }
+.bar-time { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--fg); opacity: .6; }
+.loads { margin-top: 8px; font-size: 12px; }
+.loads summary { cursor: pointer; color: var(--muted); }
+.load { display: grid; grid-template-columns: auto minmax(0, 1fr) 70px auto; align-items: center; gap: 6px; margin-top: 6px; }
+.load-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.load-bar { height: 5px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.load-bar span { display: block; height: 100%; background: var(--info); }
+.load.over .load-bar span { background: var(--fail); }
+.load.over .load-num { color: var(--fail); }
+.load-num { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.group { margin-bottom: 10px; }
+.group-head { display: flex; align-items: center; gap: 6px; padding: 4px 2px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.group-head.parent { text-transform: none; letter-spacing: 0; font-size: 12px; color: var(--fg); cursor: pointer; border-radius: 6px; padding: 4px 6px; }
+.group-head.parent:hover { background: var(--card-hover); }
+.group-head .grow { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.group-head .type-dot { width: 8px; height: 8px; border-radius: 2px; background: var(--type); flex: none; }
+.group-head .state-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--state); flex: none; }
+.group-head .count { font-weight: 500; }
+.points { min-width: 18px; padding: 0 5px; border-radius: 99px; font-size: 10.5px; text-align: center; background: var(--border-strong); }
+
+/* ---------- approvals ---------- */
+.card.approval.mine { border-color: color-mix(in srgb, var(--warn) 55%, var(--border)); }
+.card.approval .instructions { margin-top: 4px; font-size: 12px; color: var(--muted); white-space: pre-wrap; max-height: 3.6em; overflow: hidden; }

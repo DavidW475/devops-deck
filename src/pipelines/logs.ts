@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { AdoClient } from '../client';
 import { TimelineRecord } from '../types';
-import { duration, errorMessage } from '../util';
+import { duration, errorMessage, mapLimit } from '../util';
 
 export const LOG_SCHEME = 'ado-log';
 
@@ -24,7 +24,26 @@ export function plainLine(raw: string): string {
  * drop every other control sequence (OSC links/titles, cursor movement, C1 controls) before it reaches the terminal.
  */
 export function stripControl(raw: string): string {
-  return raw.replace(/\x1b(?!\[[0-9;]*m)/g, '').replace(/[\x00-\x08\x0b-\x1a\x1c-\x1f\x7f-\x9f]/g, '');
+  let out = '';
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw.codePointAt(i) ?? 0;
+    if (c === 0x1b) {
+      // Keep "ESC[...m" (colors) only.
+      if (COLOR_SEQUENCE.test(raw.slice(i + 1, i + 24))) {
+        out += raw[i];
+      }
+    } else if (!isControl(c)) {
+      out += raw[i];
+    }
+  }
+  return out;
+}
+
+const COLOR_SEQUENCE = /^\[[0-9;]*m/;
+
+/** C0 and C1 control characters except tab and line feed. */
+function isControl(c: number): boolean {
+  return c <= 0x08 || (c >= 0x0b && c <= 0x1f) || (c >= 0x7f && c <= 0x9f);
 }
 
 /** ANSI-colored log line for the live terminal; returns undefined for lines that should be hidden. */
@@ -59,18 +78,27 @@ export function recordPath(rec: TimelineRecord, byId: Map<string, TimelineRecord
   return parts.join(' › ');
 }
 
-export function makeLogUri(buildId: number, logId: number, name: string): vscode.Uri {
+export function makeLogUri(buildId: number, logId: number, name: string, project?: string): vscode.Uri {
   const safe = name.replace(/[\\/:*?"<>|]/g, '_');
-  return vscode.Uri.from({ scheme: LOG_SCHEME, path: `/Build ${buildId}/${safe}.log`, query: `build=${buildId}&log=${logId}` });
+  const query = new URLSearchParams({ build: String(buildId), log: String(logId), ...(project ? { project } : {}) }).toString();
+  return vscode.Uri.from({ scheme: LOG_SCHEME, path: `/Build ${buildId}/${safe}.log`, query });
 }
 
 /** Read-only documents for single step logs, so the editor's search, folding and selection work on them. */
 export class LogDocumentProvider implements vscode.TextDocumentContentProvider {
+  private readonly changed = new vscode.EventEmitter<vscode.Uri>();
+  readonly onDidChange = this.changed.event;
+
   constructor(private readonly client: AdoClient) {}
+
+  /** Loads an already open log again (it may have grown since). */
+  refresh(uri: vscode.Uri): void {
+    this.changed.fire(uri);
+  }
 
   async provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
     const p = new URLSearchParams(uri.query);
-    const lines = await this.client.getLogLines(Number(p.get('build')), Number(p.get('log')));
+    const lines = await this.client.forProject(p.get('project') ?? undefined).getLogLines(Number(p.get('build')), Number(p.get('log')));
     return lines.map(plainLine).join('\n');
   }
 }
@@ -151,6 +179,60 @@ export class BuildLogTerminal implements vscode.Pseudoterminal {
     }
   }
 
+  private announceStart(step: TimelineRecord, path: string): void {
+    if (this.started.has(step.id)) {
+      return;
+    }
+    this.started.add(step.id);
+    if (step.state === 'inProgress') {
+      this.header(path);
+      this.write(`${C.gray}▶ started${C.reset}`);
+    }
+  }
+
+  /** Whether a step's log has lines we have not printed yet (or a finished step's log was never fetched). */
+  private mustFetch(step: TimelineRecord, logId: number, available: number): boolean {
+    const have = this.printed.get(logId) ?? 0;
+    return available > have || (step.state === 'completed' && !this.finished.has(step.id) && have === 0);
+  }
+
+  /** Loads the logs that grew, a few at a time; printing stays in step order afterwards. */
+  private async fetchNewLines(steps: TimelineRecord[], lineCounts: Map<number, number>): Promise<Map<number, string[]>> {
+    const ids = steps.flatMap(s => (s.log && this.mustFetch(s, s.log.id, lineCounts.get(s.log.id) ?? 0) ? [s.log.id] : []));
+    const lines = await mapLimit(ids, 4, id => this.client.getLogLines(this.buildId, id));
+    return new Map(ids.map((id, i) => [id, lines[i]]));
+  }
+
+  /** Prints the lines of a step's log that are new since the last poll. */
+  private printNewLines(logId: number, path: string, lines: string[] | undefined): void {
+    if (!lines) {
+      return;
+    }
+    const have = this.printed.get(logId) ?? 0;
+    if (lines.length > have) {
+      this.header(path);
+      for (const raw of lines.slice(have)) {
+        const out = ansiLine(raw);
+        if (out !== undefined) {
+          this.write(out);
+        }
+      }
+    }
+    this.printed.set(logId, Math.max(have, lines.length));
+  }
+
+  private announceFinish(step: TimelineRecord, path: string): void {
+    if (step.state !== 'completed' || this.finished.has(step.id) || (!step.log && step.result !== 'skipped')) {
+      return;
+    }
+    this.finished.add(step.id);
+    if (step.result !== 'skipped') {
+      const [color, icon] = RESULT_STYLE[step.result ?? ''] ?? [C.gray, '•'];
+      this.header(path);
+      this.write(`${color}${icon} ${step.result} ${C.gray}(${duration(step.startTime, step.finishTime)})${C.reset}`);
+    }
+  }
+
   /** Returns true once the build has completed and every log has been printed. */
   private async poll(): Promise<boolean> {
     const [build, records, logs] = await Promise.all([
@@ -164,47 +246,20 @@ export class BuildLogTerminal implements vscode.Pseudoterminal {
       .filter(r => r.type === 'Task' && r.state !== 'pending')
       .sort((a, b) => (a.startTime ?? '9999').localeCompare(b.startTime ?? '9999') || (a.order ?? 0) - (b.order ?? 0));
 
+    const fetched = await this.fetchNewLines(steps, lineCounts);
     let pendingLogs = false;
     for (const step of steps) {
       if (this.closed) {
         return true;
       }
       const path = recordPath(step, byId);
-      if (!this.started.has(step.id)) {
-        this.started.add(step.id);
-        if (step.state === 'inProgress') {
-          this.header(path);
-          this.write(`${C.gray}▶ started${C.reset}`);
-        }
-      }
+      this.announceStart(step, path);
       if (step.log) {
-        const have = this.printed.get(step.log.id) ?? 0;
-        const available = lineCounts.get(step.log.id) ?? 0;
-        const mustFetch = available > have || (step.state === 'completed' && !this.finished.has(step.id) && have === 0);
-        if (mustFetch) {
-          const lines = await this.client.getLogLines(this.buildId, step.log.id);
-          if (lines.length > have) {
-            this.header(path);
-            for (const raw of lines.slice(have)) {
-              const out = ansiLine(raw);
-              if (out !== undefined) {
-                this.write(out);
-              }
-            }
-          }
-          this.printed.set(step.log.id, Math.max(have, lines.length));
-        }
+        this.printNewLines(step.log.id, path, fetched.get(step.log.id));
       } else if (step.state === 'completed' && step.result !== 'skipped') {
         pendingLogs = true;
       }
-      if (step.state === 'completed' && !this.finished.has(step.id) && (step.log || step.result === 'skipped')) {
-        this.finished.add(step.id);
-        const [color, icon] = RESULT_STYLE[step.result ?? ''] ?? [C.gray, '•'];
-        if (step.result !== 'skipped') {
-          this.header(path);
-          this.write(`${color}${icon} ${step.result} ${C.gray}(${duration(step.startTime, step.finishTime)})${C.reset}`);
-        }
-      }
+      this.announceFinish(step, path);
     }
 
     // Steps that were cancelled may never get a log; don't wait for them forever.

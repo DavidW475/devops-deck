@@ -2,6 +2,9 @@ import * as vscode from 'vscode';
 import { timeAgo } from '../util';
 import { readWatchers, WatchEvent, WatcherConfig, Watchers, watcherSummary } from './watchers';
 
+const TYPE_ICON: Record<string, string> = { pullRequest: 'git-pull-request', workItem: 'checklist', pipeline: 'rocket' };
+const EVENT_ICON: Record<string, string> = { pullRequest: 'git-pull-request', workItem: 'note', pipeline: 'rocket' };
+
 type Node = { kind: 'watcher'; index: number; config: WatcherConfig } | { kind: 'event'; event: WatchEvent } | { kind: 'empty' };
 
 /** "Watchers" section below the dashboard: every watcher with its recent events; empty state comes from viewsWelcome. */
@@ -53,7 +56,7 @@ export class WatchersTree implements vscode.TreeDataProvider<Node>, vscode.Dispo
       const item = new vscode.TreeItem(config.name, vscode.TreeItemCollapsibleState.Collapsed);
       item.id = `watcher:${config.name}`;
       item.description = enabled ? watcherSummary(config) : 'paused';
-      item.iconPath = new vscode.ThemeIcon(enabled ? (config.type === 'pullRequest' ? 'git-pull-request' : 'checklist') : 'debug-pause');
+      item.iconPath = new vscode.ThemeIcon(enabled ? TYPE_ICON[config.type] ?? 'eye' : 'debug-pause');
       item.tooltip = new vscode.MarkdownString(`**${config.name}**\n\n${watcherSummary(config)}${enabled ? '' : '\n\n*Paused*'}\n\nClick to edit.`);
       item.contextValue = enabled ? 'watcher-enabled' : 'watcher-disabled';
       item.command = { command: 'azureDevOps.watchers.edit', title: 'Edit', arguments: [node] };
@@ -63,7 +66,7 @@ export class WatchersTree implements vscode.TreeDataProvider<Node>, vscode.Dispo
       const e = node.event;
       const item = new vscode.TreeItem(e.message, vscode.TreeItemCollapsibleState.None);
       item.description = timeAgo(new Date(e.time).toISOString());
-      item.iconPath = new vscode.ThemeIcon(e.kind === 'pullRequest' ? 'git-pull-request' : 'note');
+      item.iconPath = new vscode.ThemeIcon(EVENT_ICON[e.kind] ?? 'note');
       item.tooltip = `${e.message}\n${new Date(e.time).toLocaleString()}`;
       item.command = { command: 'azureDevOps.watchers.openEvent', title: 'Open', arguments: [e] };
       return item;

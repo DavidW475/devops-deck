@@ -22,6 +22,8 @@ export function buildDto(b: Build) {
 export interface TimelineNode {
   id: string;
   name: string;
+  /** name in the YAML, for stage dependencies and retries */
+  identifier?: string;
   type: string;
   state?: string;
   result?: string | null;
@@ -32,6 +34,8 @@ export interface TimelineNode {
   warningCount: number;
   /** set on stages blocked by approvals or checks */
   waiting?: boolean;
+  /** IDs of pending approvals of the stage (Checkpoint.Approval records carry the approval ID) */
+  approvals?: string[];
   children: TimelineNode[];
 }
 
@@ -42,11 +46,25 @@ export function timelineTree(records: TimelineRecord[]): TimelineNode[] {
     const key = r.parentId ?? null;
     byParent.set(key, [...(byParent.get(key) ?? []), r]);
   }
+  const pendingApprovals = (stageId: string) => (byParent.get(stageId) ?? [])
+    .filter(c => c.type === 'Checkpoint')
+    .flatMap(c => byParent.get(c.id) ?? [])
+    .filter(a => a.type === 'Checkpoint.Approval' && a.state === 'inProgress')
+    .map(a => a.id);
   const children = (parentId: string | null): TimelineNode[] => (byParent.get(parentId) ?? [])
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
-    .flatMap(r => r.type.startsWith('Checkpoint') ? [] : r.type === 'Phase' || r.name === '__default' ? children(r.id) : [{
+    .flatMap(r => flatten(r));
+  const flatten = (r: TimelineRecord): TimelineNode[] => {
+    if (r.type.startsWith('Checkpoint')) {
+      return [];
+    }
+    if (r.type === 'Phase' || r.name === '__default') {
+      return children(r.id);
+    }
+    return [{
       id: r.id,
       name: r.name,
+      identifier: r.identifier ?? undefined,
       type: r.type,
       state: r.state,
       result: r.result,
@@ -56,7 +74,13 @@ export function timelineTree(records: TimelineRecord[]): TimelineNode[] {
       errors: (r.issues ?? []).filter(i => i.type === 'error').map(i => i.message).slice(0, 3),
       warningCount: r.warningCount ?? 0,
       waiting: (byParent.get(r.id) ?? []).some(c => c.type.startsWith('Checkpoint') && c.state === 'inProgress') || undefined,
+      approvals: r.type === 'Stage' ? nonEmpty(pendingApprovals(r.id)) : undefined,
       children: children(r.id),
-    }]);
+    }];
+  };
   return children(null);
+}
+
+function nonEmpty<T>(list: T[]): T[] | undefined {
+  return list.length ? list : undefined;
 }
