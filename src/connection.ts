@@ -2,7 +2,10 @@ import * as vscode from 'vscode';
 
 export interface Connection {
   orgUrl: string;
+  /** the primary project: settings, watchers, saved queries and new items use it */
   project: string;
+  /** every selected project of the organization, the primary one first */
+  projects: string[];
   /** true when org/project were detected from a git remote instead of settings */
   detected: boolean;
 }
@@ -26,8 +29,11 @@ export class ConnectionManager implements vscode.Disposable {
         project ||= fromGit.project;
       }
     }
-    const next = org && project ? { orgUrl: normalizeOrgUrl(org), project, detected } : undefined;
-    const changed = next?.orgUrl !== this.current?.orgUrl || next?.project !== this.current?.project;
+    const extra = cfg.get<string[]>('additionalProjects', []).map(p => String(p).trim()).filter(Boolean);
+    const projects = project ? [...new Set([project, ...extra.filter(p => p.toLowerCase() !== project.toLowerCase())])] : [];
+    const next = org && project ? { orgUrl: normalizeOrgUrl(org), project, projects, detected } : undefined;
+    const changed = next?.orgUrl !== this.current?.orgUrl || next?.project !== this.current?.project
+      || next?.projects.join('\n') !== this.current?.projects.join('\n');
     this.current = next;
     await vscode.commands.executeCommand('setContext', 'azureDevOps.configured', !!next);
     if (changed) {
@@ -58,8 +64,20 @@ export class ConnectionManager implements vscode.Disposable {
 }
 
 export function normalizeOrgUrl(org: string): string {
-  const url = org.includes('://') ? org : `https://dev.azure.com/${org}`;
-  return url.replace(/\/+$/, '');
+  return trimSlashes(org.includes('://') ? org : `https://dev.azure.com/${org}`, false);
+}
+
+/** Removes trailing (and with `leading`, also leading) slashes; a loop instead of a backtracking regex. */
+export function trimSlashes(s: string, leading = true): string {
+  let start = 0;
+  let end = s.length;
+  while (leading && start < end && s[start] === '/') {
+    start++;
+  }
+  while (end > start && s[end - 1] === '/') {
+    end--;
+  }
+  return s.slice(start, end);
 }
 
 /**

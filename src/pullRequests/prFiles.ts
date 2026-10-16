@@ -1,8 +1,8 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { AdoClient } from '../client';
-import { gitApi } from '../connection';
-import { PrChange, PullRequest } from '../types';
+import { gitApi, trimSlashes } from '../connection';
+import { GitChange, PrChange, PullRequest } from '../types';
 import { shortRef } from '../util';
 
 export const PR_SCHEME = 'ado-pr';
@@ -14,10 +14,12 @@ export interface PrFileQuery {
   side: 'left' | 'right';
   ct: number;
   iter: number;
+  /** iteration the left side belongs to: 1 when diffing against the target branch, else an earlier iteration */
+  base: number;
 }
 
 export function makePrUri(filePath: string, q: PrFileQuery): vscode.Uri {
-  const query = new URLSearchParams({ ...q, pr: String(q.pr), ct: String(q.ct), iter: String(q.iter) }).toString();
+  const query = new URLSearchParams({ ...q, pr: String(q.pr), ct: String(q.ct), iter: String(q.iter), base: String(q.base) }).toString();
   return vscode.Uri.from({ scheme: PR_SCHEME, path: filePath.startsWith('/') ? filePath : '/' + filePath, query });
 }
 
@@ -30,6 +32,7 @@ export function parsePrUri(uri: vscode.Uri): PrFileQuery {
     side: p.get('side') === 'left' ? 'left' : 'right',
     ct: Number(p.get('ct')),
     iter: Number(p.get('iter')),
+    base: Number(p.get('base')) || 1,
   };
 }
 
@@ -40,15 +43,18 @@ export class PrContentProvider implements vscode.TextDocumentContentProvider {
   constructor(private readonly client: AdoClient) {}
 
   provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
-    const q = parsePrUri(uri);
-    if (!q.obj) {
+    // Works for both schemes: ado-pr and ado-git URIs carry the repository and blob id.
+    const p = new URLSearchParams(uri.query);
+    const repo = p.get('repo') ?? '';
+    const obj = p.get('obj') ?? '';
+    if (!obj) {
       return Promise.resolve('');
     }
-    let text = this.cache.get(q.obj);
+    let text = this.cache.get(obj);
     if (!text) {
-      text = this.client.getBlobText(q.repo, q.obj);
-      text.catch(() => this.cache.delete(q.obj));
-      this.cache.set(q.obj, text);
+      text = this.client.getBlobText(repo, obj);
+      text.catch(() => this.cache.delete(obj));
+      this.cache.set(obj, text);
     }
     return text;
   }
@@ -59,17 +65,39 @@ export interface PrFileArgs {
   prId: number;
   iteration: number;
   change: PrChange;
+  /** compare with this earlier iteration instead of the target branch */
+  baseIteration?: number;
 }
 
 export async function openPrDiff(args: PrFileArgs): Promise<void> {
   const { change } = args;
   const rightPath = change.item.path;
   const leftPath = change.originalPath ?? rightPath;
-  const base = { repo: args.repoId, pr: args.prId, ct: change.changeTrackingId, iter: args.iteration };
+  const base = { repo: args.repoId, pr: args.prId, ct: change.changeTrackingId, iter: args.iteration, base: args.baseIteration ?? 1 };
   const left = makePrUri(leftPath, { ...base, obj: change.item.originalObjectId ?? '', side: 'left' });
   const right = makePrUri(rightPath, { ...base, obj: change.changeType.includes('delete') ? '' : change.item.objectId ?? '', side: 'right' });
-  const title = `${path.posix.basename(rightPath)} (PR !${args.prId})`;
+  const title = args.baseIteration
+    ? `${path.posix.basename(rightPath)} (PR !${args.prId}, update ${args.baseIteration} → ${args.iteration})`
+    : `${path.posix.basename(rightPath)} (PR !${args.prId})`;
   await vscode.commands.executeCommand('vscode.diff', left, right, title, { preview: true });
+}
+
+export const GIT_SCHEME = 'ado-git';
+
+/** Read-only file at a git blob, for branch comparisons outside of pull requests. */
+export function makeBlobUri(repoId: string, filePath: string, objectId: string | undefined, ref: string): vscode.Uri {
+  return vscode.Uri.from({
+    scheme: GIT_SCHEME, path: filePath.startsWith('/') ? filePath : '/' + filePath,
+    query: new URLSearchParams({ repo: repoId, obj: objectId ?? '', ref }).toString(),
+  });
+}
+
+/** Diff of one file between two branches. */
+export async function openBranchDiff(repoId: string, change: GitChange, base: string, target: string): Promise<void> {
+  const rightPath = change.item.path;
+  const left = makeBlobUri(repoId, change.originalPath ?? rightPath, change.changeType.includes('add') ? '' : change.item.originalObjectId, base);
+  const right = makeBlobUri(repoId, rightPath, change.changeType.includes('delete') ? '' : change.item.objectId, target);
+  await vscode.commands.executeCommand('vscode.diff', left, right, `${path.posix.basename(rightPath)} (${base} ↔ ${target})`, { preview: true });
 }
 
 /** Fetches the PR source branch in the matching local git repository and checks it out. */
@@ -83,7 +111,7 @@ export async function checkoutPullRequest(pr: PullRequest): Promise<void> {
     if (!url) {
       return false;
     }
-    const clean = decodeURIComponent(url).toLowerCase().replace(/\.git$/, '').replace(/\/+$/, '');
+    const clean = trimSlashes(decodeURIComponent(url).toLowerCase().replace(/\.git$/, ''), false);
     return clean.endsWith('/' + repoName);
   };
   for (const repo of git.repositories) {

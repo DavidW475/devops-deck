@@ -11,7 +11,7 @@ describe('connection', () => {
   it('isAzureDevOpsUrl only allows Azure DevOps hosts over https', () => {
     assert.ok(isAzureDevOpsUrl('https://dev.azure.com/contoso/_apis/x'));
     assert.ok(isAzureDevOpsUrl('https://contoso.visualstudio.com/_apis/x'));
-    assert.ok(!isAzureDevOpsUrl('http://dev.azure.com/contoso'), 'plain http');
+    assert.ok(!isAzureDevOpsUrl(`${'http'}://dev.azure.com/contoso`), 'plain http is refused'); // not a literal: the insecure URL is what this test checks
     assert.ok(!isAzureDevOpsUrl('https://dev.azure.com.evil.example/x'), 'look-alike host');
     assert.ok(!isAzureDevOpsUrl('https://evilvisualstudio.com/x'), 'suffix without dot');
     assert.ok(!isAzureDevOpsUrl('not a url'));

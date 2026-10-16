@@ -1,7 +1,9 @@
 import * as vscode from 'vscode';
 import { AdoClient } from '../client';
-import { errorMessage, guarded, panelHtml, shortRef } from '../util';
-import { matchesPullRequest, PullRequestWatcherConfig, readWatchers, WatcherConfig, watchersTarget, writeWatchers } from './watchers';
+import { errorMessage, guarded, panelHtml, plural, shortRef } from '../util';
+import {
+  matchesBuild, matchesPullRequest, PipelineWatcherConfig, PullRequestWatcherConfig, readWatchers, WatcherConfig, watchersTarget, WorkItemWatcherConfig, writeWatchers,
+} from './watchers';
 
 /** Form editor for `azureDevOps.watchers`: list on the left, the selected watcher on the right, with a filter preview. */
 export class WatchersPanel {
@@ -66,45 +68,20 @@ export class WatchersPanel {
   private async handle(m: any): Promise<void> {
     switch (m.type) {
       case 'ready':
-        this.sendWatchers();
-        if (this.initialSelect !== undefined) {
-          this.post({ type: 'select', index: this.initialSelect });
-          this.initialSelect = undefined;
-        }
-        this.client.listRepositoryNames().then(repos => this.post({ type: 'repos', repos }), () => undefined);
+        this.ready();
         return;
-      case 'save': {
-        const list = this.watchers();
-        const w = m.watcher as WatcherConfig;
-        const index = Number(m.index);
-        if (list.some((x, i) => i !== index && x.name.trim().toLowerCase() === w.name.trim().toLowerCase())) {
-          this.post({ type: 'saveError', message: `A watcher named "${w.name}" already exists.` });
-          return;
-        }
-        if (index >= 0 && index < list.length) {
-          list[index] = w;
-        } else {
-          list.push(w);
-        }
-        await this.write(list);
-        this.post({ type: 'saved', index: index >= 0 && index < list.length ? index : list.length - 1 });
+      case 'save':
+        await this.save(m.watcher as WatcherConfig, Number(m.index));
         return;
-      }
       case 'delete': {
         const list = this.watchers();
         list.splice(Number(m.index), 1);
         await this.write(list);
         return;
       }
-      case 'setEnabled': {
-        const list = this.watchers();
-        const w = list[Number(m.index)];
-        if (w) {
-          list[Number(m.index)] = { ...w, enabled: m.enabled ? undefined : false };
-          await this.write(list);
-        }
+      case 'setEnabled':
+        await this.setEnabled(Number(m.index), !!m.enabled);
         return;
-      }
       case 'preview':
         await this.preview(m.watcher as WatcherConfig, Number(m.seq));
         return;
@@ -121,54 +98,124 @@ export class WatchersPanel {
     }
   }
 
+  /** Sends the watchers and, in the background, the names offered as suggestions. */
+  private ready(): void {
+    this.sendWatchers();
+    if (this.initialSelect !== undefined) {
+      this.post({ type: 'select', index: this.initialSelect });
+      this.initialSelect = undefined;
+    }
+    this.client.listRepositoryNames().then(repos => this.post({ type: 'repos', repos }), () => undefined);
+    this.client.listDefinitions().then(defs => this.post({ type: 'pipelines', names: defs.map(d => d.name) }), () => undefined);
+  }
+
+  private async save(w: WatcherConfig, index: number): Promise<void> {
+    const list = this.watchers();
+    if (list.some((x, i) => i !== index && x.name.trim().toLowerCase() === w.name.trim().toLowerCase())) {
+      this.post({ type: 'saveError', message: `A watcher named "${w.name}" already exists.` });
+      return;
+    }
+    const replace = index >= 0 && index < list.length;
+    if (replace) {
+      list[index] = w;
+    } else {
+      list.push(w);
+    }
+    await this.write(list);
+    this.post({ type: 'saved', index: replace ? index : list.length - 1 });
+  }
+
+  private async setEnabled(index: number, enabled: boolean): Promise<void> {
+    const list = this.watchers();
+    const w = list[index];
+    if (w) {
+      list[index] = { ...w, enabled: enabled ? undefined : false };
+      await this.write(list);
+    }
+  }
+
   /** What the filter matches right now: recent matching work items, or matching active pull requests. */
   private async preview(w: WatcherConfig, seq: number): Promise<void> {
     try {
+      let result: Preview;
       if (w.type === 'workItem') {
-        const where = w.where?.trim() ? ` AND (${w.where})` : '';
-        const ids = await this.client.queryWiql(
-          `SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project${where} ORDER BY [System.ChangedDate] DESC`, { top: 10 });
-        const items = ids.length ? await this.client.getWorkItems(ids) : [];
-        this.post({
-          type: 'preview', seq,
-          note: ids.length ? `Most recently changed matches (up to 10). Only changes from now on will trigger.` : 'No work items match this filter right now.',
-          items: items.map(x => ({
-            title: `#${x.id} ${x.fields['System.Title']}`,
-            sub: `${x.fields['System.WorkItemType']} · ${x.fields['System.State']}`,
-            open: ['azureDevOps.wi.open', x.id],
-          })),
-        });
+        result = await this.previewWorkItems(w);
+      } else if (w.type === 'pipeline') {
+        result = await this.previewPipelines(w);
       } else {
-        const [me, prs] = await Promise.all([this.client.getMe(), this.client.listActivePullRequests()]);
-        const hits = prs.filter(pr => matchesPullRequest(w as PullRequestWatcherConfig, pr, me));
-        this.post({
-          type: 'preview', seq,
-          note: hits.length ? `${hits.length} active pull request${hits.length === 1 ? '' : 's'} match${hits.length === 1 ? 'es' : ''} this filter${hits.length > 10 ? ' (showing 10)' : ''}.`
-            : 'No active pull requests match this filter right now.',
-          items: hits.slice(0, 10).map(pr => ({
-            title: `!${pr.pullRequestId} ${pr.title}`,
-            sub: `${pr.repository.name} · ${shortRef(pr.sourceRefName)} → ${shortRef(pr.targetRefName)}`,
-            open: ['azureDevOps.pr.openOverview', pr.repository.id, pr.pullRequestId],
-          })),
-        });
+        result = await this.previewPullRequests(w);
       }
+      this.post({ type: 'preview', seq, ...result });
     } catch (e) {
       this.post({ type: 'preview', seq, error: errorMessage(e) });
     }
   }
+
+  private async previewWorkItems(w: WorkItemWatcherConfig): Promise<Preview> {
+    const where = w.where?.trim() ? ` AND (${w.where})` : '';
+    const ids = await this.client.queryWiql(
+      `SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project${where} ORDER BY [System.ChangedDate] DESC`, { top: 10 });
+    const items = ids.length ? await this.client.getWorkItems(ids) : [];
+    return {
+      note: ids.length ? 'Most recently changed matches (up to 10). Only changes from now on will trigger.' : 'No work items match this filter right now.',
+      items: items.map(x => ({
+        title: `#${x.id} ${x.fields['System.Title']}`,
+        sub: `${x.fields['System.WorkItemType']} · ${x.fields['System.State']}`,
+        open: ['azureDevOps.wi.open', x.id],
+      })),
+    };
+  }
+
+  private async previewPipelines(w: PipelineWatcherConfig): Promise<Preview> {
+    const [me, builds] = await Promise.all([this.client.getMe(), this.client.listBuilds({ top: 100 })]);
+    const hits = builds.filter(b => matchesBuild(w, b, me));
+    return {
+      note: hits.length ? `${hits.length} of the last 100 runs match this filter${showing(hits.length)}. Only runs from now on will trigger.`
+        : 'None of the last 100 runs match this filter.',
+      items: hits.slice(0, 10).map(b => {
+        const state = b.status === 'completed' ? b.result : b.status;
+        const who = b.requestedFor ? ` · ${b.requestedFor.displayName}` : '';
+        return { title: `${b.definition.name} #${b.buildNumber}`, sub: `${shortRef(b.sourceBranch)} · ${state}${who}`, open: ['azureDevOps.pipelines.openRun', b.id] };
+      }),
+    };
+  }
+
+  private async previewPullRequests(w: PullRequestWatcherConfig): Promise<Preview> {
+    const [me, prs] = await Promise.all([this.client.getMe(), this.client.listActivePullRequests()]);
+    const hits = prs.filter(pr => matchesPullRequest(w, pr, me));
+    const verb = hits.length === 1 ? 'matches' : 'match';
+    return {
+      note: hits.length ? `${plural(hits.length, 'active pull request')} ${verb} this filter${showing(hits.length)}.`
+        : 'No active pull requests match this filter right now.',
+      items: hits.slice(0, 10).map(pr => ({
+        title: `!${pr.pullRequestId} ${pr.title}`,
+        sub: `${pr.repository.name} · ${shortRef(pr.sourceRefName)} → ${shortRef(pr.targetRefName)}`,
+        open: ['azureDevOps.pr.openOverview', pr.repository.id, pr.pullRequestId],
+      })),
+    };
+  }
+
 }
 
+interface Preview {
+  note: string;
+  items: { title: string; sub: string; open: unknown[] }[];
+}
+
+const showing = (n: number) => n > 10 ? ' (showing 10)' : '';
+
 const EYE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg>';
+const hintHtml = (hint: string, lead = '') => hint ? `${lead}<span class="hint">${hint}</span>` : '';
 const toggle = (id: string, label: string, hint = '') =>
-  `<label class="run-toggle"><input type="checkbox" id="${id}"><span class="switch"></span><span>${label}${hint ? ` <span class="hint">${hint}</span>` : ''}</span></label>`;
+  `<label class="run-toggle"><input type="checkbox" id="${id}"><span class="switch"></span><span>${label}${hintHtml(hint, ' ')}</span></label>`;
 const field = (id: string, label: string, attrs = '', hint = '') =>
-  `<label class="run-field"><span class="run-label">${label}</span><input id="${id}" spellcheck="false" ${attrs}>${hint ? `<span class="hint">${hint}</span>` : ''}</label>`;
+  `<label class="run-field"><span class="run-label">${label}</span><input id="${id}" spellcheck="false" ${attrs}>${hintHtml(hint)}</label>`;
 
 const BODY = `
 <div class="run wt">
   <header class="run-head">
     <div class="run-icon">${EYE}</div>
-    <div class="run-head-text"><h1>Watchers</h1><p class="muted" id="subtitle">Get notified when work items or pull requests change.</p></div>
+    <div class="run-head-text"><h1>Watchers</h1><p class="muted" id="subtitle">Get notified when work items, pull requests or pipeline runs change.</p></div>
     <span class="spacer"></span>
     <button type="button" class="btn ghost" id="json">Edit in settings.json</button>
   </header>
@@ -188,7 +235,7 @@ const BODY = `
           <h2>General</h2>
           ${field('name', 'Name <span class="req">*</span>', 'required placeholder="e.g. New bugs for me"')}
           <div class="run-field"><span class="run-label">Watch</span>
-            <div class="seg" id="type"><button type="button" data-value="workItem">Work items</button><button type="button" data-value="pullRequest">Pull requests</button></div></div>
+            <div class="seg" id="type"><button type="button" data-value="workItem">Work items</button><button type="button" data-value="pullRequest">Pull requests</button><button type="button" data-value="pipeline">Pipelines</button></div></div>
           <label class="run-field"><span class="run-label">Check every</span>
             <select id="interval"><option value="60">1 minute</option><option value="120">2 minutes</option><option value="300">5 minutes</option>
             <option value="600">10 minutes</option><option value="900">15 minutes</option><option value="1800">30 minutes</option><option value="3600">1 hour</option></select></label>
@@ -216,6 +263,14 @@ const BODY = `
             <datalist id="people"><option value="@me"></option></datalist>
             ${field('titleContains', 'Title contains', 'placeholder="Any title"')}
             ${toggle('includeDrafts', 'Include draft pull requests')}
+          </div>
+          <div id="plFilter">
+            ${field('pipeline', 'Pipeline <span class="muted">(optional)</span>', 'list="pipelines" placeholder="All pipelines"', 'Separate several with commas; * is a wildcard.')}
+            <datalist id="pipelines"></datalist>
+            <div class="wt-row">
+              ${field('branch', 'Branch', 'placeholder="e.g. main or release/*"')}
+              ${field('requestedBy', 'Started by', 'list="people" placeholder="@me, name or e-mail"')}
+            </div>
           </div>
           <div class="wt-test"><button type="button" class="btn" id="test">Test filter</button><span class="hint">Shows what the filter matches right now.</span></div>
           <div id="preview" class="wt-preview" hidden></div>
@@ -262,12 +317,15 @@ const EVENTS = {
   workItem: [['created', 'Created', 'a new work item matches the filter'], ['changed', 'Changed', 'a matching work item was edited']],
   pullRequest: [['created', 'Created', 'a new pull request is opened'], ['pushed', 'New commits', 'the source branch was updated'],
     ['voted', 'Votes', 'a reviewer approves, rejects or waits for the author'], ['completed', 'Completed', 'it was merged'], ['abandoned', 'Abandoned', '']],
+  pipeline: [['failed', 'Failed', 'including partially succeeded runs'], ['succeeded', 'Succeeded', ''], ['canceled', 'Canceled', ''], ['started', 'Started', 'a run begins']],
 };
-const DEFAULT_EVENTS = { workItem: ['created', 'changed'], pullRequest: ['created'] };
+const DEFAULT_EVENTS = { workItem: ['created', 'changed'], pullRequest: ['created'], pipeline: ['failed'] };
+const TYPE_LABEL = { workItem: 'Work items', pullRequest: 'Pull requests', pipeline: 'Pipelines' };
+const OWN_DEFAULT = { workItem: true, pullRequest: true, pipeline: false };
 let watchers = [], selected = -1, type = 'workItem', saved = null, previewSeq = 0, pendingSelect = null;
 
 function summary(w) {
-  const what = w.type === 'pullRequest' ? 'Pull requests' : 'Work items';
+  const what = TYPE_LABEL[w.type] || 'Work items';
   const ev = (w.events && w.events.length ? w.events : DEFAULT_EVENTS[w.type] || []).join(', ');
   const mins = Math.round(Math.max(60, w.interval || 300) / 60);
   return what + ' · ' + ev + ' · every ' + mins + ' min';
@@ -289,6 +347,7 @@ function setType(t) {
   $('type').querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.value === t)));
   $('wiFilter').hidden = t !== 'workItem';
   $('prFilter').hidden = t !== 'pullRequest';
+  $('plFilter').hidden = t !== 'pipeline';
   $('preview').hidden = true;
 }
 
@@ -307,18 +366,19 @@ function updateVisibility() {
 
 function fill(w) {
   $('name').value = w.name || '';
-  setType(w.type === 'pullRequest' ? 'pullRequest' : 'workItem');
+  setType(TYPE_LABEL[w.type] ? w.type : 'workItem');
   const interval = String(Math.max(60, w.interval || 300));
   if (![...$('interval').options].some(o => o.value === interval)) {
     $('interval').insertAdjacentHTML('beforeend', '<option value="' + interval + '">' + Math.round(interval / 60) + ' minutes</option>');
   }
   $('interval').value = interval;
   $('enabled').checked = w.enabled !== false;
-  $('ignoreOwn').checked = w.ignoreOwnChanges !== false;
+  $('ignoreOwn').checked = w.ignoreOwnChanges ?? OWN_DEFAULT[type];
   $('where').value = w.where || '';
   $('fields').value = (w.fields || []).join(', ');
   $('repository').value = Array.isArray(w.repository) ? w.repository.join(', ') : (w.repository || '');
-  for (const k of ['targetBranch', 'sourceBranch', 'createdBy', 'reviewer', 'titleContains']) $(k).value = w[k] || '';
+  for (const k of ['targetBranch', 'sourceBranch', 'createdBy', 'reviewer', 'titleContains', 'branch', 'requestedBy']) $(k).value = w[k] || '';
+  $('pipeline').value = Array.isArray(w.pipeline) ? w.pipeline.join(', ') : (w.pipeline || '');
   $('includeDrafts').checked = w.includeDrafts !== false;
   renderEvents(w.events && w.events.length ? w.events : DEFAULT_EVENTS[type]);
   const actions = w.actions && w.actions.length ? w.actions : ['notify'];
@@ -349,13 +409,17 @@ function read(lenient) {
     if ($('where').value.trim()) w.where = $('where').value.trim();
     const fields = $('fields').value.split(',').map(s => s.trim()).filter(Boolean);
     if (fields.length && events.includes('changed')) w.fields = fields;
+  } else if (type === 'pipeline') {
+    const names = $('pipeline').value.split(',').map(s => s.trim()).filter(Boolean);
+    if (names.length) w.pipeline = names.length === 1 ? names[0] : names;
+    for (const k of ['branch', 'requestedBy']) if ($(k).value.trim()) w[k] = $(k).value.trim();
   } else {
     const repos = $('repository').value.split(',').map(s => s.trim()).filter(Boolean);
     if (repos.length) w.repository = repos.length === 1 ? repos[0] : repos;
     for (const k of ['targetBranch', 'sourceBranch', 'createdBy', 'reviewer', 'titleContains']) if ($(k).value.trim()) w[k] = $(k).value.trim();
     if (!$('includeDrafts').checked) w.includeDrafts = false;
   }
-  if (!$('ignoreOwn').checked) w.ignoreOwnChanges = false;
+  if ($('ignoreOwn').checked !== OWN_DEFAULT[type]) w.ignoreOwnChanges = $('ignoreOwn').checked;
   const actions = [];
   if ($('actNotify').checked) actions.push('notify');
   if ($('actOpen').checked) actions.push('open');
@@ -415,6 +479,7 @@ $('type').addEventListener('click', e => {
   if (!b || b.dataset.value === type) return;
   setType(b.dataset.value);
   renderEvents(DEFAULT_EVENTS[type]);
+  $('ignoreOwn').checked = OWN_DEFAULT[type];
   dirtyCheck();
 });
 $('form').addEventListener('input', () => { updateVisibility(); dirtyCheck(); });
@@ -480,6 +545,8 @@ window.addEventListener('message', ({ data: m }) => {
     $('formError').hidden = false;
   } else if (m.type === 'select') {
     select(m.index === 'new' ? watchers.length : m.index);
+  } else if (m.type === 'pipelines') {
+    $('pipelines').innerHTML = m.names.map(r => '<option value="' + esc(r) + '"></option>').join('');
   } else if (m.type === 'repos') {
     $('repos').innerHTML = m.repos.map(r => '<option value="' + esc(r) + '"></option>').join('');
   } else if (m.type === 'preview' && m.seq === previewSeq) {

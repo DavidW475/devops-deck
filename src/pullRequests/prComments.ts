@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { AdoClient } from '../client';
-import { PrComment, PrThread } from '../types';
+import { PrComment, PrThread, PrThreadContext } from '../types';
 import { guarded } from '../util';
 import { PR_SCHEME, parsePrUri } from './prFiles';
 
@@ -128,20 +128,11 @@ export class PrCommentController implements vscode.Disposable {
     }
     const created: vscode.CommentThread[] = [];
     for (const t of threads) {
-      const ctx = t.threadContext;
-      if (!ctx || ctx.filePath !== filePath) {
-        continue;
-      }
-      const start = q.side === 'right' ? ctx.rightFileStart : (!ctx.rightFileStart ? ctx.leftFileStart : undefined);
-      const end = q.side === 'right' ? ctx.rightFileEnd : ctx.leftFileEnd;
-      if (!start) {
-        continue;
-      }
+      const range = t.threadContext?.filePath === filePath ? threadRange(t.threadContext, q.side) : undefined;
       const comments = t.comments.filter(c => !c.isDeleted && c.commentType !== 'system' && c.commentType !== 3);
-      if (!comments.length) {
+      if (!range || !comments.length) {
         continue;
       }
-      const range = new vscode.Range(start.line - 1, 0, Math.max(start.line, end?.line ?? start.line) - 1, 0);
       const thread = this.controller.createCommentThread(doc.uri, range, []);
       thread.comments = comments.map(c => new AdoComment(c, thread, meId));
       this.meta.set(thread, { repo: q.repo, pr: q.pr, threadId: t.id });
@@ -202,7 +193,7 @@ export class PrCommentController implements vscode.Disposable {
         : { filePath: thread.uri.path, leftFileStart: startPos, leftFileEnd: endPos },
       pullRequestThreadContext: {
         changeTrackingId: q.ct,
-        iterationContext: { firstComparingIteration: 1, secondComparingIteration: q.iter },
+        iterationContext: { firstComparingIteration: q.base, secondComparingIteration: q.iter },
       },
     });
     this.meta.set(thread, { repo: q.repo, pr: q.pr, threadId: created.id });
@@ -327,4 +318,21 @@ export class PrCommentController implements vscode.Disposable {
   dispose(): void {
     this.disposables.forEach(d => d.dispose());
   }
+}
+
+/**
+ * Lines of a thread on one side of the diff. Right side: threads on the new file. Left side: threads that
+ * exist only on the old file (a thread with a right position is shown on the right).
+ */
+function threadRange(ctx: PrThreadContext, side: 'left' | 'right'): vscode.Range | undefined {
+  let start = ctx.rightFileStart;
+  let end = ctx.rightFileEnd;
+  if (side === 'left') {
+    start = ctx.rightFileStart ? undefined : ctx.leftFileStart;
+    end = ctx.leftFileEnd;
+  }
+  if (!start) {
+    return undefined;
+  }
+  return new vscode.Range(start.line - 1, 0, Math.max(start.line, end?.line ?? start.line) - 1, 0);
 }

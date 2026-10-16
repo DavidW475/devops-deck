@@ -1,7 +1,9 @@
 import * as vscode from 'vscode';
 import { AdoClient, PrArtifact } from '../client';
-import { PolicyEvaluation, PrThread, PullRequest, WorkItem } from '../types';
-import { avatarHtml, errorMessage, escapeHtml, guarded, LINK_PICKER_SCRIPT, LinkCandidate, linkPickerHtml, panelHtml, renderMarkdown, shortRef, showError, timeAgo, VOTE_LABELS } from '../util';
+import { GitCommitRef, PolicyEvaluation, PrIteration, PrThread, PullRequest, WorkItem } from '../types';
+import {
+  avatarHtml, errorMessage, escapeHtml, guarded, LINK_PICKER_SCRIPT, LinkCandidate, linkPickerHtml, panelHtml, plural, renderMarkdown, shortRef, showError, timeAgo, VOTE_LABELS,
+} from '../util';
 import { CheckKind, summarizeChecks } from './checks';
 import { checkoutPullRequest } from './prFiles';
 
@@ -20,8 +22,16 @@ const CHECK_ICON: Record<CheckKind, string> = {
 /** Rich overview of a pull request: description, reviewers, discussion and review actions. */
 export class PullRequestPanel {
   private static readonly panels = new Map<string, PullRequestPanel>();
+  /** Remembers the newest iteration each PR had when its overview was last closed ("new since your last visit"). */
+  private static store?: vscode.Memento;
+
+  static useStore(store: vscode.Memento): void {
+    PullRequestPanel.store = store;
+  }
   private pr?: PullRequest;
   private linkedWorkItems: number[] = [];
+  private latestIteration = 0;
+  private requiredReviewer = false;
 
   static show(client: AdoClient, extensionUri: vscode.Uri, repoId: string, prId: number, onChange: () => void): void {
     const key = `${repoId}/${prId}`;
@@ -35,7 +45,25 @@ export class PullRequestPanel {
       { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [vscode.Uri.joinPath(extensionUri, 'media')] });
     const instance = new PullRequestPanel(panel, client, extensionUri, repoId, prId, onChange);
     PullRequestPanel.panels.set(key, instance);
-    panel.onDidDispose(() => PullRequestPanel.panels.delete(key));
+    void instance.render();
+    panel.onDidDispose(() => {
+      PullRequestPanel.panels.delete(key);
+      void instance.markSeen();
+    });
+  }
+
+  private visitKey(): string {
+    return `prVisit:${this.client.connection.orgUrl}/${this.repoId}/${this.prId}`;
+  }
+
+  private lastSeenIteration(): number | undefined {
+    return PullRequestPanel.store?.get<number>(this.visitKey());
+  }
+
+  private async markSeen(): Promise<void> {
+    if (this.latestIteration) {
+      await PullRequestPanel.store?.update(this.visitKey(), this.latestIteration);
+    }
   }
 
   private constructor(
@@ -48,15 +76,78 @@ export class PullRequestPanel {
   ) {
     panel.webview.onDidReceiveMessage(guarded(m => this.handle(m)));
     panel.webview.html = panelHtml(panel.webview, extensionUri, 'Loading', '<div class="loading"><div class="spinner"></div></div>', '');
-    void this.render();
+  }
+
+  /** Messages that only navigate or search; true when handled. */
+  private async handleView(m: any): Promise<boolean> {
+    switch (m.type) {
+      case 'checkout':
+        if (this.pr) {
+          await checkoutPullRequest(this.pr);
+        }
+        return true;
+      case 'browser':
+        if (this.pr) {
+          await vscode.env.openExternal(vscode.Uri.parse(this.client.webUrl('pr', this.pr.repository.name, this.prId, this.pr.repository.project?.name)));
+        }
+        return true;
+      case 'openRun':
+        await vscode.commands.executeCommand('azureDevOps.pipelines.openRun', Number(m.id), this.pr?.repository.project?.name);
+        return true;
+      case 'openWorkItem':
+        await vscode.commands.executeCommand('azureDevOps.wi.open', m.id);
+        return true;
+      case 'compare':
+        await vscode.commands.executeCommand('azureDevOps.pr.compareIterations', this.repoId, this.prId, Number(m.base), Number(m.target));
+        return true;
+      case 'reviewerRequired':
+        this.requiredReviewer = !!m.value;
+        return true;
+      case 'linkSearch':
+        await (m.picker === 'reviewer' ? this.searchReviewers(String(m.text ?? ''), m.seq) : this.searchWorkItems(String(m.text ?? ''), m.seq));
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  private async searchWorkItems(text: string, seq: number): Promise<void> {
+    try {
+      // Work items of the PR's project.
+      const items = (await this.client.forProject(this.pr?.repository.project?.name).searchWorkItems(text))
+        .filter(w => !this.linkedWorkItems.includes(w.id))
+        .map((w): LinkCandidate => ({
+          key: String(w.id),
+          title: `#${w.id} ${w.fields['System.Title']}`,
+          sub: `${w.fields['System.WorkItemType']} · ${w.fields['System.State']}`,
+        }));
+      void this.panel.webview.postMessage({ type: 'linkResults', seq, items });
+    } catch (e) {
+      void this.panel.webview.postMessage({ type: 'linkResults', seq, error: errorMessage(e) });
+    }
   }
 
   private async handle(m: any): Promise<void> {
+    if (await this.handleView(m)) {
+      return;
+    }
     const { repoId, prId, client } = this;
     switch (m.type) {
       case 'vote':
         await client.vote(repoId, prId, m.vote);
-        void vscode.window.setStatusBarMessage(`$(check) Voted: ${VOTE_LABELS[String(m.vote)]}`, 3000);
+        await this.markSeen();
+        vscode.window.setStatusBarMessage(`$(check) Voted: ${VOTE_LABELS[String(m.vote)]}`, 3000);
+        break;
+      case 'removeReviewer':
+        await client.removeReviewer(repoId, prId, String(m.id));
+        break;
+      case 'autoComplete':
+        if (!(await this.autoComplete(!!m.value))) {
+          return;
+        }
+        break;
+      case 'seen':
+        await this.markSeen();
         break;
       case 'comment':
         await client.createThread(repoId, prId, { comments: [{ parentCommentId: 0, content: m.text, commentType: 1 }], status: 1 });
@@ -83,39 +174,12 @@ export class PullRequestPanel {
         await client.updatePullRequest(repoId, prId, { status: 'abandoned' });
         break;
       }
-      case 'checkout':
-        if (this.pr) {
-          await checkoutPullRequest(this.pr);
-        }
-        return;
-      case 'browser':
-        if (this.pr) {
-          await vscode.env.openExternal(vscode.Uri.parse(client.webUrl('pr', this.pr.repository.name, prId)));
-        }
-        return;
-      case 'openRun':
-        await vscode.commands.executeCommand('azureDevOps.pipelines.openRun', Number(m.id));
-        return;
-      case 'openWorkItem':
-        await vscode.commands.executeCommand('azureDevOps.wi.open', m.id);
-        return;
-      case 'linkSearch': {
-        try {
-          const items = (await client.searchWorkItems(String(m.text ?? '')))
-            .filter(w => !this.linkedWorkItems.includes(w.id))
-            .map((w): LinkCandidate => ({
-              key: String(w.id),
-              title: `#${w.id} ${w.fields['System.Title']}`,
-              sub: `${w.fields['System.WorkItemType']} · ${w.fields['System.State']}`,
-            }));
-          void this.panel.webview.postMessage({ type: 'linkResults', seq: m.seq, items });
-        } catch (e) {
-          void this.panel.webview.postMessage({ type: 'linkResults', seq: m.seq, error: errorMessage(e) });
-        }
-        return;
-      }
       case 'link':
-        await client.linkPullRequest(Number(m.key), this.artifact());
+        if (m.picker === 'reviewer') {
+          await client.addReviewer(repoId, prId, String(m.key), this.requiredReviewer);
+        } else {
+          await client.linkPullRequest(Number(m.key), this.artifact());
+        }
         break;
       case 'unlink':
         await client.unlinkPullRequest(Number(m.key), this.artifact());
@@ -137,41 +201,80 @@ export class PullRequestPanel {
     return { projectId, repoId: this.repoId, prId: this.prId };
   }
 
-  private async complete(): Promise<boolean> {
-    const pr = this.pr;
-    if (!pr) {
-      return false;
+  private async searchReviewers(text: string, seq: number): Promise<void> {
+    try {
+      const present = new Set(this.pr?.reviewers.map(r => r.id));
+      const people = text.trim().length >= 2 ? await this.client.searchIdentities(text.trim()) : [];
+      const items = people.filter(p => !present.has(p.id))
+        .map((p): LinkCandidate => ({ key: p.id, title: p.displayName, sub: p.isGroup ? 'Group' : p.uniqueName }));
+      void this.panel.webview.postMessage({ type: 'linkResults', picker: 'reviewer', seq, items });
+    } catch (e) {
+      void this.panel.webview.postMessage({ type: 'linkResults', picker: 'reviewer', seq, error: errorMessage(e) });
     }
+  }
+
+  /** Merge strategy and branch deletion, asked before completing or setting auto-complete. */
+  private async completionOptions(title: string): Promise<{ mergeStrategy: string; deleteSourceBranch: boolean; transitionWorkItems: boolean } | undefined> {
     const strategy = await vscode.window.showQuickPick([
       { label: 'Squash commit', value: 'squash' },
       { label: 'Merge (no fast-forward)', value: 'noFastForward' },
       { label: 'Rebase and fast-forward', value: 'rebase' },
       { label: 'Semi-linear merge', value: 'rebaseMerge' },
-    ], { title: `Complete PR !${pr.pullRequestId}`, placeHolder: 'Merge strategy' });
+    ], { title, placeHolder: 'Merge strategy' });
     if (!strategy) {
-      return false;
+      return undefined;
     }
     const del = await vscode.window.showQuickPick(['Delete source branch', 'Keep source branch'], { title: 'Source branch' });
     if (!del) {
+      return undefined;
+    }
+    return { mergeStrategy: strategy.value, deleteSourceBranch: del.startsWith('Delete'), transitionWorkItems: true };
+  }
+
+  private async complete(): Promise<boolean> {
+    const pr = this.pr;
+    if (!pr) {
+      return false;
+    }
+    const options = await this.completionOptions(`Complete PR !${pr.pullRequestId}`);
+    if (!options) {
       return false;
     }
     await this.client.updatePullRequest(this.repoId, this.prId, {
       status: 'completed',
       lastMergeSourceCommit: pr.lastMergeSourceCommit,
-      completionOptions: { mergeStrategy: strategy.value, deleteSourceBranch: del.startsWith('Delete'), transitionWorkItems: true },
+      completionOptions: options,
     });
     void vscode.window.showInformationMessage(`PR !${pr.pullRequestId} completed.`);
     return true;
   }
 
+  /** Auto-complete merges the PR as soon as all required policies pass. */
+  private async autoComplete(enable: boolean): Promise<boolean> {
+    if (!enable) {
+      await this.client.setAutoComplete(this.repoId, this.prId, undefined);
+      return true;
+    }
+    const options = await this.completionOptions(`Set auto-complete for PR !${this.prId}`);
+    if (!options) {
+      return false;
+    }
+    await this.client.setAutoComplete(this.repoId, this.prId, options);
+    vscode.window.setStatusBarMessage(`$(check) Auto-complete set for PR !${this.prId}`, 3000);
+    return true;
+  }
+
   private async render(): Promise<void> {
     try {
-      const [pr, threads, wiIds, me] = await Promise.all([
+      const [pr, threads, wiIds, me, iterations, commits] = await Promise.all([
         this.client.getPullRequest(this.repoId, this.prId),
         this.client.getThreads(this.repoId, this.prId),
         this.client.getPullRequestWorkItemIds(this.repoId, this.prId).catch(() => [] as number[]),
         this.client.getMe(),
+        this.client.getIterations(this.repoId, this.prId).catch(() => [] as PrIteration[]),
+        this.client.getPullRequestCommits(this.repoId, this.prId).catch(() => [] as GitCommitRef[]),
       ]);
+      this.latestIteration = Math.max(0, ...iterations.map(i => i.id));
       const projectId = pr.repository.project?.id;
       const [workItems, checks] = await Promise.all([
         wiIds.length ? this.client.getWorkItems(wiIds) : Promise.resolve([] as WorkItem[]),
@@ -187,7 +290,8 @@ export class PullRequestPanel {
         .map(t => this.threadHtml(t)));
       const myVote = pr.reviewers.find(r => r.id === me.id)?.vote ?? 0;
       this.panel.webview.html = panelHtml(this.panel.webview, this.extensionUri, pr.title,
-        this.bodyHtml(pr, description, threadHtml, workItems, myVote, checks), SCRIPT);
+        this.bodyHtml(pr, description, threadHtml, workItems, myVote, checks)
+          .replace('<!--updates-->', () => this.updatesHtml(iterations) + this.commitsHtml(commits)), SCRIPT);
     } catch (e) {
       await showError(e);
     }
@@ -203,7 +307,8 @@ export class PullRequestPanel {
         <span class="muted">${timeAgo(c.publishedDate)}</span></div>
         <div class="md">${await renderMarkdown(c.content ?? '')}</div></div></div>`));
     const ctx = t.threadContext;
-    const where = ctx ? `<div class="thread-file">${escapeHtml(ctx.filePath)}${ctx.rightFileStart ? `:${ctx.rightFileStart.line}` : ''}</div>` : '';
+    const line = ctx?.rightFileStart ? `:${ctx.rightFileStart.line}` : '';
+    const where = ctx ? `<div class="thread-file">${escapeHtml(ctx.filePath)}${line}</div>` : '';
     return `<div class="thread ${resolved ? 'resolved' : ''}">
       <div class="thread-head">${where}<span class="pill ${resolved ? 'ok' : 'info'}">${escapeHtml(status === 'fixed' ? 'resolved' : status)}</span>
         <button class="link" data-status="${resolved ? 1 : 2}" data-thread="${t.id}">${resolved ? 'Reactivate' : 'Resolve'}</button></div>
@@ -218,10 +323,12 @@ export class PullRequestPanel {
       return { summary: '', card: '' };
     }
     const { checks, failing, pending, state } = summarizeChecks(evaluations);
-    const plural = (n: number) => `${n} required check${n === 1 ? '' : 's'}`;
-    const summary = state === 'fail' ? `<span class="pill bad">${plural(failing)} failing</span>`
-      : state === 'pending' ? `<span class="pill info">${plural(pending)} pending</span>`
-      : state === 'ok' ? '<span class="pill ok">All required checks passed</span>' : '';
+    const SUMMARY: Record<string, string> = {
+      fail: `<span class="pill bad">${plural(failing, 'required check')} failing</span>`,
+      pending: `<span class="pill info">${plural(pending, 'required check')} pending</span>`,
+      ok: '<span class="pill ok">All required checks passed</span>',
+    };
+    const summary = SUMMARY[state] ?? '';
     const rows = checks.map(c => `<div class="check check-${c.kind}">
         <svg class="check-icon ${c.kind === 'running' ? 'spin' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="${CHECK_LABEL[c.kind]}">${CHECK_ICON[c.kind]}</svg>
         <div class="check-body"><div class="check-name">${escapeHtml(c.name)}${c.required ? '' : ' <span class="pill muted">optional</span>'}</div>
@@ -234,15 +341,52 @@ export class PullRequestPanel {
     };
   }
 
+  /** Pushes to the PR ("iterations"), newest first, each comparable with the one before or with the last visit. */
+  private updatesHtml(iterations: PrIteration[]): string {
+    if (!iterations.length) {
+      return '';
+    }
+    const seen = this.lastSeenIteration();
+    const latest = this.latestIteration;
+    const banner = seen && seen < latest
+      ? `<div class="since"><span><strong>${plural(latest - seen, 'new update')}</strong> since your last visit</span>
+          <button class="btn primary small" data-compare="${seen}" data-target="${latest}">Review changes since update ${seen}</button>
+          <button class="btn ghost small" data-action="seen">Mark as seen</button></div>` : '';
+    const rows = [...iterations].sort((a, b) => b.id - a.id).map(it => `<div class="iteration">
+        <span class="iter-id">${it.id}</span>
+        <div class="grow"><div>${escapeHtml(it.description || (it.id === 1 ? 'Created' : 'Pushed'))}${seen && it.id > seen ? ' <span class="pill info">new</span>' : ''}</div>
+          <div class="muted small">${escapeHtml(it.author?.displayName ?? '')} · ${timeAgo(it.createdDate)}</div></div>
+        <button class="btn ghost small" data-compare="${it.id - 1}" data-target="${it.id}" title="${it.id === 1 ? 'Files of the first push' : `Changes between update ${it.id - 1} and ${it.id}`}">Changes</button>
+      </div>`).join('');
+    return `<div class="card"><h2>Updates <span class="count">${iterations.length}</span></h2>${banner}<div class="iterations">${rows}</div></div>`;
+  }
+
+  private commitsHtml(commits: GitCommitRef[]): string {
+    if (!commits.length) {
+      return '';
+    }
+    const rows = commits.slice(0, 50).map(c => `<div class="commit"><span class="mono muted">${escapeHtml(c.commitId.slice(0, 8))}</span>
+        <span class="grow" title="${escapeHtml(c.comment ?? '')}">${escapeHtml((c.comment ?? '').split('\n')[0])}</span>
+        <span class="muted small">${escapeHtml(c.author?.name ?? '')} · ${timeAgo(c.author?.date)}</span></div>`).join('');
+    return `<details class="card"><summary><h2>Commits <span class="count">${commits.length}</span></h2></summary>${rows}</details>`;
+  }
+
   private bodyHtml(pr: PullRequest, description: string, threads: string[], workItems: WorkItem[], myVote: number,
     evaluations: PolicyEvaluation[] | undefined): string {
     const checks = this.checksHtml(evaluations);
+    const autoLabel = pr.autoCompleteSetBy ? 'Cancel auto-complete' : 'Set auto-complete';
+    const autoButton = pr.isDraft ? '' : `<button class="btn ghost" data-action="autoComplete" data-value="${!pr.autoCompleteSetBy}">${autoLabel}</button>`;
     const voteBtn = (vote: number, label: string, cls: string) =>
       `<button class="btn ${cls} ${myVote === vote ? 'active' : ''}" data-vote="${vote}">${label}</button>`;
-    const reviewers = pr.reviewers.length ? pr.reviewers.map(r => `<div class="person">${avatarHtml(r.displayName)}
-        <div><div>${escapeHtml(r.displayName)}${r.isRequired ? ' <span class="pill muted">required</span>' : ''}</div>
-        <div class="vote ${VOTE_CLASS[String(r.vote)] ?? 'muted'}">${VOTE_LABELS[String(r.vote)] ?? r.vote}</div></div></div>`).join('')
-      : '<p class="muted">No reviewers.</p>';
+    const reviewers = (pr.reviewers.length ? pr.reviewers.map(r => `<div class="person">${avatarHtml(r.displayName)}
+        <div class="grow"><div>${escapeHtml(r.displayName)}${r.isRequired ? ' <span class="pill muted">required</span>' : ''}</div>
+        <div class="vote ${VOTE_CLASS[String(r.vote)] ?? 'muted'}">${VOTE_LABELS[String(r.vote)] ?? r.vote}</div></div>
+        <button class="unlink" data-remove-reviewer="${escapeHtml(r.id)}" title="Remove reviewer">✕</button></div>`).join('')
+      : '<p class="muted">No reviewers.</p>')
+      + linkPickerHtml('Add reviewer… (name or e-mail)', 'reviewer')
+      + '<label class="req-toggle"><input type="checkbox" id="reqReviewer"> Add as required reviewer</label>';
+    const auto = pr.autoCompleteSetBy
+      ? `<span class="pill ok" title="Completes automatically once all required policies pass">Auto-complete · ${escapeHtml(pr.autoCompleteSetBy.displayName)}</span>` : '';
     const wis = (workItems.length ? workItems.map(w => `<div class="linked"><a class="wi-link" data-wi="${w.id}"><span class="pill muted">${escapeHtml(w.fields['System.WorkItemType'])}</span>
         #${w.id} ${escapeHtml(w.fields['System.Title'])}</a>
         <button class="unlink" data-unlink="${w.id}" title="Remove link">✕</button></div>`).join('') : '<p class="muted">None linked.</p>')
@@ -252,7 +396,7 @@ export class PullRequestPanel {
     return `
 <header class="hero">
   <div class="hero-top">
-    <span class="pill ${pr.isDraft ? 'muted' : 'info'}">${pr.isDraft ? 'Draft' : 'Active'}</span>${status}${conflicts}${checks.summary}
+    <span class="pill ${pr.isDraft ? 'muted' : 'info'}">${pr.isDraft ? 'Draft' : 'Active'}</span>${status}${conflicts}${checks.summary}${auto}
     <span class="muted">!${pr.pullRequestId} · ${escapeHtml(pr.repository.name)}</span>
   </div>
   <h1>${escapeHtml(pr.title)}</h1>
@@ -269,12 +413,14 @@ export class PullRequestPanel {
     <button class="btn ghost" data-action="abandon">Abandon</button>
     <button class="btn ghost" data-action="browser">Open in browser</button>
     <button class="btn ghost" data-action="refresh">Refresh</button>
+    ${autoButton}
     <button class="btn success" data-action="complete">Complete</button>
   </div>
 </header>
 <main class="grid">
   <section>
     <div class="card"><h2>Description</h2><div class="md">${description}</div></div>
+    <!--updates-->
     <div class="card"><h2>Discussion <span class="count">${threads.length}</span></h2>
       <form id="new-comment"><textarea name="text" rows="3" placeholder="Add a comment… (Markdown)"></textarea>
       <div class="right"><button class="btn primary">Comment</button></div></form>
@@ -291,9 +437,12 @@ export class PullRequestPanel {
 }
 
 const SCRIPT = LINK_PICKER_SCRIPT + `
+document.getElementById('reqReviewer')?.addEventListener('change', e => vscode.postMessage({ type: 'reviewerRequired', value: e.target.checked }));
 document.addEventListener('click', e => {
-  const el = e.target.closest('[data-vote],[data-action],[data-status],[data-wi],[data-run]');
+  const el = e.target.closest('[data-vote],[data-action],[data-status],[data-wi],[data-run],[data-compare],[data-remove-reviewer]');
   if (!el || el.closest('.md')) return; // ignore look-alike controls inside rendered descriptions/comments
+  if (el.dataset.compare !== undefined) { vscode.postMessage({ type: 'compare', base: Number(el.dataset.compare), target: Number(el.dataset.target) }); return; }
+  if (el.dataset.removeReviewer) { el.classList.add('busy'); vscode.postMessage({ type: 'removeReviewer', id: el.dataset.removeReviewer }); return; }
   if (el.dataset.vote !== undefined) vscode.postMessage({ type: 'vote', vote: Number(el.dataset.vote) });
   else if (el.dataset.status) vscode.postMessage({ type: 'threadStatus', threadId: Number(el.dataset.thread), status: Number(el.dataset.status) });
   else if (el.dataset.wi) vscode.postMessage({ type: 'openWorkItem', id: Number(el.dataset.wi) });

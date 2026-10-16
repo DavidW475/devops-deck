@@ -1,6 +1,6 @@
 import * as assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
-import { AdoClient, AdoError, parsePrArtifact, prArtifactUrl } from '../client';
+import { AdoClient, AdoError, fieldOps, parsePrArtifact, prArtifactUrl } from '../client';
 import { ConnectionManager } from '../connection';
 import * as vscode from './vscodeStub';
 
@@ -94,5 +94,54 @@ describe('AdoClient', () => {
     const pr = { projectId: 'p1', repoId: 'r1', prId: 12 };
     assert.deepEqual(parsePrArtifact(prArtifactUrl(pr)), pr);
     assert.equal(parsePrArtifact('vstfs:///Git/Commit/x'), undefined);
+  });
+
+  const GUID = '3f2504e0-4f89-11d3-9a0c-0305e82c3301';
+
+  it('uses organization-wide routes for repositories by ID, so PRs of every project work', async () => {
+    respond = () => json({ pullRequestId: 7 });
+    await client().getPullRequest(GUID, 7);
+    assert.equal(new URL(calls[0].url).pathname, `/contoso/_apis/git/repositories/${GUID}/pullrequests/7`);
+  });
+
+  it('forProject routes project APIs to the other project and shares the signed-in user', async () => {
+    respond = url => url.includes('connectionData')
+      ? json({ authenticatedUser: { id: 'me', providerDisplayName: 'Alex' } })
+      : json({ value: [] });
+    const c = client();
+    const other = c.forProject('Northwind');
+    assert.equal(c.forProject('fabrikam shop'), c, 'the current project returns the same client');
+    assert.equal(c.forProject('Northwind'), other, 'scoped clients are cached');
+    await other.listBuilds({ top: 1 });
+    assert.equal(new URL(calls[0].url).pathname, '/contoso/Northwind/_apis/build/builds');
+    await other.getMe();
+    await c.getMe();
+    assert.equal(calls.filter(x => x.url.includes('connectionData')).length, 1);
+  });
+
+  it('reads policy evaluations in the PR\'s own project', async () => {
+    await client().getPolicyEvaluations('proj-9', 1);
+    assert.equal(new URL(calls[0].url).pathname, '/contoso/proj-9/_apis/policy/evaluations');
+  });
+
+  it('creates pull requests and turns auto-complete off', async () => {
+    respond = () => json({ pullRequestId: 3, repository: { id: GUID } });
+    await client().createPullRequest(GUID, { sourceRefName: 'refs/heads/a', targetRefName: 'refs/heads/main', title: 'T', reviewers: [{ id: 'r' }] });
+    assert.equal(calls[0].init.method, 'POST');
+    assert.equal(new URL(calls[0].url).searchParams.get('supportsIterations'), 'true');
+    await client().setAutoComplete(GUID, 3, undefined);
+    assert.deepEqual(JSON.parse(String(calls[1].init.body)), { autoCompleteSetBy: { id: '00000000-0000-0000-0000-000000000000' } });
+  });
+
+  it('reports a failed ref update', async () => {
+    respond = () => json({ value: [{ success: false, updateStatus: 'staleOldObjectId' }] });
+    await assert.rejects(client().updateRef(GUID, 'feature/x', 'a', 'b'), /staleOldObjectId/);
+  });
+
+  it('removes empty work item fields', () => {
+    assert.deepEqual(fieldOps({ 'System.Title': 'x', 'Microsoft.VSTS.Scheduling.StoryPoints': null }), [
+      { op: 'add', path: '/fields/System.Title', value: 'x' },
+      { op: 'remove', path: '/fields/Microsoft.VSTS.Scheduling.StoryPoints' },
+    ]);
   });
 });

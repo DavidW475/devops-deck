@@ -2,15 +2,23 @@ import * as vscode from 'vscode';
 import { AdoClient, PAT_SECRET_KEY } from './client';
 import { ConnectionManager, normalizeOrgUrl } from './connection';
 import { BuildLogTerminal, LOG_SCHEME, LogDocumentProvider, makeLogUri } from './pipelines/logs';
+import { answerApproval } from './pipelines/approvals';
 import { RunPipelinePanel } from './pipelines/runPanel';
 import { RunViewPanel } from './pipelines/runView';
 import { PrCommentController } from './pullRequests/prComments';
-import { checkoutPullRequest, openPrDiff, PR_SCHEME, PrContentProvider, PrFileArgs } from './pullRequests/prFiles';
+import { CreatePullRequestPanel } from './pullRequests/createPrPanel';
+import { compareIterations } from './pullRequests/iterations';
+import { checkoutPullRequest, GIT_SCHEME, openPrDiff, PR_SCHEME, PrContentProvider, PrFileArgs } from './pullRequests/prFiles';
 import { PullRequestPanel } from './pullRequests/prPanel';
+import { PrStatusBar } from './pullRequests/prStatusBar';
 import { ReviewedFiles } from './pullRequests/reviewed';
+import { ReposPanel } from './repos/reposPanel';
 import { SidebarProvider } from './sidebar/sidebarProvider';
+import { openWiki, WIKI_SCHEME, WikiFileSystem } from './wiki/wiki';
 import { guarded } from './util';
-import { assignWorkItemToMe, changeWorkItemState, commentOnWorkItem, createBranchForWorkItem, createWorkItem } from './workItems/wiCommands';
+import {
+  assignWorkItemToMe, changeWorkItemState, commentOnWorkItem, createBranchForWorkItem, createWorkItem, createWorkItemFromCode, TodoCodeActions,
+} from './workItems/wiCommands';
 import { readWatchers, WatchEvent, Watchers, writeWatchers } from './watchers/watchers';
 import { WatchersPanel } from './watchers/watchersPanel';
 import { WatchersTree } from './watchers/watchersTree';
@@ -23,8 +31,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const sidebar = new SidebarProvider(client, connections, reviewed, context.extensionUri);
   const comments = new PrCommentController(client);
   const watchers = new Watchers(client, connections);
-  const refresh = () => sidebar.refresh();
+  const prStatus = new PrStatusBar(client, connections);
+  const logDocs = new LogDocumentProvider(client);
+  PullRequestPanel.useStore(context.globalState);
+  const refresh = () => {
+    sidebar.refresh();
+    prStatus.refresh();
+  };
 
+  /** Client for the project a sidebar item belongs to (passed as the last command argument when several are selected). */
+  const at = (project: unknown) => client.forProject(typeof project === 'string' && project ? project : undefined);
   const command = (id: string, fn: (...args: any[]) => Promise<unknown>) =>
     context.subscriptions.push(vscode.commands.registerCommand(id, guarded(fn)));
   /** Commands that change data on the server refresh the sidebar afterwards. */
@@ -41,9 +57,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     watchers,
     new WatchersTree(watchers),
     reviewed,
+    prStatus,
+    vscode.languages.registerCodeActionsProvider({ scheme: 'file' }, new TodoCodeActions(), { providedCodeActionKinds: TodoCodeActions.kinds }),
     vscode.window.registerWebviewViewProvider('azureDevOps.dashboard', sidebar, { webviewOptions: { retainContextWhenHidden: true } }),
     vscode.workspace.registerTextDocumentContentProvider(PR_SCHEME, new PrContentProvider(client)),
-    vscode.workspace.registerTextDocumentContentProvider(LOG_SCHEME, new LogDocumentProvider(client)),
+    vscode.workspace.registerTextDocumentContentProvider(GIT_SCHEME, new PrContentProvider(client)),
+    vscode.workspace.registerFileSystemProvider(WIKI_SCHEME, new WikiFileSystem(client), { isCaseSensitive: true }),
+    vscode.workspace.registerTextDocumentContentProvider(LOG_SCHEME, logDocs),
     connections.onDidChange(() => {
       client.reset();
       refresh();
@@ -75,7 +95,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   command('azureDevOps.setPat', async () => {
     const pat = await vscode.window.showInputBox({
       title: 'Azure DevOps Personal Access Token',
-      prompt: 'Scopes needed: Code (Read & Write), Work Items (Read & Write), Build (Read & Execute)',
+      prompt: 'Scopes: Code (Read & Write), Work Items (Read & Write), Build (Read & Execute), Wiki (Read & Write), Project and Team (Read), Identity (Read), Test Management (Read)',
       password: true,
       ignoreFocusOut: true,
     });
@@ -154,8 +174,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   command('azureDevOps.pr.openDiff', async (args: PrFileArgs) => openPrDiff(args));
   command('azureDevOps.pr.checkout', async (repoId: string, prId: number) =>
     checkoutPullRequest(await client.getPullRequest(repoId, prId)));
-  command('azureDevOps.pr.openInBrowser', async (repoName: string, prId: number) =>
-    vscode.env.openExternal(vscode.Uri.parse(client.webUrl('pr', repoName, prId))));
+  command('azureDevOps.pr.create', async (repoName?: string, source?: string) =>
+    CreatePullRequestPanel.show(client, connections, context.extensionUri,
+      { repoName: typeof repoName === 'string' ? repoName : undefined, source: typeof source === 'string' ? source : undefined }, refresh));
+  command('azureDevOps.pr.compareIterations', async (repoId: string, prId: number, base?: number, target?: number) =>
+    compareIterations(client, repoId, prId, base, target));
+  command('azureDevOps.pr.openInBrowser', async (repoName: string, prId: number, project?: string) =>
+    vscode.env.openExternal(vscode.Uri.parse(client.webUrl('pr', repoName, prId, at(project).connection.project))));
 
   // ----- work items -----
   command('azureDevOps.watchers.checkNow', () => watchers.checkNow());
@@ -188,14 +213,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       WorkItemPanel.show(client, context.extensionUri, Number(id.trim().replace(/^#/, '')), refresh);
     }
   });
-  command('azureDevOps.wi.openInBrowser', async (id: number) =>
-    vscode.env.openExternal(vscode.Uri.parse(client.webUrl('workItem', id))));
-  mutation('azureDevOps.wi.changeState', (id: number, type: string) => changeWorkItemState(client, id, type));
+  command('azureDevOps.wi.openInBrowser', async (id: number, project?: string) =>
+    vscode.env.openExternal(vscode.Uri.parse(client.webUrl('workItem', id, undefined, at(project).connection.project))));
+  mutation('azureDevOps.wi.changeState', (id: number, type: string, project?: string) => changeWorkItemState(at(project), id, type));
   mutation('azureDevOps.wi.assignToMe', async (id: number) => {
     await assignWorkItemToMe(client, id);
-    void vscode.window.setStatusBarMessage(`$(check) #${id} assigned to you`, 3000);
+    vscode.window.setStatusBarMessage(`$(check) #${id} assigned to you`, 3000);
   });
-  mutation('azureDevOps.wi.comment', (id: number) => commentOnWorkItem(client, id));
+  mutation('azureDevOps.wi.comment', (id: number, project?: string) => commentOnWorkItem(at(project), id));
   mutation('azureDevOps.wi.create', async () => {
     const id = await createWorkItem(client);
     if (id === undefined) {
@@ -203,42 +228,54 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     WorkItemPanel.show(client, context.extensionUri, id, refresh);
   });
-  command('azureDevOps.wi.createBranch', (id: number) => createBranchForWorkItem(client, id));
+  command('azureDevOps.wi.createBranch', (id: number) => createBranchForWorkItem(client, connections, id));
+  mutation('azureDevOps.wi.createFromCode', async (uri?: vscode.Uri, line?: number) =>
+    (await createWorkItemFromCode(client, connections, uri instanceof vscode.Uri ? uri : undefined, typeof line === 'number' ? line : undefined)) !== undefined);
+
+  // ----- repositories and wiki -----
+  command('azureDevOps.repos.open', async () => ReposPanel.show(client, connections, context.extensionUri, refresh));
+  command('azureDevOps.wiki.open', () => openWiki(client));
 
   // ----- pipelines -----
-  command('azureDevOps.pipelines.run', async (definitionId?: number) =>
-    RunPipelinePanel.show(client, context.extensionUri, definitionId, refresh));
-  mutation('azureDevOps.pipelines.rerun', async (definitionId: number, branch: string) => {
-    const def = await client.getDefinition(definitionId);
-    return queue(definitionId, def.name, branch);
+  command('azureDevOps.pipelines.run', async (definitionId?: number, project?: string) =>
+    RunPipelinePanel.show(at(project), context.extensionUri, typeof definitionId === 'number' ? definitionId : undefined, refresh));
+  mutation('azureDevOps.pipelines.rerun', async (definitionId: number, branch: string, project?: string) => {
+    const def = await at(project).getDefinition(definitionId);
+    return queue(at(project), definitionId, def.name, branch);
   });
-  mutation('azureDevOps.pipelines.cancel', async (buildId: number) => {
+  mutation('azureDevOps.pipelines.cancel', async (buildId: number, project?: string) => {
     const ok = await vscode.window.showWarningMessage(`Cancel run ${buildId}?`, { modal: true }, 'Cancel run');
     if (ok !== 'Cancel run') {
       return false;
     }
-    await client.cancelBuild(buildId);
+    await at(project).cancelBuild(buildId);
   });
-  command('azureDevOps.pipelines.openRun', async (buildId: number) =>
-    RunViewPanel.show(client, context.extensionUri, buildId, refresh));
-  command('azureDevOps.pipelines.streamLogs', async (buildId: number, title?: string) =>
-    BuildLogTerminal.show(client, buildId, title ?? `Build ${buildId}`));
-  command('azureDevOps.pipelines.openLog', async (buildId: number, logId: number, name: string) => {
-    const doc = await vscode.workspace.openTextDocument(makeLogUri(buildId, logId, name));
+  command('azureDevOps.pipelines.openRun', async (buildId: number, project?: string) =>
+    RunViewPanel.show(at(project), context.extensionUri, buildId, refresh));
+  command('azureDevOps.pipelines.streamLogs', async (buildId: number, title?: string, project?: string) =>
+    BuildLogTerminal.show(at(project), buildId, title ?? `Build ${buildId}`));
+  command('azureDevOps.pipelines.openLog', async (buildId: number, logId: number, name: string, project?: string) => {
+    const uri = makeLogUri(buildId, logId, name, at(project).connection.project);
+    if (vscode.workspace.textDocuments.some(d => d.uri.toString() === uri.toString())) {
+      logDocs.refresh(uri);
+    }
+    const doc = await vscode.workspace.openTextDocument(uri);
     await vscode.languages.setTextDocumentLanguage(doc, 'log');
     await vscode.window.showTextDocument(doc, { preview: true });
   });
-  command('azureDevOps.pipelines.openInBrowser', async (buildId: number) =>
-    vscode.env.openExternal(vscode.Uri.parse(client.webUrl('build', buildId))));
-  command('azureDevOps.pipelines.openDefinition', async (definitionId: number) =>
-    vscode.env.openExternal(vscode.Uri.parse(client.webUrl('definition', definitionId))));
+  mutation('azureDevOps.pipelines.approve', (approvalId: string, status?: 'approved' | 'rejected', project?: string) =>
+    answerApproval(at(project), approvalId, status === 'approved' || status === 'rejected' ? status : undefined));
+  command('azureDevOps.pipelines.openInBrowser', async (buildId: number, project?: string) =>
+    vscode.env.openExternal(vscode.Uri.parse(at(project).webUrl('build', buildId))));
+  command('azureDevOps.pipelines.openDefinition', async (definitionId: number, project?: string) =>
+    vscode.env.openExternal(vscode.Uri.parse(at(project).webUrl('definition', definitionId))));
 
-  async function queue(definitionId: number, name: string, branch: string): Promise<void> {
+  async function queue(api: AdoClient, definitionId: number, name: string, branch: string): Promise<void> {
     const ref = branch.startsWith('refs/') ? branch : `refs/heads/${branch}`;
-    const build = await client.queueBuild(definitionId, ref);
+    const build = await api.queueBuild(definitionId, ref);
     void vscode.window.showInformationMessage(`Queued ${name} #${build.buildNumber}.`, 'Stream logs').then(choice => {
       if (choice) {
-        BuildLogTerminal.show(client, build.id, `${name} #${build.buildNumber}`);
+        BuildLogTerminal.show(api, build.id, `${name} #${build.buildNumber}`);
       }
     });
   }

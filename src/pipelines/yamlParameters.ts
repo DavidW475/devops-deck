@@ -43,16 +43,13 @@ export function parsePipelineParameters(yaml: string): PipelineParameter[] {
       name: String(p.name),
       displayName: typeof p.displayName === 'string' ? p.displayName : undefined,
       type: typeof p.type === 'string' ? p.type : 'string',
-      default: p.default === undefined || p.default === null ? undefined : toParamText(p.default),
+      default: isNil(p.default) ? undefined : toParamText(p.default),
       values: Array.isArray(p.values) ? p.values.map(toParamText) : undefined,
     }));
   }
   // Legacy form: `parameters:` as a mapping of name → default.
   if (isRecord(value)) {
-    return Object.entries(value).map(([name, d]) => ({
-      name, type: typeof d === 'boolean' ? 'boolean' : typeof d === 'object' && d ? 'object' : 'string',
-      default: d === null ? undefined : toParamText(d),
-    }));
+    return Object.entries(value).map(([name, d]) => ({ name, type: legacyType(d), default: isNil(d) ? undefined : toParamText(d) }));
   }
   return [];
 }
@@ -60,9 +57,20 @@ export function parsePipelineParameters(yaml: string): PipelineParameter[] {
 type Value = string | boolean | null | Value[] | { [k: string]: Value };
 
 const isRecord = (v: unknown): v is Record<string, Value> => !!v && typeof v === 'object' && !Array.isArray(v);
+const isNil = (v: unknown): v is null | undefined => v === undefined || v === null;
+
+function legacyType(d: Value): string {
+  if (typeof d === 'boolean') {
+    return 'boolean';
+  }
+  return typeof d === 'object' && d ? 'object' : 'string';
+}
 
 function toParamText(v: Value): string {
-  return typeof v === 'string' ? v : typeof v === 'boolean' ? String(v) : JSON.stringify(v, null, 2);
+  if (typeof v === 'string') {
+    return v;
+  }
+  return typeof v === 'boolean' ? String(v) : JSON.stringify(v, null, 2);
 }
 
 function stripComment(line: string): string {
@@ -88,60 +96,109 @@ function parseBlock(lines: Line[], i: number, indent: number): [Value, number] {
   if (!first) {
     return [null, i];
   }
-  if (first.text === '-' || first.text.startsWith('- ')) {
-    const items: Value[] = [];
-    while (i < lines.length && lines[i].indent === indent && (lines[i].text === '-' || lines[i].text.startsWith('- '))) {
-      const rest = lines[i].text.slice(1).trimStart();
-      if (!rest) {
-        const [v, next] = i + 1 < lines.length && lines[i + 1].indent > indent ? parseBlock(lines, i + 1, lines[i + 1].indent) : [null, i + 1];
-        items.push(v);
-        i = next;
-        continue;
-      }
-      // "- key: value" opens a mapping whose further keys sit at the column after "- ".
-      const inner = indent + (lines[i].text.length - rest.length);
-      const copy = [...lines];
-      copy[i] = { indent: inner, text: rest };
-      const [v, next] = isKeyLine(rest) ? parseBlock(copy, i, inner) : [scalar(rest), i + 1];
-      items.push(v);
-      i = next;
-    }
-    return [items, i];
+  if (isListItem(first.text)) {
+    return parseList(lines, i, indent);
   }
   if (isKeyLine(first.text)) {
-    const map: Record<string, Value> = {};
-    while (i < lines.length && lines[i].indent === indent && isKeyLine(lines[i].text)) {
-      const m = /^("[^"]*"|'[^']*'|[^:]+?)\s*:(?:\s+(.*))?$/.exec(lines[i].text)!;
-      const key = unquote(m[1]);
-      const rest = (m[2] ?? '').trim();
-      const next = lines[i + 1];
-      if (/^[|>][-+]?$/.test(rest)) {
-        const body: string[] = [];
-        let j = i + 1;
-        while (j < lines.length && lines[j].indent > indent) {
-          body.push(' '.repeat(lines[j].indent) + lines[j].text);
-          j++;
-        }
-        const min = Math.min(...body.map(b => b.length - b.trimStart().length));
-        map[key] = body.map(b => b.slice(min)).join(rest.startsWith('>') ? ' ' : '\n');
-        i = j;
-      } else if (rest) {
-        map[key] = scalar(rest);
-        i++;
-      } else if (next && (next.indent > indent || (next.indent === indent && next.text.startsWith('-')))) {
-        [map[key], i] = parseBlock(lines, i + 1, next.indent);
-      } else {
-        map[key] = null;
-        i++;
-      }
-    }
-    return [map, i];
+    return parseMap(lines, i, indent);
   }
   return [scalar(first.text), i + 1];
 }
 
+const isListItem = (text: string) => text === '-' || text.startsWith('- ');
+
+function parseList(lines: Line[], start: number, indent: number): [Value, number] {
+  const items: Value[] = [];
+  let i = start;
+  while (i < lines.length && lines[i].indent === indent && isListItem(lines[i].text)) {
+    const [v, next] = parseListItem(lines, i, indent);
+    items.push(v);
+    i = next;
+  }
+  return [items, i];
+}
+
+function parseListItem(lines: Line[], i: number, indent: number): [Value, number] {
+  const rest = lines[i].text.slice(1).trimStart();
+  if (!rest) {
+    const next = lines[i + 1];
+    return next && next.indent > indent ? parseBlock(lines, i + 1, next.indent) : [null, i + 1];
+  }
+  if (!isKeyLine(rest)) {
+    return [scalar(rest), i + 1];
+  }
+  // "- key: value" opens a mapping whose further keys sit at the column after "- ".
+  const inner = indent + (lines[i].text.length - rest.length);
+  const copy = [...lines];
+  copy[i] = { indent: inner, text: rest };
+  return parseBlock(copy, i, inner);
+}
+
+function parseMap(lines: Line[], start: number, indent: number): [Value, number] {
+  const map: Record<string, Value> = {};
+  let i = start;
+  while (i < lines.length && lines[i].indent === indent && isKeyLine(lines[i].text)) {
+    const [key, rest] = splitKey(lines[i].text)!;
+    [map[key], i] = parseMapValue(lines, i, indent, rest);
+  }
+  return [map, i];
+}
+
+function parseMapValue(lines: Line[], i: number, indent: number, rest: string): [Value, number] {
+  if (/^[|>][-+]?$/.test(rest)) {
+    return blockScalar(lines, i, indent, rest.startsWith('>'));
+  }
+  if (rest) {
+    return [scalar(rest), i + 1];
+  }
+  const next = lines[i + 1];
+  if (next && (next.indent > indent || (next.indent === indent && next.text.startsWith('-')))) {
+    return parseBlock(lines, i + 1, next.indent);
+  }
+  return [null, i + 1];
+}
+
+/** "key: |" or "key: >" followed by more indented lines. */
+function blockScalar(lines: Line[], i: number, indent: number, folded: boolean): [Value, number] {
+  const body: string[] = [];
+  let j = i + 1;
+  while (j < lines.length && lines[j].indent > indent) {
+    body.push(' '.repeat(lines[j].indent) + lines[j].text);
+    j++;
+  }
+  const min = Math.min(...body.map(b => b.length - b.trimStart().length));
+  return [body.map(b => b.slice(min)).join(folded ? ' ' : '\n'), j];
+}
+
+const isSpace = (c: string | undefined) => c === ' ' || c === '\t';
+
+/** "key: rest" → [key, rest]; undefined when the line is not a mapping entry. A scanner, no backtracking regex. */
+function splitKey(text: string): [string, string] | undefined {
+  let colon: number;
+  const q = text[0];
+  if (q === '"' || q === "'") {
+    const close = text.indexOf(q, 1);
+    colon = close + 1;
+    while (close > 0 && isSpace(text[colon])) {
+      colon++;
+    }
+    if (close < 0 || text[colon] !== ':') {
+      return undefined;
+    }
+  } else {
+    colon = text.indexOf(':');
+    if (colon < 1 || isSpace(q) || q === '[' || q === '{') {
+      return undefined;
+    }
+  }
+  if (colon + 1 < text.length && !isSpace(text[colon + 1])) {
+    return undefined;
+  }
+  return [unquote(text.slice(0, colon)), text.slice(colon + 1).trim()];
+}
+
 function isKeyLine(text: string): boolean {
-  return /^("[^"]*"|'[^']*'|[^\s"'[{][^:]*?)\s*:(\s|$)/.test(text);
+  return splitKey(text) !== undefined;
 }
 
 function unquote(s: string): string {
@@ -154,26 +211,28 @@ function unquote(s: string): string {
 
 function scalar(s: string): Value {
   const t = s.trim();
+  let value: Value = unquote(t);
   if (t.startsWith('[') && t.endsWith(']')) {
-    return splitFlow(t.slice(1, -1)).map(scalar);
+    value = splitFlow(t.slice(1, -1)).map(scalar);
+  } else if (t.startsWith('{') && t.endsWith('}')) {
+    value = flowMap(t.slice(1, -1));
+  } else if (/^(true|false)$/i.test(t)) {
+    value = t.toLowerCase() === 'true';
+  } else if (t === '~' || t === 'null' || t === '') {
+    value = null;
   }
-  if (t.startsWith('{') && t.endsWith('}')) {
-    const map: Record<string, Value> = {};
-    for (const part of splitFlow(t.slice(1, -1))) {
-      const idx = part.indexOf(':');
-      if (idx > 0) {
-        map[unquote(part.slice(0, idx))] = scalar(part.slice(idx + 1));
-      }
+  return value;
+}
+
+function flowMap(content: string): Value {
+  const map: Record<string, Value> = {};
+  for (const part of splitFlow(content)) {
+    const idx = part.indexOf(':');
+    if (idx > 0) {
+      map[unquote(part.slice(0, idx))] = scalar(part.slice(idx + 1));
     }
-    return map;
   }
-  if (/^(true|false)$/i.test(t)) {
-    return t.toLowerCase() === 'true';
-  }
-  if (t === '~' || t === 'null' || t === '') {
-    return null;
-  }
-  return unquote(t);
+  return map;
 }
 
 /** Splits flow-collection content on top-level commas. */

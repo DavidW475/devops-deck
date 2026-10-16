@@ -12,7 +12,9 @@ export class RunPipelinePanel {
 
   static show(client: AdoClient, extensionUri: vscode.Uri, definitionId: number | undefined, onQueued: () => void): void {
     const existing = RunPipelinePanel.current;
-    if (existing) {
+    if (existing && existing.client !== client) {
+      existing.panel.dispose(); // another project
+    } else if (existing) {
       existing.panel.reveal();
       if (definitionId !== undefined) {
         void existing.selectDefinition(definitionId);
@@ -143,8 +145,8 @@ export class RunPipelinePanel {
     }
     this.panel.dispose();
     this.onQueued();
-    void vscode.window.setStatusBarMessage(`$(play) Queued ${def.name} #${number}`, 4000);
-    await vscode.commands.executeCommand('azureDevOps.pipelines.openRun', buildId);
+    vscode.window.setStatusBarMessage(`$(play) Queued ${def.name} #${number}`, 4000);
+    await vscode.commands.executeCommand('azureDevOps.pipelines.openRun', buildId, this.client.connection.project);
   }
 }
 

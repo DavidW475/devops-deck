@@ -1,8 +1,9 @@
 import * as vscode from 'vscode';
 import { AdoClient, AdoError } from '../client';
 import { ConnectionManager } from '../connection';
-import { IdentityRef, PullRequest, WorkItem } from '../types';
+import { Build, IdentityRef, PullRequest, WorkItem, WorkItemUpdate } from '../types';
 import { errorMessage, shortRef, VOTE_LABELS } from '../util';
+import { stripTags } from '../workItems/wiModel';
 
 type CommandAction = { command: string; args?: unknown[] };
 type Action = 'notify' | 'open' | 'browser' | CommandAction;
@@ -38,14 +39,27 @@ export interface PullRequestWatcherConfig extends BaseConfig {
   includeDrafts?: boolean;
 }
 
-export type WatcherConfig = WorkItemWatcherConfig | PullRequestWatcherConfig;
+export interface PipelineWatcherConfig extends BaseConfig {
+  type: 'pipeline';
+  events?: PipelineEventKind[];
+  /** pipeline name(s); `*` is a wildcard */
+  pipeline?: string | string[];
+  /** branch, e.g. "main" or "release/*" */
+  branch?: string;
+  /** who started the run: "@me", a display name or an e-mail */
+  requestedBy?: string;
+}
+
+export type WatcherConfig = WorkItemWatcherConfig | PullRequestWatcherConfig | PipelineWatcherConfig;
 type PrEventKind = 'created' | 'pushed' | 'voted' | 'completed' | 'abandoned';
+type PipelineEventKind = 'failed' | 'succeeded' | 'canceled' | 'started';
+const WATCHER_TYPES = new Set(['workItem', 'pullRequest', 'pipeline']);
 
 export interface WatchEvent {
   watcher: string;
   message: string;
   time: number;
-  kind: 'workItem' | 'pullRequest';
+  kind: 'workItem' | 'pullRequest' | 'pipeline';
   id: number;
   title: string;
   url: string;
@@ -86,7 +100,7 @@ function fieldText(v: unknown): string {
   if (typeof v === 'object' && 'displayName' in (v as object)) {
     return String((v as IdentityRef).displayName);
   }
-  const s = String(v).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  const s = stripTags(String(v)).replace(/\s+/g, ' ').trim();
   return s.length > 40 ? s.slice(0, 39) + '…' : s;
 }
 
@@ -105,10 +119,37 @@ export async function writeWatchers(list: WatcherConfig[]): Promise<void> {
   await vscode.workspace.getConfiguration('azureDevOps').update('watchers', list, watchersTarget());
 }
 
+const DEFAULT_EVENTS: Record<WatcherConfig['type'], string[]> = { workItem: ['created', 'changed'], pullRequest: ['created'], pipeline: ['failed'] };
+const TYPE_LABEL: Record<WatcherConfig['type'], string> = { workItem: 'Work items', pullRequest: 'Pull requests', pipeline: 'Pipelines' };
+
+export function eventsOf(w: WatcherConfig): string[] {
+  return w.events?.length ? w.events : DEFAULT_EVENTS[w.type] ?? [];
+}
+
 /** One-line description, e.g. "Pull requests · created, voted · every 5 min". */
 export function watcherSummary(w: WatcherConfig): string {
-  const events = w.events?.length ? w.events : w.type === 'pullRequest' ? ['created'] : ['created', 'changed'];
-  return `${w.type === 'pullRequest' ? 'Pull requests' : 'Work items'} · ${events.join(', ')} · every ${Math.round(intervalOf(w) / 60000)} min`;
+  return `${TYPE_LABEL[w.type] ?? w.type} · ${eventsOf(w).join(', ')} · every ${Math.round(intervalOf(w) / 60000)} min`;
+}
+
+/** Whether a pipeline run passes a watcher's filters. */
+export function matchesBuild(c: PipelineWatcherConfig, b: Build, me: IdentityRef): boolean {
+  const names = typeof c.pipeline === 'string' ? [c.pipeline] : c.pipeline ?? [];
+  return (!names.length || names.some(n => glob(n, b.definition.name)))
+    && (!c.branch || glob(c.branch, shortRef(b.sourceBranch)))
+    && (!c.requestedBy || isPerson(b.requestedFor, c.requestedBy, me));
+}
+
+/** Which event a run is: started, or by its result once finished (partially succeeded counts as failed). */
+export function buildEvent(b: Build): PipelineEventKind | undefined {
+  if (b.status !== 'completed') {
+    return b.startTime ? 'started' : undefined;
+  }
+  switch (b.result) {
+    case 'succeeded': return 'succeeded';
+    case 'failed': case 'partiallySucceeded': return 'failed';
+    case 'canceled': return 'canceled';
+    default: return undefined;
+  }
 }
 
 /** Whether a pull request passes a watcher's filters. */
@@ -146,6 +187,12 @@ export class Watchers implements vscode.Disposable {
   private running = false;
   private me?: IdentityRef;
   private prSnapshot?: Map<number, PullRequest>;
+  /** pipelines: start of the next query window; undefined until the first (silent) baseline run */
+  private buildsSince?: number;
+  /** pipelines: time of the silent baseline check */
+  private buildsBaseline?: number;
+  /** pipelines: "<buildId>:<event>" already reported (the query windows overlap) */
+  private readonly buildSeen = new Set<string>();
   private readonly history: WatchEvent[] = [];
   private readonly changed = new vscode.EventEmitter<void>();
   /** Fires when the configuration, the events or the status change. */
@@ -178,9 +225,12 @@ export class Watchers implements vscode.Disposable {
   /** (Re)reads the configuration; every watcher starts with a silent baseline so old changes do not flood in. */
   private load(): void {
     const configs = vscode.workspace.getConfiguration('azureDevOps').get<WatcherConfig[]>('watchers', [])
-      .filter(c => c && c.name && (c.type === 'workItem' || c.type === 'pullRequest') && c.enabled !== false);
+      .filter(c => c?.name && WATCHER_TYPES.has(c.type) && c.enabled !== false);
     this.states = configs.map(config => ({ config, nextRun: 0, revs: new Map(), queue: [] }));
     this.prSnapshot = undefined;
+    this.buildsSince = undefined;
+    this.buildsBaseline = undefined;
+    this.buildSeen.clear();
     this.me = undefined;
     this.lastError = undefined;
     this.renderStatus();
@@ -195,7 +245,7 @@ export class Watchers implements vscode.Disposable {
     if (this.lastError) {
       void vscode.window.showWarningMessage(`Watchers: ${this.lastError}`);
     } else {
-      void vscode.window.setStatusBarMessage(`$(eye) Watchers checked: ${this.states.length} active`, 3000);
+      vscode.window.setStatusBarMessage(`$(eye) Watchers checked: ${this.states.length} active`, 3000);
     }
   }
 
@@ -204,8 +254,10 @@ export class Watchers implements vscode.Disposable {
   }
 
   get statusText(): string {
-    return this.lastError ? `Last check failed: ${this.lastError}`
-      : this.lastCheck ? `Last check: ${new Date(this.lastCheck).toLocaleTimeString()}` : 'Not checked yet';
+    if (this.lastError) {
+      return `Last check failed: ${this.lastError}`;
+    }
+    return this.lastCheck ? `Last check: ${new Date(this.lastCheck).toLocaleTimeString()}` : 'Not checked yet';
   }
 
   /** Recent events of one watcher, newest first. */
@@ -246,6 +298,9 @@ export class Watchers implements vscode.Disposable {
   }
 
   open(e: WatchEvent): Thenable<unknown> {
+    if (e.kind === 'pipeline') {
+      return vscode.commands.executeCommand('azureDevOps.pipelines.openRun', e.id);
+    }
     return e.kind === 'workItem'
       ? vscode.commands.executeCommand('azureDevOps.wi.open', e.id)
       : vscode.commands.executeCommand('azureDevOps.pr.openOverview', e.repoId, e.id);
@@ -257,7 +312,12 @@ export class Watchers implements vscode.Disposable {
       this.status.hide();
       return;
     }
-    this.status.text = this.lastError ? '$(warning) Watchers' : this.unseen ? `$(bell-dot) ${this.unseen}` : '$(eye)';
+    this.status.text = '$(eye)';
+    if (this.lastError) {
+      this.status.text = '$(warning) Watchers';
+    } else if (this.unseen) {
+      this.status.text = `$(bell-dot) ${this.unseen}`;
+    }
     this.status.tooltip = `DevOps Deck: ${this.states.length} watcher${this.states.length === 1 ? '' : 's'} active`
       + (this.lastCheck ? `\nLast check: ${new Date(this.lastCheck).toLocaleTimeString()}` : '')
       + (this.lastError ? `\nLast error: ${this.lastError}` : '')
@@ -274,23 +334,15 @@ export class Watchers implements vscode.Disposable {
       return;
     }
     this.running = true;
-    const states = this.states;
     try {
       this.me ??= await this.client.getMe();
       if (due.some(s => s.config.type === 'pullRequest')) {
         await this.pollPullRequests();
       }
-      for (const s of due) {
-        if (states !== this.states) {
-          return; // configuration changed meanwhile
-        }
-        s.nextRun = Date.now() + intervalOf(s.config);
-        const events = s.config.type === 'workItem' ? await this.pollWorkItems(s, s.config) : s.queue.splice(0);
-        if (events.length) {
-          this.output.info(`${s.config.name}: ${events.length} event(s)`);
-          await this.dispatch(s.config, events);
-        }
+      if (due.some(s => s.config.type === 'pipeline')) {
+        await this.pollPipelines();
       }
+      await this.runDue(due, this.states);
       this.lastError = undefined;
       this.lastCheck = Date.now();
     } catch (e) {
@@ -306,8 +358,22 @@ export class Watchers implements vscode.Disposable {
     }
   }
 
+  /** Collects each due watcher's events (work items query now, the others were queued) and runs its actions. */
+  private async runDue(due: WatcherState[], states: WatcherState[]): Promise<void> {
+    for (const s of due) {
+      if (states !== this.states) {
+        return; // configuration changed meanwhile
+      }
+      s.nextRun = Date.now() + intervalOf(s.config);
+      const events = s.config.type === 'workItem' ? await this.pollWorkItems(s, s.config) : s.queue.splice(0);
+      if (events.length) {
+        this.output.info(`${s.config.name}: ${events.length} event(s)`);
+        await this.dispatch(s.config, events);
+      }
+    }
+  }
+
   private async pollWorkItems(s: WatcherState, c: WorkItemWatcherConfig): Promise<WatchEvent[]> {
-    const me = this.me!;
     const baseline = s.since === undefined;
     const since = s.since ?? Date.now();
     const from = new Date(since - OVERLAP_MS).toISOString();
@@ -321,29 +387,37 @@ export class Watchers implements vscode.Disposable {
     }
     const items = await this.client.getWorkItems(ids, ['System.CreatedDate', 'System.CreatedBy', 'System.ChangedBy']);
     const events: WatchEvent[] = [];
-    const kinds = c.events?.length ? c.events : ['created', 'changed'];
     for (const w of items) {
       const known = s.revs.get(w.id);
       s.revs.set(w.id, w.rev);
-      if (baseline || (known !== undefined && known >= w.rev)) {
-        continue;
-      }
-      const f = w.fields;
-      const created = known === undefined && new Date(f['System.CreatedDate']).getTime() > since - OVERLAP_MS;
-      const by: IdentityRef | undefined = created ? f['System.CreatedBy'] : f['System.ChangedBy'];
-      if (c.ignoreOwnChanges !== false && by?.id === me.id) {
-        continue;
-      }
-      if (created && kinds.includes('created')) {
-        events.push(this.wiEvent(c, w, `${f['System.WorkItemType']} #${w.id} created${by ? ` by ${by.displayName}` : ''}`));
-      } else if (!created && kinds.includes('changed')) {
-        const detail = await this.changedFields(w, known, since, c.fields);
-        if (detail !== undefined) {
-          events.push(this.wiEvent(c, w, `${f['System.WorkItemType']} #${w.id} changed${detail}${by ? ` by ${by.displayName}` : ''}`));
+      if (!baseline && (known === undefined || known < w.rev)) {
+        const e = await this.workItemEvent(c, w, known, since);
+        if (e) {
+          events.push(e);
         }
       }
     }
     return events;
+  }
+
+  /** The event for a new revision of a work item, if the watcher reports it. */
+  private async workItemEvent(c: WorkItemWatcherConfig, w: WorkItem, known: number | undefined, since: number): Promise<WatchEvent | undefined> {
+    const f = w.fields;
+    const kinds = c.events?.length ? c.events : ['created', 'changed'];
+    const created = known === undefined && new Date(f['System.CreatedDate']).getTime() > since - OVERLAP_MS;
+    const by: IdentityRef | undefined = created ? f['System.CreatedBy'] : f['System.ChangedBy'];
+    if (c.ignoreOwnChanges !== false && by?.id === this.me!.id) {
+      return undefined;
+    }
+    const byText = by ? ` by ${by.displayName}` : '';
+    if (created) {
+      return kinds.includes('created') ? this.wiEvent(c, w, `${f['System.WorkItemType']} #${w.id} created${byText}`) : undefined;
+    }
+    if (!kinds.includes('changed')) {
+      return undefined;
+    }
+    const detail = await this.changedFields(w, known, since, c.fields);
+    return detail === undefined ? undefined : this.wiEvent(c, w, `${f['System.WorkItemType']} #${w.id} changed${detail}${byText}`);
   }
 
   /**
@@ -356,10 +430,15 @@ export class Watchers implements vscode.Disposable {
     }
     const updates = await this.client.getWorkItemUpdates(w.id, w.rev);
     const changes = new Map<string, { from: unknown; to: unknown }>();
-    for (const u of updates) {
+    const isNew = (u: WorkItemUpdate) => {
+      if (knownRev !== undefined) {
+        return u.rev > knownRev;
+      }
       const changedAt = u.fields?.['System.ChangedDate']?.newValue;
-      const isNew = knownRev !== undefined ? u.rev > knownRev : !!changedAt && new Date(String(changedAt)).getTime() > since - OVERLAP_MS;
-      for (const [name, v] of Object.entries(isNew ? u.fields ?? {} : {})) {
+      return !!changedAt && new Date(String(changedAt)).getTime() > since - OVERLAP_MS;
+    };
+    for (const u of updates.filter(isNew)) {
+      for (const [name, v] of Object.entries(u.fields ?? {})) {
         if (fields.includes(name)) {
           changes.set(name, { from: changes.get(name)?.from ?? v.oldValue, to: v.newValue });
         }
@@ -378,7 +457,6 @@ export class Watchers implements vscode.Disposable {
 
   /** One request for all pull request watchers; changes are queued on every watcher whose filter matches. */
   private async pollPullRequests(): Promise<void> {
-    const prWatchers = this.states.filter((s): s is WatcherState & { config: PullRequestWatcherConfig } => s.config.type === 'pullRequest');
     const active = await this.client.listActivePullRequests(1000);
     const current = new Map(active.map(pr => [pr.pullRequestId, pr]));
     const previous = this.prSnapshot;
@@ -386,44 +464,67 @@ export class Watchers implements vscode.Disposable {
     if (!previous) {
       return; // baseline
     }
-    const me = this.me!;
-    const changes: { pr: PullRequest; kind: PrEventKind; text: string; actor?: IdentityRef }[] = [];
-    for (const pr of active) {
-      const old = previous.get(pr.pullRequestId);
-      if (!old) {
-        changes.push({ pr, kind: 'created', text: `New PR !${pr.pullRequestId} in ${pr.repository.name} by ${pr.createdBy.displayName}`, actor: pr.createdBy });
-        continue;
-      }
-      if (old.lastMergeSourceCommit?.commitId && pr.lastMergeSourceCommit?.commitId !== old.lastMergeSourceCommit.commitId) {
-        changes.push({ pr, kind: 'pushed', text: `PR !${pr.pullRequestId} has new changes` });
-      }
-      for (const r of pr.reviewers) {
-        const before = old.reviewers.find(x => x.id === r.id)?.vote ?? 0;
-        if (r.vote !== before && r.vote !== 0) {
-          changes.push({ pr, kind: 'voted', text: `${r.displayName}: ${VOTE_LABELS[String(r.vote)] ?? r.vote} on PR !${pr.pullRequestId}`, actor: r });
-        }
-      }
-    }
+    const changes = active.flatMap(pr => prChanges(pr, previous.get(pr.pullRequestId)));
     // PRs that left the active list were completed or abandoned; a full list may just have been cut off.
     const gone = active.length < 1000 ? [...previous.values()].filter(pr => !current.has(pr.pullRequestId)).slice(0, 20) : [];
     for (const old of gone) {
       const pr = await this.client.getPullRequest(old.repository.id, old.pullRequestId).catch(() => undefined);
       if (pr?.status === 'completed' || pr?.status === 'abandoned') {
-        changes.push({ pr, kind: pr.status, text: `PR !${pr.pullRequestId} ${pr.status}${pr.closedBy ? ` by ${pr.closedBy.displayName}` : ''}`, actor: pr.closedBy });
+        const by = pr.closedBy ? ` by ${pr.closedBy.displayName}` : '';
+        changes.push({ pr, kind: pr.status, text: `PR !${pr.pullRequestId} ${pr.status}${by}`, actor: pr.closedBy });
       }
     }
+    const me = this.me!;
+    const prWatchers = this.states.filter((s): s is WatcherState & { config: PullRequestWatcherConfig } => s.config.type === 'pullRequest');
     for (const ch of changes) {
-      for (const s of prWatchers) {
-        const c = s.config;
-        const kinds = c.events?.length ? c.events : ['created'];
-        if (!kinds.includes(ch.kind) || !matchesPullRequest(c, ch.pr, me) || (c.ignoreOwnChanges !== false && ch.actor?.id === me.id)) {
-          continue;
-        }
+      for (const s of prWatchers.filter(w => wantsPrChange(w.config, ch, me))) {
         s.queue.push({
-          watcher: c.name, kind: 'pullRequest', id: ch.pr.pullRequestId, repoId: ch.pr.repository.id, title: ch.pr.title,
+          watcher: s.config.name, kind: 'pullRequest', id: ch.pr.pullRequestId, repoId: ch.pr.repository.id, title: ch.pr.title,
           url: this.client.webUrl('pr', ch.pr.repository.name, ch.pr.pullRequestId), time: Date.now(), message: `${ch.text}: ${ch.pr.title}`,
         });
       }
+    }
+  }
+
+  /**
+   * One or two requests for all pipeline watchers: runs finished (and, if a watcher wants it, started) since the
+   * last check. Events are queued on every matching watcher.
+   */
+  private async pollPipelines(): Promise<void> {
+    const watchers = this.states.filter((s): s is WatcherState & { config: PipelineWatcherConfig } => s.config.type === 'pipeline');
+    const since = this.buildsSince;
+    const now = Date.now();
+    if (since === undefined) {
+      this.buildsSince = now;
+      this.buildsBaseline = now;
+      return; // baseline: report only what happens from now on
+    }
+    // Overlap with the previous window against clock skew, but never reach back before the baseline.
+    const from = new Date(since === this.buildsBaseline ? since : since - OVERLAP_MS);
+    const wantsStarted = watchers.some(w => eventsOf(w.config).includes('started'));
+    const [finished, started] = await Promise.all([
+      this.client.listBuildsSince(from, 'finished'),
+      wantsStarted ? this.client.listBuildsSince(from, 'started') : Promise.resolve([] as Build[]),
+    ]);
+    // Only a successful check moves the window on, so a failed one loses nothing.
+    this.buildsSince = now;
+    const me = this.me!;
+    for (const b of [...started.filter(x => x.status !== 'completed'), ...finished]) {
+      const kind = buildEvent(b);
+      if (!kind || this.buildSeen.has(`${b.id}:${kind}`)) {
+        continue;
+      }
+      this.buildSeen.add(`${b.id}:${kind}`);
+      for (const s of watchers.filter(w => wantsBuild(w.config, b, kind, me))) {
+        s.queue.push({
+          watcher: s.config.name, kind: 'pipeline', id: b.id, title: `${b.definition.name} #${b.buildNumber}`,
+          url: this.client.webUrl('build', b.id), time: Date.now(), message: buildMessage(b, kind),
+        });
+      }
+    }
+    // Keep the memory of reported runs small; old ones fall out of the query window anyway.
+    if (this.buildSeen.size > 2000) {
+      [...this.buildSeen].slice(0, 1000).forEach(k => this.buildSeen.delete(k));
     }
   }
 
@@ -433,23 +534,27 @@ export class Watchers implements vscode.Disposable {
     this.history.push(...events);
     this.history.splice(0, Math.max(0, this.history.length - HISTORY));
     this.unseen += events.length;
-    const actions = c.actions?.length ? c.actions : ['notify'];
+    const actions: Action[] = c.actions?.length ? c.actions : ['notify'];
     for (const a of actions) {
-      if (a === 'notify') {
-        this.notify(c, events);
-      } else if (a === 'open') {
-        for (const e of events.slice(0, MAX_SINGLE_NOTIFICATIONS)) {
-          await this.open(e);
-        }
-      } else if (a === 'browser') {
-        for (const e of events.slice(0, MAX_SINGLE_NOTIFICATIONS)) {
-          await vscode.env.openExternal(vscode.Uri.parse(e.url));
-        }
-      } else if (a && typeof a === 'object' && typeof a.command === 'string') {
-        for (const e of events) {
-          await Promise.resolve(vscode.commands.executeCommand(a.command, ...(a.args ?? []).map(arg => fill(arg, e))))
-            .catch(err => this.output.error(`${c.name}: command ${a.command} failed: ${errorMessage(err)}`));
-        }
+      await this.runAction(c, a, events);
+    }
+  }
+
+  private async runAction(c: WatcherConfig, a: Action, events: WatchEvent[]): Promise<void> {
+    if (a === 'notify') {
+      this.notify(c, events);
+      return;
+    }
+    if (a === 'open' || a === 'browser') {
+      for (const e of events.slice(0, MAX_SINGLE_NOTIFICATIONS)) {
+        await (a === 'open' ? this.open(e) : vscode.env.openExternal(vscode.Uri.parse(e.url)));
+      }
+      return;
+    }
+    if (a && typeof a === 'object' && typeof a.command === 'string') {
+      for (const e of events) {
+        await Promise.resolve(vscode.commands.executeCommand(a.command, ...(a.args ?? []).map(arg => fill(arg, e))))
+          .catch(err => this.output.error(`${c.name}: command ${a.command} failed: ${errorMessage(err)}`));
       }
     }
   }
@@ -487,4 +592,41 @@ function fill(arg: unknown, e: WatchEvent): unknown {
     return Object.fromEntries(Object.entries(arg).map(([k, v]) => [k, fill(v, e)]));
   }
   return arg;
+}
+
+type PrChange = { pr: PullRequest; kind: PrEventKind; text: string; actor?: IdentityRef };
+
+/** What changed on an active pull request since the previous check. */
+function prChanges(pr: PullRequest, old: PullRequest | undefined): PrChange[] {
+  if (!old) {
+    return [{ pr, kind: 'created', text: `New PR !${pr.pullRequestId} in ${pr.repository.name} by ${pr.createdBy.displayName}`, actor: pr.createdBy }];
+  }
+  const out: PrChange[] = [];
+  if (old.lastMergeSourceCommit?.commitId && pr.lastMergeSourceCommit?.commitId !== old.lastMergeSourceCommit.commitId) {
+    out.push({ pr, kind: 'pushed', text: `PR !${pr.pullRequestId} has new changes` });
+  }
+  for (const r of pr.reviewers) {
+    const before = old.reviewers.find(x => x.id === r.id)?.vote ?? 0;
+    if (r.vote !== before && r.vote !== 0) {
+      out.push({ pr, kind: 'voted', text: `${r.displayName}: ${VOTE_LABELS[String(r.vote)] ?? r.vote} on PR !${pr.pullRequestId}`, actor: r });
+    }
+  }
+  return out;
+}
+
+function wantsPrChange(c: PullRequestWatcherConfig, ch: PrChange, me: IdentityRef): boolean {
+  const kinds = c.events?.length ? c.events : ['created'];
+  return kinds.includes(ch.kind) && matchesPullRequest(c, ch.pr, me) && !(c.ignoreOwnChanges !== false && ch.actor?.id === me.id);
+}
+
+/** Pipeline watchers report own runs too, unless ignoreOwnChanges is set explicitly. */
+function wantsBuild(c: PipelineWatcherConfig, b: Build, kind: PipelineEventKind, me: IdentityRef): boolean {
+  return eventsOf(c).includes(kind) && matchesBuild(c, b, me) && !(c.ignoreOwnChanges === true && b.requestedFor?.id === me.id);
+}
+
+const BUILD_VERB: Record<PipelineEventKind, string> = { started: 'started', canceled: 'was canceled', succeeded: 'succeeded', failed: 'failed' };
+
+function buildMessage(b: Build, kind: PipelineEventKind): string {
+  const who = b.requestedFor ? ` (${b.requestedFor.displayName})` : '';
+  return `${b.definition.name} #${b.buildNumber} ${BUILD_VERB[kind]} on ${shortRef(b.sourceBranch)}${who}`;
 }

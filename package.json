@@ -1,7 +1,7 @@
 {
   "name": "devops-deck",
   "displayName": "DevOps Deck for Azure DevOps",
-  "description": "Review pull requests, manage work items and watch pipelines (with live logs) from inside VS Code.",
+  "description": "Review and create pull requests, plan sprints, manage work items, watch pipelines with live logs, approve deployments and browse the wiki from inside VS Code.",
   "version": "0.1.0",
   "publisher": "davidw475",
   "license": "MIT",
@@ -24,6 +24,7 @@
       "restrictedConfigurations": [
         "azureDevOps.organization",
         "azureDevOps.project",
+        "azureDevOps.additionalProjects",
         "azureDevOps.tenantId",
         "azureDevOps.workItems.queries",
         "azureDevOps.watchers"
@@ -39,7 +40,10 @@
     "pull request",
     "work items",
     "pipelines",
-    "code review"
+    "code review",
+    "sprint",
+    "wiki",
+    "approvals"
   ],
   "main": "./out/extension.js",
   "activationEvents": [
@@ -304,6 +308,39 @@
         "command": "azureDevOps.pipelines.openDefinition",
         "title": "Open Pipeline in Browser",
         "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.pr.create",
+        "title": "Create Pull Request",
+        "category": "DevOps Deck",
+        "icon": "$(git-pull-request-create)"
+      },
+      {
+        "command": "azureDevOps.pr.compareIterations",
+        "title": "Compare Pull Request Updates",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.wi.createFromCode",
+        "title": "Create Work Item from Code",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.pipelines.approve",
+        "title": "Approve or Reject Pipeline Stage",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.repos.open",
+        "title": "Repositories and Branches",
+        "category": "DevOps Deck",
+        "icon": "$(repo)"
+      },
+      {
+        "command": "azureDevOps.wiki.open",
+        "title": "Open Wiki Page",
+        "category": "DevOps Deck",
+        "icon": "$(book)"
       }
     ],
     "keybindings": [
@@ -356,6 +393,21 @@
           "command": "azureDevOps.watchers.showEvents",
           "when": "view == azureDevOps.watchers",
           "group": "more@1"
+        },
+        {
+          "command": "azureDevOps.pr.create",
+          "when": "view == azureDevOps.dashboard",
+          "group": "more@1"
+        },
+        {
+          "command": "azureDevOps.repos.open",
+          "when": "view == azureDevOps.dashboard",
+          "group": "more@2"
+        },
+        {
+          "command": "azureDevOps.wiki.open",
+          "when": "view == azureDevOps.dashboard",
+          "group": "more@3"
         }
       ],
       "comments/commentThread/context": [
@@ -375,6 +427,11 @@
           "command": "azureDevOps.pr.suggestChange",
           "when": "resourceScheme == ado-pr",
           "group": "1_ado@2"
+        },
+        {
+          "command": "azureDevOps.wi.createFromCode",
+          "when": "resourceScheme == file",
+          "group": "1_ado@3"
         }
       ],
       "editor/title": [
@@ -567,6 +624,18 @@
         {
           "command": "azureDevOps.watchers.openEvent",
           "when": "false"
+        },
+        {
+          "command": "azureDevOps.pr.compareIterations",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.pipelines.approve",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.wi.createFromCode",
+          "when": "editorIsOpen"
         }
       ],
       "view/item/context": [
@@ -620,6 +689,15 @@
           "default": "",
           "description": "Project name. Leave empty to detect it from the git remote."
         },
+        "azureDevOps.additionalProjects": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "uniqueItems": true,
+          "markdownDescription": "More projects of the same organization to show in the dashboard next to `azureDevOps.project`. Pull requests, work items, sprints, pipelines and approvals of all of them are listed together. Easiest to set by ticking projects in the project picker."
+        },
         "azureDevOps.authMethod": {
           "type": "string",
           "enum": [
@@ -667,7 +745,7 @@
         "azureDevOps.watchers": {
           "type": "array",
           "default": [],
-          "markdownDescription": "Watchers check Azure DevOps in the background and run actions when work items or pull requests change. See the README for examples.",
+          "markdownDescription": "Watchers check Azure DevOps in the background and run actions when work items, pull requests or pipeline runs change. See the README for examples.",
           "items": {
             "type": "object",
             "required": [
@@ -683,7 +761,8 @@
                 "type": "string",
                 "enum": [
                   "workItem",
-                  "pullRequest"
+                  "pullRequest",
+                  "pipeline"
                 ]
               },
               "enabled": {
@@ -707,10 +786,14 @@
                     "pushed",
                     "voted",
                     "completed",
-                    "abandoned"
+                    "abandoned",
+                    "failed",
+                    "succeeded",
+                    "canceled",
+                    "started"
                   ]
                 },
-                "markdownDescription": "Work items: `created`, `changed` (default both). Pull requests: `created` (default), `pushed`, `voted`, `completed`, `abandoned`."
+                "markdownDescription": "Work items: `created`, `changed` (default both). Pull requests: `created` (default), `pushed`, `voted`, `completed`, `abandoned`. Pipelines: `failed` (default, includes partially succeeded), `succeeded`, `canceled`, `started`."
               },
               "where": {
                 "type": "string",
@@ -758,10 +841,27 @@
                 "default": true,
                 "description": "Pull requests: also report drafts"
               },
+              "pipeline": {
+                "type": [
+                  "string",
+                  "array"
+                ],
+                "items": {
+                  "type": "string"
+                },
+                "markdownDescription": "Pipelines: pipeline name(s), `*` as wildcard"
+              },
+              "branch": {
+                "type": "string",
+                "markdownDescription": "Pipelines: branch of the run, `*` as wildcard, e.g. `main` or `release/*`"
+              },
+              "requestedBy": {
+                "type": "string",
+                "markdownDescription": "Pipelines: who started the run, `@me` or a display name / e-mail"
+              },
               "ignoreOwnChanges": {
                 "type": "boolean",
-                "default": true,
-                "description": "Skip changes you made yourself"
+                "description": "Skip changes you made yourself (default true; for pipelines default false)"
               },
               "actions": {
                 "type": "array",
@@ -830,7 +930,7 @@
     "viewsWelcome": [
       {
         "view": "azureDevOps.watchers",
-        "contents": "Watchers check Azure DevOps in the background and notify you when work items or pull requests change, for example new bugs assigned to you or pull requests waiting for your review.\n[Create Watcher](command:azureDevOps.watchers.create)"
+        "contents": "Watchers check Azure DevOps in the background and notify you when work items, pull requests or pipeline runs change, for example new bugs assigned to you, pull requests waiting for your review or failed runs on main.\n[Create Watcher](command:azureDevOps.watchers.create)"
       }
     ]
   },

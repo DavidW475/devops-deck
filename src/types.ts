@@ -34,10 +34,64 @@ export interface PullRequest {
   lastMergeSourceCommit?: { commitId: string };
   closedDate?: string;
   closedBy?: IdentityRef;
+  autoCompleteSetBy?: IdentityRef;
+  completionOptions?: PrCompletionOptions;
+}
+
+export interface PrCompletionOptions {
+  mergeStrategy?: string;
+  deleteSourceBranch?: boolean;
+  transitionWorkItems?: boolean;
+  mergeCommitMessage?: string;
+}
+
+/** A person or group found with the identity picker. */
+export interface Identity extends IdentityRef {
+  isGroup?: boolean;
+  mail?: string;
 }
 
 export interface PrIteration {
   id: number;
+  description?: string;
+  author?: IdentityRef;
+  createdDate?: string;
+  reason?: string;
+  sourceRefCommit?: { commitId: string };
+  commits?: GitCommitRef[];
+}
+
+export interface GitCommitRef {
+  commitId: string;
+  comment?: string;
+  author?: { name: string; email?: string; date: string };
+}
+
+export interface GitRepository {
+  id: string;
+  name: string;
+  defaultBranch?: string;
+  remoteUrl?: string;
+  sshUrl?: string;
+  webUrl?: string;
+  size?: number;
+  isDisabled?: boolean;
+  project?: { id: string; name: string };
+}
+
+export interface BranchStats {
+  name: string;
+  aheadCount: number;
+  behindCount: number;
+  isBaseVersion?: boolean;
+  commit: GitCommitRef;
+}
+
+/** One file of a commit diff (branch comparison). */
+export interface GitChange {
+  changeType: string;
+  item: { path: string; objectId?: string; originalObjectId?: string; gitObjectType?: string; isFolder?: boolean };
+  originalPath?: string;
 }
 
 export interface PrChange {
@@ -89,13 +143,15 @@ export interface WorkItem {
 export interface WorkItemRelation {
   rel: string;
   url: string;
-  attributes?: { name?: string };
+  attributes?: { name?: string; comment?: string };
 }
 
 export interface WorkItemUpdate {
   id: number;
   rev: number;
   revisedBy?: IdentityRef;
+  revisedDate?: string;
+  relations?: { added?: WorkItemRelation[]; removed?: WorkItemRelation[] };
   fields?: Record<string, { oldValue?: unknown; newValue?: unknown }>;
 }
 
@@ -104,6 +160,13 @@ export interface WorkItemComment {
   text: string;
   createdBy: IdentityRef;
   createdDate: string;
+}
+
+export interface WorkItemTypeField {
+  referenceName: string;
+  name: string;
+  allowedValues?: string[];
+  alwaysRequired?: boolean;
 }
 
 export interface WorkItemState {
@@ -152,6 +215,8 @@ export interface TimelineRecord {
   parentId?: string | null;
   type: string;
   name: string;
+  /** stage or job name as written in the YAML (e.g. "Build"); used for dependencies and stage retries */
+  identifier?: string | null;
   state?: string;
   result?: string | null;
   startTime?: string | null;
@@ -179,4 +244,85 @@ export interface PolicyEvaluation {
     settings?: { displayName?: string | null; buildDefinitionId?: number; statusName?: string; defaultDisplayName?: string };
   };
   context?: { buildId?: number; buildDefinitionName?: string; isExpired?: boolean } | null;
+}
+
+export interface TeamRef {
+  id: string;
+  name: string;
+}
+
+export interface TeamIteration {
+  id: string;
+  name: string;
+  path: string;
+  attributes?: { startDate?: string | null; finishDate?: string | null; timeFrame?: string };
+}
+
+export interface IterationWorkItemLink {
+  rel?: string | null;
+  source?: { id: number } | null;
+  target?: { id: number } | null;
+}
+
+export interface TeamMemberCapacity {
+  teamMember: IdentityRef;
+  activities: { capacityPerDay: number; name?: string }[];
+  daysOff: { start: string; end: string }[];
+}
+
+export interface ClassificationNode {
+  name: string;
+  hasChildren?: boolean;
+  children?: ClassificationNode[];
+}
+
+export interface Approval {
+  id: string;
+  status: string;
+  createdOn?: string;
+  instructions?: string;
+  minRequiredApprovers?: number;
+  steps?: { assignedApprover: IdentityRef; status: string; comment?: string }[];
+  pipeline?: { id?: number | string; name?: string; owner?: { id: number; name?: string } };
+}
+
+export interface BuildArtifact {
+  id: number;
+  name: string;
+  resource?: { type?: string; downloadUrl?: string; data?: string };
+}
+
+export interface TestRun {
+  id: number;
+  name: string;
+  state?: string;
+  totalTests?: number;
+  passedTests?: number;
+  unanalyzedTests?: number;
+  notApplicableTests?: number;
+  incompleteTests?: number;
+}
+
+export interface TestResult {
+  id: number;
+  testCaseTitle?: string;
+  automatedTestName?: string;
+  outcome?: string;
+  errorMessage?: string;
+  stackTrace?: string;
+  durationInMs?: number;
+}
+
+export interface Wiki {
+  id: string;
+  name: string;
+  type?: string;
+}
+
+export interface WikiPage {
+  path: string;
+  order?: number;
+  isParentPage?: boolean;
+  subPages?: WikiPage[];
+  content?: string;
 }

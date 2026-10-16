@@ -54,6 +54,11 @@ export function summarizeChecks(evaluations: PolicyEvaluation[]): ChecksSummary 
   const required = checks.filter(c => c.required);
   const failing = required.filter(c => c.kind === 'fail' || c.kind === 'expired').length;
   const pending = required.filter(c => c.kind === 'running' || c.kind === 'queued').length;
-  const state = failing ? 'fail' : pending ? 'pending' : required.length ? 'ok' : 'none';
+  let state: 'fail' | 'pending' | 'ok' | 'none' = required.length ? 'ok' : 'none';
+  if (failing) {
+    state = 'fail';
+  } else if (pending) {
+    state = 'pending';
+  }
   return { state, failing, pending, checks };
 }

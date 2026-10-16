@@ -57,6 +57,27 @@ export class ThemeIcon {
 export class MarkdownString {
   constructor(readonly value = '') {}
 }
+export class CodeActionKind {
+  static readonly QuickFix = new CodeActionKind('quickfix');
+  constructor(readonly value: string) {}
+}
+export class CodeAction {
+  command?: unknown;
+  constructor(readonly title: string, readonly kind?: CodeActionKind) {}
+}
+export class Disposable {
+  constructor(private readonly fn: () => void) {}
+  dispose(): void {
+    this.fn();
+  }
+}
+export enum FileType { Unknown = 0, File = 1, Directory = 2 }
+export enum FileChangeType { Changed = 1, Created = 2, Deleted = 3 }
+export class FileSystemError extends Error {
+  static FileNotFound(u?: unknown) { return new FileSystemError(`not found: ${u}`); }
+  static NoPermissions(m?: string) { return new FileSystemError(m); }
+  static Unavailable(m?: string) { return new FileSystemError(m); }
+}
 export enum TreeItemCollapsibleState { None, Collapsed, Expanded }
 export enum StatusBarAlignment { Left = 1, Right = 2 }
 export enum ConfigurationTarget { Global = 1, Workspace = 2, WorkspaceFolder = 3 }
