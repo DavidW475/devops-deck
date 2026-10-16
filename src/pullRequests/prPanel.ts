@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { AdoClient, PrArtifact } from '../client';
 import { GitCommitRef, PolicyEvaluation, PrIteration, PrThread, PullRequest, WorkItem } from '../types';
 import {
-  avatarHtml, errorMessage, escapeHtml, guarded, LINK_PICKER_SCRIPT, LinkCandidate, linkPickerHtml, panelHtml, plural, renderMarkdown, shortRef, showError, timeAgo, VOTE_LABELS,
+  avatarHtml, errorMessage, escapeHtml, guarded, LINK_PICKER_SCRIPT, LinkCandidate, linkPickerHtml, panelHtml, plural, renderMarkdown, shortRef, showError, timeAgo, viewButtonsHtml, VOTE_LABELS,
 } from '../util';
 import { CheckKind, summarizeChecks } from './checks';
 import { checkoutPullRequest } from './prFiles';
@@ -411,8 +411,7 @@ export class PullRequestPanel {
     <button class="btn ghost" data-action="checkout">Checkout</button>
     <button class="btn ghost" data-action="draft" data-value="${!pr.isDraft}">${pr.isDraft ? 'Publish' : 'Mark as draft'}</button>
     <button class="btn ghost" data-action="abandon">Abandon</button>
-    <button class="btn ghost" data-action="browser">Open in browser</button>
-    <button class="btn ghost" data-action="refresh">Refresh</button>
+    ${viewButtonsHtml()}
     ${autoButton}
     <button class="btn success" data-action="complete">Complete</button>
   </div>

@@ -87,7 +87,7 @@ button { font: inherit; cursor: pointer; }
 .md code { padding: 1px 4px; }
 .md p:first-child { margin-top: 0; } .md p:last-child { margin-bottom: 0; }
 
-textarea, input {
+textarea, input:not([type=checkbox]):not([type=radio]) {
   width: 100%; font: inherit; color: var(--vscode-input-foreground); background: var(--vscode-input-background);
   border: 1px solid var(--vscode-input-border, var(--border)); border-radius: 8px; padding: 8px 10px; outline: none; resize: vertical;
 }
@@ -385,16 +385,20 @@ details.card[open] > summary h2 { margin-bottom: 10px; }
 .commit .grow { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ---------- work item details ---------- */
-.field.edit { align-items: center; }
-.field-input { min-width: 0; max-width: 60%; height: 26px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--border);
+.field.edit { display: grid; grid-template-columns: 120px minmax(0, 1fr); align-items: center; gap: 10px; }
+.field.edit > .muted { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.field-input { width: 100%; min-width: 0; height: 26px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--border);
   background: var(--vscode-input-background); color: var(--vscode-input-foreground); font: inherit; }
 .field-input:focus { outline: none; border-color: var(--vscode-focusBorder); }
-input.field-input { width: 60%; }
-.assignee { display: flex; align-items: center; gap: 6px; }
+input.field-input { padding: 0 8px; }
+.assignee { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.assignee > span:not(.avatar) { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.assignee .avatar { flex: none; }
 .sub-h { margin: 12px 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); display: flex; gap: 6px; align-items: center; }
 .sub-h:first-of-type { margin-top: 0; }
 .add-child { display: flex; gap: 6px; margin-top: 8px; }
-.add-child input { flex: 1; min-width: 0; }
+.add-child input { flex: 1; min-width: 0; height: 28px; padding: 0 8px; }
+.add-child .btn { height: 28px; }
 .add-child select { height: 28px; border-radius: 6px; border: 1px solid var(--border); background: var(--vscode-input-background); color: var(--fg); }
 .hist { padding: 8px 0; border-top: 1px solid var(--border); }
 .hist:first-of-type { border-top: 0; }
@@ -412,16 +416,20 @@ input.field-input { width: 60%; }
 .cpr-commits ul { margin: 4px 0 0; padding-left: 18px; color: var(--muted); font-size: 12.5px; max-height: 200px; overflow: auto; }
 
 /* ---------- repositories & branches ---------- */
+.run.repos { max-width: 1080px; }
+.log-search input, .run .log-search input:not([type=checkbox]) { border: 0; padding: 0; min-height: 0; background: transparent; box-shadow: none; width: auto; flex: 1; }
 .repos .run-head select { height: 30px; border-radius: 8px; padding: 0 8px; border: 1px solid var(--border); background: var(--vscode-input-background); color: var(--fg); max-width: 40%; }
 .repo-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 0 0 12px; }
 .repo-bar .log-search input { width: 220px; }
 .branch-list { display: flex; flex-direction: column; gap: 6px; }
-.branch-row { display: grid; grid-template-columns: minmax(0, 1fr) 190px auto; align-items: center; gap: 12px; padding: 8px 12px;
+.branch-row { display: grid; grid-template-columns: minmax(0, 1fr) 170px 330px; align-items: center; gap: 16px; padding: 8px 12px;
   border: 1px solid var(--border); border-radius: 10px; background: var(--card); }
 .branch-row.current { border-color: color-mix(in srgb, var(--ok) 50%, var(--border)); }
-.branch-main { min-width: 0; }
-.branch-main .small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.branch-actions { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; opacity: .55; transition: opacity .15s; }
+.branch-main { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.branch-main .branch { max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.branch-row > .pill { justify-self: start; }
+.branch-main .small { max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.branch-actions { display: flex; gap: 4px; flex-wrap: nowrap; justify-content: flex-end; opacity: .55; transition: opacity .15s; }
 .branch-row:hover .branch-actions, .branch-actions:focus-within { opacity: 1; }
 .btn.danger { color: var(--bad); }
 .ab { display: grid; grid-template-columns: 3ch 1fr 1fr 3ch; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); }
@@ -433,4 +441,7 @@ input.field-input { width: 60%; }
 .ab-bar.behind span { background: var(--muted); border-radius: 3px 0 0 3px; }
 .ab-bar.ahead span { background: var(--info); border-radius: 0 3px 3px 0; }
 .btn.more { align-self: center; margin-top: 6px; }
-@media (max-width: 760px) { .branch-row { grid-template-columns: minmax(0, 1fr); } .branch-actions { justify-content: flex-start; opacity: 1; } }
+@media (max-width: 900px) { .branch-row { grid-template-columns: minmax(0, 1fr); } .branch-actions { flex-wrap: wrap; } .branch-actions { justify-content: flex-start; opacity: 1; } }
+
+.btn.icon-only { padding: 0 8px; display: inline-flex; align-items: center; justify-content: center; }
+.btn .i { width: 16px; height: 16px; }

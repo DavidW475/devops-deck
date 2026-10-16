@@ -5,7 +5,7 @@ import { ConnectionManager } from '../connection';
 import { currentBranch, localAdoRepos } from '../git';
 import { openBranchDiff } from '../pullRequests/prFiles';
 import { BranchStats, GitRepository } from '../types';
-import { errorMessage, guarded, panelHtml, plural, shortRef } from '../util';
+import { errorMessage, guarded, panelHtml, plural, shortRef, TOOLBAR_ICONS } from '../util';
 
 /** Repositories of the project and their branches: ahead/behind, compare, create, delete, checkout, clone. */
 export class ReposPanel {
@@ -228,8 +228,8 @@ const BODY = `<div class="run repos" id="root">
     <span class="spacer"></span>
     <button class="btn" data-act="create">New branch</button>
     <button class="btn ghost" data-act="clone" id="clone">Clone</button>
-    <button class="btn ghost" data-act="browser">Open in browser</button>
-    <button class="btn ghost" data-act="refresh">Refresh</button>
+    <button class="btn ghost icon-only" data-act="browser" title="Open in browser" aria-label="Open in browser">${TOOLBAR_ICONS.browser}</button>
+    <button class="btn ghost icon-only" data-act="refresh" title="Refresh" aria-label="Refresh">${TOOLBAR_ICONS.refresh}</button>
   </div>
   <div id="error" class="run-alert" hidden></div>
   <div id="list" class="branch-list"></div>

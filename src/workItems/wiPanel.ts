@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { AdoClient, PrArtifact, parsePrArtifact } from '../client';
 import { PullRequest, WorkItem, WorkItemComment, WorkItemState, WorkItemTypeField, WorkItemUpdate } from '../types';
 import {
-  avatarHtml, errorMessage, escapeHtml, guarded, LINK_PICKER_SCRIPT, LinkCandidate, linkPickerHtml, panelHtml, sanitizeHtml, shortRef, showError, timeAgo,
+  avatarHtml, errorMessage, escapeHtml, guarded, LINK_PICKER_SCRIPT, LinkCandidate, linkPickerHtml, panelHtml, sanitizeHtml, shortRef, showError, timeAgo, viewButtonsHtml,
 } from '../util';
 import { EditableField, editableFields, hierarchyOf, HistoryEntry, historyEntries, joinTags, PARENT_REL, splitTags } from './wiModel';
 
@@ -327,10 +327,17 @@ function hierarchyHtml(v: View): string {
   </div>`;
 }
 
+/** Iteration and area paths without the project name ("Sprint 42" instead of "Fabrikam Shop\\Sprint 42"). */
+function pathLabel(path: string): string {
+  const parts = path.split('\\');
+  return parts.length > 1 ? parts.slice(1).join(' › ') : path;
+}
+
 function select(name: string, current: string, options: string[], kind = 'text'): string {
   const all = options.includes(current) || !current ? options : [current, ...options];
   const empty = current ? '' : '<option value="" selected></option>';
-  const opts = all.map(o => `<option ${o === current ? 'selected' : ''}>${escapeHtml(o)}</option>`).join('');
+  const label = kind === 'path' ? pathLabel : (o: string) => o;
+  const opts = all.map(o => `<option value="${escapeHtml(o)}" title="${escapeHtml(o)}" ${o === current ? 'selected' : ''}>${escapeHtml(label(o))}</option>`).join('');
   return `<select class="field-input" data-field="${escapeHtml(name)}" data-kind="${kind}">${empty}${opts}</select>`;
 }
 
@@ -346,13 +353,14 @@ function detailsHtml(v: View): string {
   const assignee = assigned
     ? `${avatarHtml(assigned.displayName, 20)}<span>${escapeHtml(assigned.displayName)}</span><button class="link" data-action="unassign">Unassign</button>`
     : '<span class="muted">Unassigned</span>';
-  const created = f['System.CreatedDate'] ? escapeHtml(new Date(f['System.CreatedDate']).toLocaleString()) : '';
+  const created = f['System.CreatedDate']
+    ? escapeHtml(new Date(f['System.CreatedDate']).toLocaleDateString(undefined, { dateStyle: 'medium' })) : '';
   return `<div class="card"><h2>Details</h2>
     <div class="field edit"><span class="muted">Assigned to</span>
       <div class="assignee">${assignee}</div></div>
     ${linkPickerHtml('Assign to… (name or e-mail)', 'assignee')}
-    ${row('Iteration', select('System.IterationPath', String(f['System.IterationPath'] ?? ''), v.iterations))}
-    ${row('Area', select('System.AreaPath', String(f['System.AreaPath'] ?? ''), v.areas))}
+    ${row('Iteration', select('System.IterationPath', String(f['System.IterationPath'] ?? ''), v.iterations, 'path'))}
+    ${row('Area', select('System.AreaPath', String(f['System.AreaPath'] ?? ''), v.areas, 'path'))}
     ${planning}
     ${row('Tags', `<input class="field-input" id="tags" value="${escapeHtml(splitTags(f['System.Tags']).join(', '))}" placeholder="tag1, tag2">`)}
     <div class="field"><span class="muted">Created</span><span>${escapeHtml(f['System.CreatedBy']?.displayName ?? '')} · ${created}</span></div>
@@ -399,8 +407,7 @@ function bodyHtml(v: View): string {
     <button class="btn primary" data-action="assignMe">Assign to me</button>
     <button class="btn ghost" data-action="branch">Create branch</button>
     <span class="spacer"></span>
-    <button class="btn ghost" data-action="browser">Open in browser</button>
-    <button class="btn ghost" data-action="refresh">Refresh</button>
+    ${viewButtonsHtml()}
   </div>
 </header>
 <main class="grid">

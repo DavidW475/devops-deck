@@ -470,12 +470,20 @@
   function renderTabs() {
     const el = document.getElementById('tabs');
     if (!el) return;
-    const idx = TABS.findIndex((t) => t.id === S.tab);
-    el.style.setProperty('--idx', String(idx));
+
     el.innerHTML = `<span class="tab-indicator"></span>` + TABS.map((t) => `
       <button role="tab" class="tab ${t.id === S.tab ? 'active' : ''}" data-tab="${t.id}" aria-selected="${t.id === S.tab}" title="${t.label}">
         ${icon(t.icon)}<span class="tab-label">${t.label}</span>${S.counts[t.id] === undefined ? '' : '<span class="badge">' + S.counts[t.id] + '</span>'}
       </button>`).join('');
+    placeIndicator(el);
+  }
+
+  /** Moves the highlight under the active tab (tabs have different widths). */
+  function placeIndicator(el) {
+    const active = el.querySelector('.tab.active');
+    if (!(active instanceof HTMLElement)) return;
+    el.style.setProperty('--x', `${active.offsetLeft - 3}px`);
+    el.style.setProperty('--w', `${active.offsetWidth}px`);
   }
 
   function chips(list, active, kind) {
@@ -1120,6 +1128,11 @@
 
   every(() => 5, () => {
     if (S.focused && isStale(S.tab)) refreshVisible();
+  });
+
+  window.addEventListener('resize', () => {
+    const tabs = document.getElementById('tabs');
+    if (tabs) placeIndicator(tabs);
   });
 
   window.addEventListener('message', (e) => {

@@ -2,6 +2,21 @@ import { randomBytes } from 'crypto';
 import * as vscode from 'vscode';
 import { AdoError } from './client';
 
+const svg = (paths: string) =>
+  `<svg class="i" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+
+/** Icon-only toolbar buttons shared by the editor panels (Lucide icons, ISC license). */
+export const TOOLBAR_ICONS = {
+  refresh: svg('<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>'),
+  browser: svg('<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>'),
+};
+
+/** Refresh and "open in browser" as compact icon buttons with tooltips. */
+export function viewButtonsHtml(): string {
+  return `<button class="btn ghost icon-only" data-action="browser" title="Open in browser" aria-label="Open in browser">${TOOLBAR_ICONS.browser}</button>
+    <button class="btn ghost icon-only" data-action="refresh" title="Refresh" aria-label="Refresh">${TOOLBAR_ICONS.refresh}</button>`;
+}
+
 /** "1 file", "3 files". */
 export function plural(n: number, word: string, many = `${word}s`): string {
   return `${n} ${n === 1 ? word : many}`;

@@ -10,13 +10,16 @@ Review and create pull requests, plan sprints, manage work items, watch pipeline
 
 A sidebar with tabs for pull requests, work items, the current sprint and pipelines. It has search, filter chips, avatars and status badges, and it follows your VS Code theme. Buttons at the top open repositories and the wiki.
 
+<p align="center">
+  <img src="media/screenshots/pull-requests.png" width="24%" alt="Pull requests tab with an expanded pull request, its checks and changed files">
+  <img src="media/screenshots/work-items.png" width="24%" alt="Work items tab">
+  <img src="media/screenshots/sprint.png" width="24%" alt="Sprint tab with progress, work per person and items grouped by state">
+  <img src="media/screenshots/pipelines.png" width="24%" alt="Pipelines tab with running and finished runs">
+</p>
+
 **Several projects at once:** in the project picker, tick more projects of the organization and choose *Show N projects*. Pull requests, work items, sprints, pipelines and approvals of all of them are then listed together, each card marked with its project. Clicking a project name still switches to just that project.
 
-<p align="center">
-  <img src="media/screenshots/pull-requests.png" width="32%" alt="Pull requests tab with an expanded pull request and its changed files">
-  <img src="media/screenshots/work-items.png" width="32%" alt="Work items tab">
-  <img src="media/screenshots/pipelines.png" width="32%" alt="Pipelines tab with running and finished runs">
-</p>
+<p align="center"><img src="media/screenshots/projects.png" width="36%" alt="Project picker with two projects ticked and pull requests of both projects in the list"></p>
 
 ### Pull requests
 
@@ -30,10 +33,12 @@ A sidebar with tabs for pull requests, work items, the current sprint and pipeli
 - **Reviewers and auto-complete:** add people or groups as optional or required reviewers, remove reviewers, and set or cancel auto-complete so the PR merges as soon as all required policies pass.
 - **Updates and commits:** every push to the PR is listed as an update. Open the files of one update, or all changes since your last visit, in the diff editor. The overview tells you how many updates are new since you last looked. The commits of the PR are listed too.
 - **Create pull requests:** *Create Pull Request* (also in the PR tab and the status bar) prefills repository, source and target branch, a title and description from the branch's commits, and work items mentioned in the branch name or commits (`feature/1234-…`, `#1234`, `AB#1234`). Add reviewers, create it as a draft or with auto-complete. A branch that is not pushed yet is pushed first.
+<p align="center"><img src="media/screenshots/create-pr.png" width="70%" alt="Form for a new pull request with reviewers, linked work item and auto-complete"></p>
+
 - **Status bar:** shows the pull request of the checked-out branch with the state of its required checks and approvals, plus the latest pipeline run of the branch. Without a PR it offers *Create PR*.
 - **Checkout:** switch to the source branch in your local repository.
 
-![Pull request overview with description, reviewers, linked work items and discussion](media/screenshots/pr-overview.png)
+![Pull request overview with checks, reviewers, updates since the last visit and description](media/screenshots/pr-overview.png)
 
 ### Work items
 
@@ -45,6 +50,8 @@ A sidebar with tabs for pull requests, work items, the current sprint and pipeli
 - **History:** who changed which field from what to what, and which links were added or removed.
 - Linked pull requests with status, repository and branch. Link more by ID or title.
 - **From code:** select code, or put the cursor on a comment with `TODO`, `FIXME`, `HACK` or `BUG`, and choose *Create Work Item from Code* (context menu or light bulb). The title comes from the comment, the description holds the code and a link to the lines in Azure Repos. A comment gets the new ID added, so it is not reported twice.
+
+![Work item with editable details, hierarchy, repro steps and discussion](media/screenshots/work-item.png)
 
 ### Sprint
 
@@ -61,12 +68,14 @@ The *Sprint* tab shows a team's sprint: dates, working days left, progress again
 - **Live logs:** stream a run's output into a colored terminal.
 - **Run pipeline form:** pick the pipeline, a branch and optionally a commit, set **runtime parameters** read from the YAML (toggles, choices, numbers, text, objects) and override variables. You can also re-run or cancel runs.
 
-![Run overview with stages side by side and the steps of the running job](media/screenshots/run-overview.png)
+![Run overview with parallel stages, a stage waiting for approval and the log of a finished step](media/screenshots/run-overview.png)
 
 ### Repositories and wiki
 
 - **Repositories and branches:** every branch with how far it is ahead of and behind the default branch, its last commit and author. Compare a branch with the default branch file by file in the diff editor, create a pull request, create or delete branches on the server, check a branch out, or clone the repository.
 - **Wiki:** *Open Wiki Page* searches the page titles of the project wiki. Enter shows the rendered page, the pencil opens it as Markdown; saving writes it back. If someone else changed the page meanwhile, saving is refused instead of overwriting their change. You can also create pages.
+
+![Branches of a repository with ahead/behind counts and actions](media/screenshots/branches.png)
 
 ### Watchers
 

@@ -26,6 +26,9 @@
 
 ### Changed
 
+- Sidebar tabs show the label of the active tab only, so four tabs fit a narrow sidebar; work item card actions float on hover instead of making every card tall
+- Editor panels use icon buttons for refresh and open in browser; work item details use a two-column layout with short iteration and area names
+- New and updated screenshots in the README
 - Policy states of pull requests are loaded with at most six requests at a time; the sprint tab loads only when opened
 - Code reworked to pass the SonarQube (SonarJS) rules without findings
 
