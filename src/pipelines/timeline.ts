@@ -39,7 +39,10 @@ export interface TimelineNode {
   children: TimelineNode[];
 }
 
-/** Stage → Job → Task tree; "Phase" records and the implicit "__default" stage are flattened away. */
+/**
+ * Stage → Job → Task tree; "Phase" records and the implicit "__default" stage are flattened away.
+ * Jobs outside any stage are dropped when the run has stages.
+ */
 export function timelineTree(records: TimelineRecord[]): TimelineNode[] {
   const byParent = new Map<string | null, TimelineRecord[]>();
   for (const r of records) {
@@ -78,7 +81,9 @@ export function timelineTree(records: TimelineRecord[]): TimelineNode[] {
       children: children(r.id),
     }];
   };
-  return children(null);
+  const roots = children(null);
+  // A finished run gets a "Finalize build" job without a stage; next to stages it would turn them into a stage-less list.
+  return roots.some(n => n.type === 'Stage') ? roots.filter(n => n.type === 'Stage') : roots;
 }
 
 function nonEmpty<T>(list: T[]): T[] | undefined {

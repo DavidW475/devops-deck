@@ -2,7 +2,7 @@
   "name": "devops-deck",
   "displayName": "DevOps Deck for Azure DevOps",
   "description": "Review and create pull requests, plan sprints, manage work items, watch pipelines with live logs, approve deployments and browse the wiki from inside VS Code.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "davidw475",
   "license": "MIT",
   "icon": "media/icon.png",

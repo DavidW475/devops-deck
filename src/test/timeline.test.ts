@@ -31,16 +31,36 @@ describe('timeline', () => {
     assert.deepEqual(job.children[0].errors, ['e1']);
   });
 
-  it('timelineTree hides the implicit __default stage and marks stages waiting for approval', () => {
+  it('timelineTree hides the implicit __default stage', () => {
     const recs: TimelineRecord[] = [
       { id: 's', type: 'Stage', name: '__default' },
-      { id: 'j', parentId: 's', type: 'Job', name: 'Only job' },
+      { id: 'p', parentId: 's', type: 'Phase', name: 'Phase' },
+      { id: 'j', parentId: 'p', type: 'Job', name: 'Only job' },
+    ];
+    assert.deepEqual(timelineTree(recs).map(n => n.name), ['Only job']);
+  });
+
+  it('timelineTree marks stages waiting for approval', () => {
+    const recs: TimelineRecord[] = [
       { id: 'prod', type: 'Stage', name: 'Production', state: 'pending' },
       { id: 'cp', parentId: 'prod', type: 'Checkpoint', name: 'Checkpoint', state: 'inProgress' },
     ];
+    const [stage] = timelineTree(recs);
+    assert.equal(stage.waiting, true);
+    assert.deepEqual(stage.children, [], 'checkpoints are not shown');
+  });
+
+  it('timelineTree drops the stage-less "Finalize build" job of a finished run with stages', () => {
+    const recs: TimelineRecord[] = [
+      { id: 'build', type: 'Stage', name: 'Build', order: 1 },
+      { id: 'j1', parentId: 'build', type: 'Job', name: 'Compile' },
+      { id: 'deploy', type: 'Stage', name: 'Deploy', order: 2 },
+      { id: 'fp', type: 'Phase', name: 'Finalize build', order: 3 },
+      { id: 'fj', parentId: 'fp', type: 'Job', name: 'Finalize build' },
+      { id: 'ft', parentId: 'fj', type: 'Task', name: 'Report build status' },
+    ];
     const nodes = timelineTree(recs);
-    assert.deepEqual(nodes.map(n => n.name), ['Only job', 'Production']);
-    assert.equal(nodes[1].waiting, true);
-    assert.deepEqual(nodes[1].children, [], 'checkpoints are not shown');
+    assert.deepEqual(nodes.map(n => n.name), ['Build', 'Deploy']);
+    assert.deepEqual(nodes[0].children.map(j => j.name), ['Compile']);
   });
 });
