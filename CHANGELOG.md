@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+### Fixed
+
+- Run overview: finished runs of pipelines with stages show their stage graph and jobs again instead of only the "Finalize build" job
+
 ## 0.2.0
 
 ### Added
