@@ -319,6 +319,7 @@ textarea:focus, input:focus { border-color: var(--vscode-focusBorder); }
 .step.active .step-name { color: var(--vscode-textLink-foreground); font-weight: 600; }
 .logpane { position: sticky; top: 8px; align-self: start; display: flex; flex-direction: column; height: calc(100vh - 24px); min-height: 320px;
   background: var(--vscode-terminal-background, var(--bg)); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+.logpane[hidden] { display: none; }
 .log-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--border); background: var(--card); }
 .log-head .i { width: 15px; height: 15px; flex: none; }
 .log-title { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
