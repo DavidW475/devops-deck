@@ -23,6 +23,17 @@
 | `stageGraph.test.ts`, `timeline.test.ts`, `logs.test.ts`, `yamlParameters.test.ts` | pipeline logic |
 | `checks.test.ts` | `summarizeChecks` |
 | `watchers.test.ts` | watcher matching, events, the `Watchers` engine with a fake client |
+| `clientApi.test.ts` | every `AdoClient` API method (method, path, query, body, mapping), paging, auth, `isSafeApiPath` |
+| `git.test.ts`, `logsStream.test.ts`, `approvals.test.ts`, `utilUi.test.ts`, `securityHelpers.test.ts` | local repos and `ConnectionManager`, live log terminal, approvals, UI helpers, `assertBranchName` / `glob` / watcher command guard |
+| `extension.test.ts` | `activate()` registers every command from `package.json`; runs many commands |
+| `prPanel`, `createPrPanel`, `wiPanel`, `reposPanel`, `runView`, `runPanel`, `watchersPanel`, `sidebarProvider` `.test.ts` | panels through the fake webview: rendered HTML (escaping, CSP nonce) and every message type |
+| `prFiles`, `prComments`, `prStatusBar`, `iterations`, `reviewed`, `wiki`, `wiCommands`, `watchersTree` `.test.ts` | the remaining feature modules |
+
+### Test helpers
+
+- `src/test/fakeWebview.ts`: `createWebviewPanel` in the stub returns a `FakeWebviewPanel`. Its webview records `html` and `posted` messages; `send(msg)` runs the panel's message handlers and waits for them; `last(type)`, `ofType(type)`, `lastPanel()`, `flush()`, `cspNonce(html)`.
+- The stub answers dialogs from queues (`answers.inputBox`, `answers.quickPick`, `answers.saveDialog`, `answers.message`), returns `commandResults[name]` from `executeCommand`, records `opened` URLs and `terminals`, and fakes extensions via `extensionExports[id]` (e.g. `vscode.git`).
+- `src/test/vscodeExtras.ts`: more fakes (quick pick, comment controller, editor and document events, git repositories via `setGitRepositories`/`fakeRepo`, `fakeDoc`, `fakeEditor`) for the feature module tests.
 
 ### How to write tests
 
@@ -31,6 +42,8 @@
 - Use fictitious data only: `https://dev.azure.com/contoso`, project `Fabrikam Shop`, made-up people.
 
 ### Coverage
+
+**Required: at least 80 % line coverage on new code.** This is the SonarCloud quality gate; a pull request below it fails. Write tests together with the code, including for panels (drive them through the fake webview in the vscode stub). Note that Node's coverage report lists only files a test imports, while SonarCloud counts every file under `src/` (except `src/test/`), so a module without any test counts as 0 %.
 
 `npm run test:coverage` runs the tests with `--experimental-test-coverage` (excluding `out/test/**`) and writes `coverage/lcov.info` (spec output on stdout). `coverage/` is excluded from the package.
 

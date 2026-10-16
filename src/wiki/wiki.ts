@@ -144,7 +144,7 @@ export async function openWiki(client: AdoClient): Promise<void> {
   const load = (fresh: boolean) => pagesOf(client, wiki, fresh).then(pages => {
     qp.items = [...pages.map((p): Item => {
       const parts = p.split('/').filter(Boolean);
-      return { label: `$(book) ${parts[parts.length - 1]}`, description: parts.slice(0, -1).join(' / '), path: p, buttons: [EDIT, BROWSER] };
+      return { label: `$(book) ${parts.at(-1)}`, description: parts.slice(0, -1).join(' / '), path: p, buttons: [EDIT, BROWSER] };
     }), newPage];
   }, e => { qp.placeholder = `Could not load pages: ${e instanceof Error ? e.message : e}`; }).finally(() => qp.busy = false);
   qp.buttons = [{ iconPath: new vscode.ThemeIcon('refresh'), tooltip: 'Reload pages' }];

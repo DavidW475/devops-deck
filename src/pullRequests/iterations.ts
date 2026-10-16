@@ -1,4 +1,4 @@
-import * as path from 'path';
+import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { AdoClient } from '../client';
 import { openPrDiff } from './prFiles';
@@ -33,7 +33,7 @@ export async function compareIterations(client: AdoClient, repoId: string, prId:
     return;
   }
   const open = (change: typeof changes[number]) =>
-    openPrDiff({ repoId, prId, iteration: to, change, baseIteration: from ? from : undefined });
+    openPrDiff({ repoId, prId, iteration: to, change, baseIteration: from || undefined });
   if (changes.length === 1) {
     await open(changes[0]);
     return;

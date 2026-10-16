@@ -95,7 +95,7 @@ export class PullRequestPanel {
         await vscode.commands.executeCommand('azureDevOps.pipelines.openRun', Number(m.id), this.pr?.repository.project?.name);
         return true;
       case 'openWorkItem':
-        await vscode.commands.executeCommand('azureDevOps.wi.open', m.id);
+        await vscode.commands.executeCommand('azureDevOps.wi.open', Number(m.id));
         return true;
       case 'compare':
         await vscode.commands.executeCommand('azureDevOps.pr.compareIterations', this.repoId, this.prId, Number(m.base), Number(m.target));
@@ -134,7 +134,7 @@ export class PullRequestPanel {
     const { repoId, prId, client } = this;
     switch (m.type) {
       case 'vote':
-        await client.vote(repoId, prId, m.vote);
+        await client.vote(repoId, prId, Number(m.vote));
         await this.markSeen();
         vscode.window.setStatusBarMessage(`$(check) Voted: ${VOTE_LABELS[String(m.vote)]}`, 3000);
         break;
@@ -150,13 +150,13 @@ export class PullRequestPanel {
         await this.markSeen();
         break;
       case 'comment':
-        await client.createThread(repoId, prId, { comments: [{ parentCommentId: 0, content: m.text, commentType: 1 }], status: 1 });
+        await client.createThread(repoId, prId, { comments: [{ parentCommentId: 0, content: String(m.text ?? ''), commentType: 1 }], status: 1 });
         break;
       case 'reply':
-        await client.replyToThread(repoId, prId, m.threadId, m.text);
+        await client.replyToThread(repoId, prId, Number(m.threadId), String(m.text ?? ''));
         break;
       case 'threadStatus':
-        await client.updateThreadStatus(repoId, prId, m.threadId, m.status);
+        await client.updateThreadStatus(repoId, prId, Number(m.threadId), Number(m.status));
         break;
       case 'complete':
         if (!(await this.complete())) {
@@ -164,7 +164,7 @@ export class PullRequestPanel {
         }
         break;
       case 'draft':
-        await client.updatePullRequest(repoId, prId, { isDraft: m.value });
+        await client.updatePullRequest(repoId, prId, { isDraft: !!m.value });
         break;
       case 'abandon': {
         const ok = await vscode.window.showWarningMessage(`Abandon PR !${prId}?`, { modal: true }, 'Abandon');

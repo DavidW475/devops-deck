@@ -19,13 +19,20 @@
 - Run overview: steps and their logs no longer disappear when a run finishes
 - *Create branch* for a work item uses the repository of the active file (or asks) instead of always the first one
 - A pull request without iterations no longer causes an empty file list error
+- Run overview: the close button of the log pane closes the log instead of moving it below the jobs
+- Sidebar views have an icon when they are moved to another view container
 
 ### Security
 
 - Work item descriptions and comments, and rendered pull request Markdown, are sanitized before they are shown
+- Branch names are validated before they are passed to git (checkout from the repositories panel and of pull requests)
+- Request paths with empty, `.` or `..` segments or with `?`, `#` or `\` are refused, so ids from webviews cannot reach other API routes
+- Watcher command actions from workspace settings only run DevOps Deck commands; other commands need a watcher in user settings
+- Watcher wildcard filters are matched without regular expressions
 
 ### Changed
 
+- Live build logs in the terminal load the logs of several steps in parallel; work item watchers load revision details in parallel
 - Sidebar tabs show the label of the active tab only, so four tabs fit a narrow sidebar; work item card actions float on hover instead of making every card tall
 - Editor panels use icon buttons for refresh and open in browser; work item details use a two-column layout with short iteration and area names
 - New and updated screenshots in the README

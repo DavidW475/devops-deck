@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { AdoClient } from '../client';
 import { TimelineRecord } from '../types';
-import { duration, errorMessage } from '../util';
+import { duration, errorMessage, mapLimit } from '../util';
 
 export const LOG_SCHEME = 'ado-log';
 
@@ -26,7 +26,7 @@ export function plainLine(raw: string): string {
 export function stripControl(raw: string): string {
   let out = '';
   for (let i = 0; i < raw.length; i++) {
-    const c = raw.charCodeAt(i);
+    const c = raw.codePointAt(i) ?? 0;
     if (c === 0x1b) {
       // Keep "ESC[...m" (colors) only.
       if (COLOR_SEQUENCE.test(raw.slice(i + 1, i + 24))) {
@@ -190,14 +190,25 @@ export class BuildLogTerminal implements vscode.Pseudoterminal {
     }
   }
 
-  /** Prints the lines of a step's log that are new since the last poll. */
-  private async printNewLines(step: TimelineRecord, logId: number, path: string, available: number): Promise<void> {
+  /** Whether a step's log has lines we have not printed yet (or a finished step's log was never fetched). */
+  private mustFetch(step: TimelineRecord, logId: number, available: number): boolean {
     const have = this.printed.get(logId) ?? 0;
-    const mustFetch = available > have || (step.state === 'completed' && !this.finished.has(step.id) && have === 0);
-    if (!mustFetch) {
+    return available > have || (step.state === 'completed' && !this.finished.has(step.id) && have === 0);
+  }
+
+  /** Loads the logs that grew, a few at a time; printing stays in step order afterwards. */
+  private async fetchNewLines(steps: TimelineRecord[], lineCounts: Map<number, number>): Promise<Map<number, string[]>> {
+    const ids = steps.flatMap(s => (s.log && this.mustFetch(s, s.log.id, lineCounts.get(s.log.id) ?? 0) ? [s.log.id] : []));
+    const lines = await mapLimit(ids, 4, id => this.client.getLogLines(this.buildId, id));
+    return new Map(ids.map((id, i) => [id, lines[i]]));
+  }
+
+  /** Prints the lines of a step's log that are new since the last poll. */
+  private printNewLines(logId: number, path: string, lines: string[] | undefined): void {
+    if (!lines) {
       return;
     }
-    const lines = await this.client.getLogLines(this.buildId, logId);
+    const have = this.printed.get(logId) ?? 0;
     if (lines.length > have) {
       this.header(path);
       for (const raw of lines.slice(have)) {
@@ -235,6 +246,7 @@ export class BuildLogTerminal implements vscode.Pseudoterminal {
       .filter(r => r.type === 'Task' && r.state !== 'pending')
       .sort((a, b) => (a.startTime ?? '9999').localeCompare(b.startTime ?? '9999') || (a.order ?? 0) - (b.order ?? 0));
 
+    const fetched = await this.fetchNewLines(steps, lineCounts);
     let pendingLogs = false;
     for (const step of steps) {
       if (this.closed) {
@@ -243,7 +255,7 @@ export class BuildLogTerminal implements vscode.Pseudoterminal {
       const path = recordPath(step, byId);
       this.announceStart(step, path);
       if (step.log) {
-        await this.printNewLines(step, step.log.id, path, lineCounts.get(step.log.id) ?? 0);
+        this.printNewLines(step.log.id, path, fetched.get(step.log.id));
       } else if (step.state === 'completed' && step.result !== 'skipped') {
         pendingLogs = true;
       }

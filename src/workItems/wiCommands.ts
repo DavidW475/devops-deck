@@ -1,4 +1,4 @@
-import * as path from 'path';
+import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { AdoClient } from '../client';
 import { ConnectionManager, gitApi } from '../connection';
@@ -71,7 +71,7 @@ export async function createBranchForWorkItem(client: AdoClient, connections: Co
 }
 
 /** The repository of the active file, the only one, or one the user picks; Azure Repos clones first. */
-async function pickGitRepo(connections: ConnectionManager): Promise<any | undefined> {
+async function pickGitRepo(connections: ConnectionManager): Promise<any> {
   const all: any[] = gitApi()?.repositories ?? [];
   if (!all.length) {
     throw new Error('No open git repository.');
@@ -163,7 +163,7 @@ export async function createWorkItemFromCode(client: AdoClient, connections: Con
     throw new Error('Open a file first.');
   }
   // From the context menu (uri, no line) or the palette: use the editor's selection; from the to-do light bulb: the line.
-  const selection = line === undefined && editor && editor.document.uri.toString() === doc.uri.toString() && !editor.selection.isEmpty
+  const selection = line === undefined && editor?.document.uri.toString() === doc.uri.toString() && !editor.selection.isEmpty
     ? editor.selection : undefined;
   const range = selection ?? doc.lineAt(line ?? editor?.selection.active.line ?? 0).range;
   const code = doc.getText(range);
@@ -197,7 +197,7 @@ export async function createWorkItemFromCode(client: AdoClient, connections: Con
 }
 
 function escapeText(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 }
 
 /** Path relative to the repository and, for Azure Repos clones, a web link to the lines on the current branch. */

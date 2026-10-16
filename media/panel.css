@@ -225,12 +225,12 @@ textarea:focus, input:focus { border-color: var(--vscode-focusBorder); }
 .chip .i { width: 12px; height: 12px; color: var(--muted); }
 .rv-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .rv-actions .btn, .job-head .btn { display: inline-flex; align-items: center; gap: 6px; }
-.btn.icon-only { width: 30px; padding: 0; justify-content: center; }
+.btn.icon-only { width: 30px; padding: 0 8px; display: inline-flex; align-items: center; justify-content: center; }
 .rv-empty { margin: 24px 32px; padding: 28px; text-align: center; color: var(--muted); border: 1px dashed var(--border); border-radius: 12px; }
 
 .stage { flex: none; width: 210px; text-align: left; padding: 12px 14px; border-radius: 12px; color: var(--fg);
   background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--edge, var(--border));
-  transition: border-color .15s, box-shadow .15s, transform .15s; }
+  transition: border-color .15s, box-shadow .15s, transform .15s; cursor: pointer; }
 .stage:hover { transform: translateY(-1px); box-shadow: 0 6px 18px -10px rgb(0 0 0 / .5); }
 .stage.selected { border-color: var(--vscode-focusBorder); border-left-color: var(--edge, var(--vscode-focusBorder)); box-shadow: 0 0 0 1px var(--vscode-focusBorder); }
 .st-card-ok { --edge: var(--ok); } .st-card-fail { --edge: var(--bad); } .st-card-warn { --edge: var(--warn); }
@@ -304,7 +304,6 @@ textarea:focus, input:focus { border-color: var(--vscode-focusBorder); }
 .edge-warn, .edge-waiting { stroke: color-mix(in srgb, var(--warn) 60%, var(--border)); }
 .edge-running { stroke: var(--info); stroke-dasharray: 6 4; animation: dash 1s linear infinite; }
 @keyframes dash { to { stroke-dashoffset: -10; } }
-.stage { cursor: pointer; }
 .stage:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
 .stage-actions { display: flex; gap: 6px; margin: 8px 0 0 24px; flex-wrap: wrap; }
 .stage-actions .btn { height: 24px; padding: 0 8px; display: inline-flex; align-items: center; gap: 4px; }
@@ -442,7 +441,6 @@ input.field-input { padding: 0 8px; }
 .ab-bar.behind span { background: var(--muted); border-radius: 3px 0 0 3px; }
 .ab-bar.ahead span { background: var(--info); border-radius: 0 3px 3px 0; }
 .btn.more { align-self: center; margin-top: 6px; }
-@media (max-width: 900px) { .branch-row { grid-template-columns: minmax(0, 1fr); } .branch-actions { flex-wrap: wrap; } .branch-actions { justify-content: flex-start; opacity: 1; } }
+@media (max-width: 900px) { .branch-row { grid-template-columns: minmax(0, 1fr); } .branch-actions { flex-wrap: wrap; justify-content: flex-start; opacity: 1; } }
 
-.btn.icon-only { padding: 0 8px; display: inline-flex; align-items: center; justify-content: center; }
 .btn .i { width: 16px; height: 16px; }

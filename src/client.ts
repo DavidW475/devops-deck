@@ -1,7 +1,7 @@
-import { createWriteStream } from 'fs';
-import { Readable } from 'stream';
-import { pipeline } from 'stream/promises';
-import type { ReadableStream as WebReadableStream } from 'stream/web';
+import { createWriteStream } from 'node:fs';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import * as vscode from 'vscode';
 import { Connection, ConnectionManager, isAzureDevOpsUrl } from './connection';
 import * as T from './types';
@@ -26,6 +26,31 @@ const WORK_ITEM_FIELDS = [
   'System.ChangedDate', 'System.IterationPath', 'System.AreaPath', 'System.Tags',
   'Microsoft.VSTS.Common.Priority',
 ];
+
+/**
+ * Ids from webviews and API responses end up in request paths. A segment that is empty, "." or ".." (also percent-encoded)
+ * or contains "?", "#" or "\\" would point the request at another route, so such paths are refused.
+ */
+export function isSafeApiPath(path: string): boolean {
+  return path.split('/').every(seg => {
+    if (!seg || /[?#\\]/.test(seg)) {
+      return false;
+    }
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(seg);
+    } catch {
+      return false;
+    }
+    return decoded !== '.' && decoded !== '..';
+  });
+}
+
+function assertSafePath(path: string): void {
+  if (!isSafeApiPath(path)) {
+    throw new AdoError('Invalid request path.', 400);
+  }
+}
 
 /** Repository IDs (GUIDs) work in organization-wide routes, so repository calls do not depend on the project. */
 const REPO_BY_ID = /^git\/repositories\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(\/|$)/i;
@@ -101,6 +126,7 @@ export class AdoClient {
   private url(scope: Scope, path: string, query: Query = {}, project?: string): string {
     const c = this.connection;
     const root = scope === 'org' || REPO_BY_ID.test(path) ? c.orgUrl : `${c.orgUrl}/${encodeURIComponent(project ?? c.project)}`;
+    assertSafePath(root === c.orgUrl ? path : `${encodeURIComponent(project ?? c.project)}/${path}`);
     const u = new URL(`${root}/_apis/${path}`);
     for (const [k, v] of Object.entries(query)) {
       if (v !== undefined) {
@@ -363,7 +389,7 @@ export class AdoClient {
     if (/^\d+$/.test(t)) {
       where = `[System.Id] = ${t}`;
     } else if (t) {
-      where = `[System.TeamProject] = @project AND [System.Title] CONTAINS '${t.replace(/'/g, "''")}'`;
+      where = `[System.TeamProject] = @project AND [System.Title] CONTAINS '${t.replaceAll("'", "''")}'`;
     }
     const ids = await this.queryWiql(`SELECT [System.Id] FROM WorkItems WHERE ${where} ORDER BY [System.ChangedDate] DESC`);
     return this.getWorkItems(ids.slice(0, 20));
@@ -794,6 +820,7 @@ export class AdoClient {
 
   private teamUrl(team: string, path: string, query: Query = {}): string {
     const c = this.connection;
+    assertSafePath(`${encodeURIComponent(c.project)}/${encodeURIComponent(team)}/${path}`);
     const u = new URL(`${c.orgUrl}/${encodeURIComponent(c.project)}/${encodeURIComponent(team)}/_apis/${path}`);
     for (const [k, v] of Object.entries(query)) {
       if (v !== undefined) {

@@ -1,8 +1,8 @@
-import * as path from 'path';
+import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { AdoClient, ZERO_OBJECT_ID } from '../client';
 import { ConnectionManager } from '../connection';
-import { currentBranch, localAdoRepos } from '../git';
+import { assertBranchName, currentBranch, localAdoRepos } from '../git';
 import { openBranchDiff } from '../pullRequests/prFiles';
 import { BranchStats, GitRepository } from '../types';
 import { errorMessage, guarded, panelHtml, plural, shortRef, TOOLBAR_ICONS } from '../util';
@@ -179,7 +179,11 @@ export class ReposPanel {
     await this.selectRepo(repo.id);
   }
 
-  private async checkout(branch: string): Promise<void> {
+  private async checkout(name: string): Promise<void> {
+    if (!this.branches.some(b => b.name === name)) {
+      return;
+    }
+    const branch = assertBranchName(name);
     const local = localAdoRepos(this.connections.current).find(r => r.repoName.toLowerCase() === this.repo?.name.toLowerCase());
     if (!local) {
       throw new Error(`No open folder is a clone of ${this.repo?.name}. Clone it first.`);

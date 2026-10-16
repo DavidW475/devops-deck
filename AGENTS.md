@@ -12,6 +12,7 @@ DevOps Deck is a VS Code extension (TypeScript, strict mode) for Azure DevOps Se
 - **Webviews:** scripts only with the CSP nonce (`panelHtml` / the sidebar's own CSP).
 - **Webviews:** commands requested by a webview are executed only within the `azureDevOps.` namespace.
 - **Fictitious data only** in screenshots, examples, tests and docs (Contoso, Fabrikam, made-up names), never real organizations, people or customer data.
+- **Test coverage:** new code needs at least **80 % line coverage** (SonarCloud quality gate). Every change comes with unit tests; check with `npm run test:coverage`. Details: [docs/agents/testing-and-quality.md](docs/agents/testing-and-quality.md).
 - **Trademark:** "Azure DevOps" is a Microsoft trademark. Keep the "not affiliated with or endorsed by Microsoft" notice in the README and do not use Microsoft logos.
 
 ## Checks before finishing a change
@@ -19,6 +20,7 @@ DevOps Deck is a VS Code extension (TypeScript, strict mode) for Azure DevOps Se
 ```bash
 npm ci
 npm test            # compile (strict, no unused locals/parameters) + unit tests
+npm run test:coverage  # new code must reach ≥ 80 % line coverage
 npm outdated        # should print nothing
 npm audit           # 0 vulnerabilities
 npx vsce ls         # only out/, media/ (no screenshots), README, CHANGELOG, LICENSE, package.json

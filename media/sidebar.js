@@ -966,7 +966,7 @@
     }
     const status = l ? statusIcon(l.status, l.result) : `<span class="status muted">${icon('rocket')}</span>`;
     return `
-      <article class="card def ${open ? 'open' : ''}" data-toggle="${key}" tabindex="0">
+      <article class="card def ${open ? 'open' : ''}" data-toggle="${esc(key)}" tabindex="0">
         <div class="card-row">
           <div class="build-status">${status}</div>
           <div class="card-body">

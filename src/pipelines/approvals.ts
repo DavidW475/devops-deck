@@ -32,6 +32,7 @@ export async function answerApproval(client: AdoClient, approvalId: string, stat
     return false;
   }
   await client.updateApproval(approvalId, decision, comment);
-  vscode.window.setStatusBarMessage(`$(check) ${decision === 'approved' ? 'Approved' : 'Rejected'} ${what}`, 3000);
+  const label = decision === 'approved' ? '$(check) Approved' : '$(close) Rejected';
+  vscode.window.setStatusBarMessage(what ? `${label} ${what}` : label, 3000);
   return true;
 }

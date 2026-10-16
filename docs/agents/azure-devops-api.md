@@ -5,6 +5,7 @@ All REST traffic goes through `AdoClient`. Do not call `fetch` elsewhere.
 ## Request pipeline
 
 - `url(scope, path, query, project?)` builds `<orgUrl>/_apis/<path>` (`scope: 'org'`) or `<orgUrl>/<project>/_apis/<path>` (`'project'`), sets query params (undefined values are skipped) and adds `api-version=7.1` unless the query already sets one.
+- `url()` and `teamUrl()` refuse paths with an empty, `.` or `..` segment (also percent-encoded) or with `?`, `#` or `\` (`isSafeApiPath`), because ids from webviews and API responses are put into paths. Encode string segments with `encodeURIComponent`.
 - `get(scope, path, query)` is the shortcut for JSON GETs.
 - `request<R>(method, url, body?, opts)` returns parsed JSON, `undefined` for 204, or text with `raw: true`.
 - `send(...)` is the low-level call that returns the `Response` (used for headers such as ETags and for binary downloads). It:

@@ -56,4 +56,69 @@ describe('parsePipelineParameters', () => {
   it('returns nothing without a parameters block', () => {
     assert.deepEqual(parsePipelineParameters('trigger:\n- main\n'), []);
   });
+
+  it('reads block scalars, flow maps and quoted keys', () => {
+    const params = parsePipelineParameters([
+      '\uFEFFparameters:  # runtime parameters',
+      '- name: script',
+      '  type: string',
+      '  default: |',
+      '    echo one',
+      '      echo two',
+      '- name: notes',
+      '  default: >-',
+      '    first',
+      '    second',
+      '- name: settings',
+      '  type: object',
+      "  default: { region: westeurope, 'tier': \"gold\", nested: [a, {b: c}], bad }",
+      '- "name" : quoted',
+      '  displayName: "Say \\"hi\\"\\nnow"',
+      "  default: 'it''s'",
+      '- name: empty',
+      '  default:',
+      '- name: nothing',
+      '  default: ~',
+      '- name: flag',
+      '  default: TRUE',
+    ].join('\r\n'));
+    const byName = Object.fromEntries(params.map(p => [p.name, p]));
+    assert.equal(byName.script.default, 'echo one\n  echo two');
+    assert.equal(byName.notes.default, 'first second');
+    assert.deepEqual(JSON.parse(byName.settings.default!), { region: 'westeurope', tier: 'gold', nested: ['a', { b: 'c' }] });
+    assert.equal(byName.quoted.displayName, 'Say "hi"\nnow');
+    assert.equal(byName.quoted.default, "it's");
+    assert.equal(byName.quoted.type, 'string', 'type defaults to string');
+    assert.equal(byName.empty.default, undefined);
+    assert.equal(byName.nothing.default, undefined);
+    assert.equal(byName.flag.default, 'true');
+  });
+
+  it('reads nested list items and skips entries without a name', () => {
+    const params = parsePipelineParameters([
+      'parameters:',
+      '-',
+      '  name: stages',
+      '  type: stageList',
+      '  default:',
+      '  - stage: A',
+      '  - stage: B',
+      '- type: string',
+      '- just text',
+      '-',
+      '- name: last',
+    ].join('\n'));
+    assert.deepEqual(params.map(p => p.name), ['stages', 'last']);
+    assert.deepEqual(JSON.parse(params[0].default!), [{ stage: 'A' }, { stage: 'B' }]);
+  });
+
+  it('reads legacy objects and ignores scalars and lines that are not keys', () => {
+    const legacy = parsePipelineParameters('parameters:\n  pools:\n    linux: ubuntu-latest\n  empty:\n');
+    assert.deepEqual(legacy.map(p => [p.name, p.type, p.default]), [['pools', 'object', '{\n  "linux": "ubuntu-latest"\n}'], ['empty', 'string', undefined]]);
+    assert.deepEqual(parsePipelineParameters('parameters:\n  just a value\n'), []);
+    assert.deepEqual(parsePipelineParameters('parameters:\n\n# only a comment\n'), []);
+    assert.deepEqual(parsePipelineParameters('parameters:\n  "unclosed: x\n'), []);
+    assert.deepEqual(parsePipelineParameters('parameters:\n  url:https://x\n'), []);
+    assert.deepEqual(parsePipelineParameters('parameters:\n  "k" x: y\n'), []);
+  });
 });

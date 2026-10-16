@@ -1,9 +1,10 @@
 import * as vscode from 'vscode';
-import * as path from 'path';
+import * as path from 'node:path';
 import { AdoClient } from '../client';
 import { gitApi, trimSlashes } from '../connection';
 import { GitChange, PrChange, PullRequest } from '../types';
 import { shortRef } from '../util';
+import { assertBranchName } from '../git';
 
 export const PR_SCHEME = 'ado-pr';
 
@@ -119,7 +120,7 @@ export async function checkoutPullRequest(pr: PullRequest): Promise<void> {
     if (!remote) {
       continue;
     }
-    const branch = shortRef(pr.sourceRefName);
+    const branch = assertBranchName(shortRef(pr.sourceRefName));
     await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Checking out ${branch}…` }, async () => {
       await repo.fetch(remote.name, branch);
       const exists = repo.state.refs.some((r: any) => r.type === 0 && r.name === branch);

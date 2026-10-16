@@ -19,6 +19,29 @@ interface CreateRequest {
   workItems: number[];
 }
 
+/** The form as the page sent it, with every field converted (the page is not trusted). */
+export function toCreateRequest(raw: any): CreateRequest {
+  const r = raw && typeof raw === 'object' ? raw : {};
+  const list = (v: unknown): any[] => (Array.isArray(v) ? v : []);
+  return {
+    repoId: String(r.repoId ?? ''), source: String(r.source ?? ''), target: String(r.target ?? ''),
+    title: String(r.title ?? ''), description: String(r.description ?? ''),
+    isDraft: !!r.isDraft, autoComplete: !!r.autoComplete, mergeStrategy: String(r.mergeStrategy ?? ''), deleteSourceBranch: !!r.deleteSourceBranch,
+    reviewers: list(r.reviewers).map(x => ({ id: String(x?.id ?? ''), isRequired: !!x?.isRequired })),
+    workItems: list(r.workItems).map(Number).filter(Number.isInteger),
+  };
+}
+
+/** A picked link candidate sent back by the page: only id, title and sub, as text. */
+export function parseLinkKey(key: unknown): { id: string; title: string; sub: string } | undefined {
+  try {
+    const v = JSON.parse(String(key));
+    return v && typeof v === 'object' ? { id: String(v.id ?? ''), title: String(v.title ?? ''), sub: String(v.sub ?? '') } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Form to open a pull request, prefilled from the local branch and its commits. */
 export class CreatePullRequestPanel {
   private static current?: CreatePullRequestPanel;
@@ -73,11 +96,15 @@ export class CreatePullRequestPanel {
       case 'linkSearch':
         await this.search(m.picker, String(m.text ?? ''), m.seq);
         return;
-      case 'link':
-        this.post({ type: 'add', picker: m.picker, item: JSON.parse(String(m.key)) });
+      case 'link': {
+        const item = parseLinkKey(m.key);
+        if (item?.id) {
+          this.post({ type: 'add', picker: String(m.picker), item });
+        }
         return;
+      }
       case 'create':
-        await this.create(m.request as CreateRequest, !!m.push);
+        await this.create(toCreateRequest(m.request), !!m.push);
         return;
       case 'openPr':
         await vscode.commands.executeCommand('azureDevOps.pr.openOverview', String(m.repoId), Number(m.prId));

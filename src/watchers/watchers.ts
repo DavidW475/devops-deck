@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { AdoClient, AdoError } from '../client';
 import { ConnectionManager } from '../connection';
 import { Build, IdentityRef, PullRequest, WorkItem, WorkItemUpdate } from '../types';
-import { errorMessage, shortRef, VOTE_LABELS } from '../util';
+import { asText, errorMessage, inSequence, mapLimit, shortRef, VOTE_LABELS } from '../util';
 import { stripTags } from '../workItems/wiModel';
 
 type CommandAction = { command: string; args?: unknown[] };
@@ -77,9 +77,28 @@ const HISTORY = 50;
 
 const intervalOf = (c: BaseConfig) => Math.max(MIN_INTERVAL, c.interval ?? DEFAULT_INTERVAL) * 1000;
 
-function glob(pattern: string, value: string): boolean {
-  const re = new RegExp('^' + pattern.split('*').map(p => p.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$', 'i');
-  return re.test(value);
+/** Case-insensitive match where "*" stands for any text; linear, without building a regular expression. */
+export function glob(pattern: string, value: string): boolean {
+  const parts = pattern.toLowerCase().split('*');
+  const v = value.toLowerCase();
+  const first = parts[0];
+  const last = parts.at(-1) ?? '';
+  if (parts.length === 1) {
+    return v === first;
+  }
+  if (v.length < first.length + last.length || !v.startsWith(first) || !v.endsWith(last)) {
+    return false;
+  }
+  const end = v.length - last.length;
+  let pos = first.length;
+  for (const mid of parts.slice(1, -1)) {
+    const i = v.indexOf(mid, pos);
+    if (i < 0 || i + mid.length > end) {
+      return false;
+    }
+    pos = i + mid.length;
+  }
+  return true;
 }
 
 function isPerson(ref: IdentityRef | undefined, who: string, me: IdentityRef): boolean {
@@ -100,7 +119,7 @@ function fieldText(v: unknown): string {
   if (typeof v === 'object' && 'displayName' in (v as object)) {
     return String((v as IdentityRef).displayName);
   }
-  const s = stripTags(String(v)).replace(/\s+/g, ' ').trim();
+  const s = stripTags(asText(v)).replace(/\s+/g, ' ').trim();
   return s.length > 40 ? s.slice(0, 39) + '…' : s;
 }
 
@@ -113,6 +132,12 @@ export function readWatchers(): WatcherConfig[] {
 export function watchersTarget(): vscode.ConfigurationTarget {
   const inspect = vscode.workspace.getConfiguration('azureDevOps').inspect<WatcherConfig[]>('watchers');
   return inspect?.workspaceValue !== undefined ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
+}
+
+/** Whether the watchers come from workspace (or folder) settings, i.e. from the opened repository. */
+export function watchersInWorkspaceSettings(): boolean {
+  const inspect = vscode.workspace.getConfiguration('azureDevOps').inspect<WatcherConfig[]>('watchers');
+  return inspect?.workspaceValue !== undefined || inspect?.workspaceFolderValue !== undefined;
 }
 
 export async function writeWatchers(list: WatcherConfig[]): Promise<void> {
@@ -360,7 +385,7 @@ export class Watchers implements vscode.Disposable {
 
   /** Collects each due watcher's events (work items query now, the others were queued) and runs its actions. */
   private async runDue(due: WatcherState[], states: WatcherState[]): Promise<void> {
-    for (const s of due) {
+    await inSequence(due, async s => {
       if (states !== this.states) {
         return; // configuration changed meanwhile
       }
@@ -370,7 +395,7 @@ export class Watchers implements vscode.Disposable {
         this.output.info(`${s.config.name}: ${events.length} event(s)`);
         await this.dispatch(s.config, events);
       }
-    }
+    });
   }
 
   private async pollWorkItems(s: WatcherState, c: WorkItemWatcherConfig): Promise<WatchEvent[]> {
@@ -386,18 +411,16 @@ export class Watchers implements vscode.Disposable {
       return [];
     }
     const items = await this.client.getWorkItems(ids, ['System.CreatedDate', 'System.CreatedBy', 'System.ChangedBy']);
-    const events: WatchEvent[] = [];
+    const changed: { w: WorkItem; known: number | undefined }[] = [];
     for (const w of items) {
       const known = s.revs.get(w.id);
       s.revs.set(w.id, w.rev);
       if (!baseline && (known === undefined || known < w.rev)) {
-        const e = await this.workItemEvent(c, w, known, since);
-        if (e) {
-          events.push(e);
-        }
+        changed.push({ w, known });
       }
     }
-    return events;
+    const events = await mapLimit(changed, 4, ({ w, known }) => this.workItemEvent(c, w, known, since));
+    return events.filter((e): e is WatchEvent => e !== undefined);
   }
 
   /** The event for a new revision of a work item, if the watcher reports it. */
@@ -435,7 +458,7 @@ export class Watchers implements vscode.Disposable {
         return u.rev > knownRev;
       }
       const changedAt = u.fields?.['System.ChangedDate']?.newValue;
-      return !!changedAt && new Date(String(changedAt)).getTime() > since - OVERLAP_MS;
+      return !!changedAt && new Date(asText(changedAt)).getTime() > since - OVERLAP_MS;
     };
     for (const u of updates.filter(isNew)) {
       for (const [name, v] of Object.entries(u.fields ?? {})) {
@@ -535,9 +558,7 @@ export class Watchers implements vscode.Disposable {
     this.history.splice(0, Math.max(0, this.history.length - HISTORY));
     this.unseen += events.length;
     const actions: Action[] = c.actions?.length ? c.actions : ['notify'];
-    for (const a of actions) {
-      await this.runAction(c, a, events);
-    }
+    await inSequence(actions, a => this.runAction(c, a, events));
   }
 
   private async runAction(c: WatcherConfig, a: Action, events: WatchEvent[]): Promise<void> {
@@ -546,16 +567,18 @@ export class Watchers implements vscode.Disposable {
       return;
     }
     if (a === 'open' || a === 'browser') {
-      for (const e of events.slice(0, MAX_SINGLE_NOTIFICATIONS)) {
-        await (a === 'open' ? this.open(e) : vscode.env.openExternal(vscode.Uri.parse(e.url)));
-      }
+      await inSequence(events.slice(0, MAX_SINGLE_NOTIFICATIONS), e => (a === 'open' ? this.open(e) : vscode.env.openExternal(vscode.Uri.parse(e.url))));
       return;
     }
     if (a && typeof a === 'object' && typeof a.command === 'string') {
-      for (const e of events) {
-        await Promise.resolve(vscode.commands.executeCommand(a.command, ...(a.args ?? []).map(arg => fill(arg, e))))
-          .catch(err => this.output.error(`${c.name}: command ${a.command} failed: ${errorMessage(err)}`));
+      const command = a.command;
+      if (!command.startsWith('azureDevOps.') && watchersInWorkspaceSettings()) {
+        // A cloned repository must not be able to run arbitrary commands with text from pull requests and work items.
+        this.output.warn(`${c.name}: command ${command} skipped; commands outside DevOps Deck only run for watchers in user settings.`);
+        return;
       }
+      await inSequence(events, e => Promise.resolve(vscode.commands.executeCommand(command, ...(a.args ?? []).map(arg => fill(arg, e))))
+        .catch(err => this.output.error(`${c.name}: command ${command} failed: ${errorMessage(err)}`)));
     }
   }
 

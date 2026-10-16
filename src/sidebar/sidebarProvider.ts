@@ -13,6 +13,9 @@ export interface BuiltinQuery {
   wiql: string;
 }
 
+/** An optional text field from the page: a non-empty string or undefined. */
+const optText = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
+
 const DEFAULT_QUERIES: BuiltinQuery[] = [
   { name: 'Assigned to me', wiql: "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project AND [System.AssignedTo] = @Me AND [System.State] NOT IN ('Closed', 'Done', 'Removed', 'Completed') ORDER BY [System.ChangedDate] DESC" },
   { name: 'Recently updated by me', wiql: 'SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project AND [System.ChangedBy] = @Me AND [System.ChangedDate] >= @Today - 14 ORDER BY [System.ChangedDate] DESC' },
@@ -90,7 +93,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       case 'prFiles':
         return this.prFiles(String(p.repoId), Number(p.prId));
       case 'setReviewed':
-        await this.reviewed.set(p.repoId, Number(p.prId), String(p.path), String(p.version), !!p.reviewed);
+        await this.reviewed.set(String(p.repoId), Number(p.prId), String(p.path), String(p.version), !!p.reviewed);
         return null;
       case 'queries': {
         const saved = await c.listSavedQueries().catch(() => []);
@@ -128,13 +131,13 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           };
         }));
       case 'definitionBuilds':
-        return (await c.forProject(p.project).listBuilds({ definitionId: p.id, top: 10 })).map(buildDto);
+        return (await c.forProject(optText(p.project)).listBuilds({ definitionId: Number(p.id), top: 10 })).map(buildDto);
       case 'timeline':
-        return timelineTree(await c.forProject(p.project).getTimeline(p.buildId));
+        return timelineTree(await c.forProject(optText(p.project)).getTimeline(Number(p.buildId)));
       case 'teams':
         return this.perProject(async x => (await x.listTeams()).map(t => ({ id: t.id, name: t.name })));
       case 'sprint':
-        return this.sprint(c.forProject(p.project), String(p.team), p.iteration ? String(p.iteration) : undefined);
+        return this.sprint(c.forProject(optText(p.project)), String(p.team), p.iteration ? String(p.iteration) : undefined);
       case 'approvals':
         return this.perProject(x => this.approvals(x));
       default:
@@ -147,7 +150,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     const iterations = await c.listTeamIterations(team);
     const iteration = iterations.find(i => i.id === iterationId)
       ?? iterations.find(i => i.attributes?.timeFrame === 'current')
-      ?? iterations.filter(i => i.attributes?.timeFrame === 'past').pop()
+      ?? iterations.findLast(i => i.attributes?.timeFrame === 'past')
       ?? iterations[0];
     const iterationDto = (i: TeamIteration) => ({
       id: i.id, name: i.name, path: i.path, start: i.attributes?.startDate, finish: i.attributes?.finishDate, timeFrame: i.attributes?.timeFrame,

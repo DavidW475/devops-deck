@@ -1,4 +1,4 @@
-import { randomBytes } from 'crypto';
+import { randomBytes } from 'node:crypto';
 import * as vscode from 'vscode';
 import { AdoError } from './client';
 
@@ -24,6 +24,17 @@ export function plural(n: number, word: string, many = `${word}s`): string {
 
 export function shortRef(ref?: string): string {
   return (ref ?? '').replace(/^refs\/heads\//, '');
+}
+
+/** A field value as text: strings as they are, numbers and booleans formatted, objects as JSON, nothing as ''. */
+export function asText(v: unknown): string {
+  if (typeof v === 'string') {
+    return v;
+  }
+  if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint') {
+    return v.toString();
+  }
+  return v === null || v === undefined ? '' : JSON.stringify(v) ?? '';
 }
 
 export function escapeHtml(s: unknown): string {
@@ -82,7 +93,7 @@ export async function showError(e: unknown): Promise<void> {
 }
 
 /** Wrap a command handler so failures surface as notifications. */
-export function guarded<A extends unknown[]>(fn: (...args: A) => Promise<unknown>): (...args: A) => Promise<void> {
+export function guarded<A extends unknown[]>(fn: (...args: A) => unknown): (...args: A) => Promise<void> {
   return async (...args: A) => {
     try {
       await fn(...args);
@@ -196,15 +207,22 @@ export const LINK_PICKER_SCRIPT = `
 })();
 `;
 
+/** Runs `fn` for the items one after another (for side effects whose order matters). */
+export function inSequence<T>(items: readonly T[], fn: (item: T) => unknown): Promise<void> {
+  return items.reduce<Promise<void>>((p, item) => p.then(async () => { await fn(item); }), Promise.resolve());
+}
+
 /** Runs `fn` over the items with at most `limit` calls in flight; results keep the input order. */
 export async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length);
   let next = 0;
-  const worker = async () => {
-    while (next < items.length) {
-      const i = next++;
-      out[i] = await fn(items[i], i);
+  const worker = async (): Promise<void> => {
+    if (next >= items.length) {
+      return;
     }
+    const i = next++;
+    out[i] = await fn(items[i], i);
+    return worker();
   };
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
   return out;
@@ -234,7 +252,7 @@ const ALLOWED_ATTRS: Record<string, string[]> = {
 function decodeEntities(s: string): string {
   const named: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', colon: ':', tab: '\t', newline: '\n' };
   return s.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);?/gi, (m, e: string) => {
-    if (e[0] === '#') {
+    if (e.startsWith('#')) {
       const code = e[1] === 'x' || e[1] === 'X' ? Number.parseInt(e.slice(2), 16) : Number.parseInt(e.slice(1), 10);
       return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : '';
     }

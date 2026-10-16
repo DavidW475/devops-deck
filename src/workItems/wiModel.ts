@@ -1,4 +1,5 @@
 import { IdentityRef, WorkItem, WorkItemTypeField, WorkItemUpdate } from '../types';
+import { asText } from '../util';
 
 export const PARENT_REL = 'System.LinkTypes.Hierarchy-Reverse';
 export const CHILD_REL = 'System.LinkTypes.Hierarchy-Forward';
@@ -61,7 +62,7 @@ export function editableFields(typeFields: WorkItemTypeField[]): EditableField[]
 
 /** "a; b ;c" → ["a", "b", "c"]; and back with joinTags. */
 export function splitTags(tags: unknown): string[] {
-  return String(tags ?? '').split(/[;,]/).map(t => t.trim()).filter(Boolean);
+  return asText(tags).split(/[;,]/).map(t => t.trim()).filter(Boolean);
 }
 
 export function joinTags(tags: string[]): string {
@@ -93,7 +94,7 @@ export function valueText(v: unknown): string {
   if (typeof v === 'object' && 'displayName' in (v as object)) {
     return String((v as IdentityRef).displayName);
   }
-  const s = stripTags(String(v)).replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+  const s = stripTags(asText(v)).replaceAll('&nbsp;', ' ').replace(/\s+/g, ' ').trim();
   return s.length > 80 ? s.slice(0, 79) + '…' : s;
 }
 
@@ -128,7 +129,7 @@ export function historyEntries(updates: WorkItemUpdate[]): HistoryEntry[] {
     if (changes.length || links.length) {
       out.push({
         rev: u.rev, by: u.revisedBy?.displayName ?? '', changes, links,
-        date: String(u.fields?.['System.ChangedDate']?.newValue ?? u.revisedDate ?? ''),
+        date: asText(u.fields?.['System.ChangedDate']?.newValue ?? u.revisedDate),
       });
     }
   }

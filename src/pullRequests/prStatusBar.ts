@@ -194,5 +194,5 @@ function buildInfo(build: Build | undefined): { text: string; tip: string } {
 }
 
 function escapeMd(s: string): string {
-  return s.replace(/[\\`*_{}[\]()#+\-.!|<>]/g, '\\$&');
+  return s.replace(/[\\`*_{}[\]()#+\-.!|<>]/g, String.raw`\$&`);
 }

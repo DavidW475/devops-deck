@@ -128,7 +128,7 @@ Watchers check Azure DevOps in the background and tell you when something you ca
 | `ignoreOwnChanges` | all | Skip your own changes (default `true`; for pipelines `false`, so you hear about your own failed runs) |
 | `actions` | all | `notify` (default; notification with *Open* and *Open in Browser*), `open` (open it in VS Code), `browser`, or `{ "command": "…", "args": ["${id}", "${url}"] }` to run any VS Code command |
 
-> **Caution with command actions:** `${title}` and `${message}` contain text that anyone in the project can write. Do not pass them to commands that execute text, such as `workbench.action.terminal.sendSequence`. Watchers in a workspace's `.vscode/settings.json` run their commands as soon as you trust that workspace, so review them in repositories you did not write yourself.
+> **Caution with command actions:** `${title}` and `${message}` contain text that anyone in the project can write. Do not pass them to commands that execute text, such as `workbench.action.terminal.sendSequence`. Watchers defined in a workspace's `.vscode/settings.json` only run DevOps Deck commands (`azureDevOps.*`); other commands run only for watchers in your user settings.
 
 The status bar also shows how many events you have not looked at yet. Click it, or run *DevOps Deck: Show Watcher Events*, to see the last 50 events. More than three events from one check are combined into a single notification.
 

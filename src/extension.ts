@@ -41,7 +41,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   /** Client for the project a sidebar item belongs to (passed as the last command argument when several are selected). */
   const at = (project: unknown) => client.forProject(typeof project === 'string' && project ? project : undefined);
-  const command = (id: string, fn: (...args: any[]) => Promise<unknown>) =>
+  const command = (id: string, fn: (...args: any[]) => unknown) =>
     context.subscriptions.push(vscode.commands.registerCommand(id, guarded(fn)));
   /** Commands that change data on the server refresh the sidebar afterwards. */
   const mutation = (id: string, fn: (...args: any[]) => Promise<unknown>) =>
@@ -233,11 +233,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     (await createWorkItemFromCode(client, connections, uri instanceof vscode.Uri ? uri : undefined, typeof line === 'number' ? line : undefined)) !== undefined);
 
   // ----- repositories and wiki -----
-  command('azureDevOps.repos.open', async () => ReposPanel.show(client, connections, context.extensionUri, refresh));
+  command('azureDevOps.repos.open', () => ReposPanel.show(client, connections, context.extensionUri, refresh));
   command('azureDevOps.wiki.open', () => openWiki(client));
 
   // ----- pipelines -----
-  command('azureDevOps.pipelines.run', async (definitionId?: number, project?: string) =>
+  command('azureDevOps.pipelines.run', (definitionId?: number, project?: string) =>
     RunPipelinePanel.show(at(project), context.extensionUri, typeof definitionId === 'number' ? definitionId : undefined, refresh));
   mutation('azureDevOps.pipelines.rerun', async (definitionId: number, branch: string, project?: string) => {
     const def = await at(project).getDefinition(definitionId);
@@ -250,9 +250,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     await at(project).cancelBuild(buildId);
   });
-  command('azureDevOps.pipelines.openRun', async (buildId: number, project?: string) =>
+  command('azureDevOps.pipelines.openRun', (buildId: number, project?: string) =>
     RunViewPanel.show(at(project), context.extensionUri, buildId, refresh));
-  command('azureDevOps.pipelines.streamLogs', async (buildId: number, title?: string, project?: string) =>
+  command('azureDevOps.pipelines.streamLogs', (buildId: number, title?: string, project?: string) =>
     BuildLogTerminal.show(at(project), buildId, title ?? `Build ${buildId}`));
   command('azureDevOps.pipelines.openLog', async (buildId: number, logId: number, name: string, project?: string) => {
     const uri = makeLogUri(buildId, logId, name, at(project).connection.project);

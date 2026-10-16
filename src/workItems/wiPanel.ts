@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { AdoClient, PrArtifact, parsePrArtifact } from '../client';
 import { PullRequest, WorkItem, WorkItemComment, WorkItemState, WorkItemTypeField, WorkItemUpdate } from '../types';
 import {
-  avatarHtml, errorMessage, escapeHtml, guarded, LINK_PICKER_SCRIPT, LinkCandidate, linkPickerHtml, panelHtml, sanitizeHtml, shortRef, showError, timeAgo, viewButtonsHtml,
+  asText, avatarHtml, errorMessage, escapeHtml, guarded, LINK_PICKER_SCRIPT, LinkCandidate, linkPickerHtml, panelHtml, sanitizeHtml, shortRef, showError, timeAgo, viewButtonsHtml,
 } from '../util';
 import { EditableField, editableFields, hierarchyOf, HistoryEntry, historyEntries, joinTags, PARENT_REL, splitTags } from './wiModel';
 
@@ -251,14 +251,14 @@ export class WorkItemPanel {
 }
 
 function fieldValue(value: unknown, kind: unknown): unknown {
-  const s = String(value ?? '').trim();
+  const s = asText(value).trim();
   if (!s) {
     return null;
   }
   if (kind === 'number') {
     const n = Number(s.replace(',', '.'));
     if (!Number.isFinite(n)) {
-      throw new Error(`"${s}" is not a number.`);
+      throw new TypeError(`"${s}" is not a number.`);
     }
     return n;
   }

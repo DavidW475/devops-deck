@@ -1,4 +1,4 @@
-import * as path from 'path';
+import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { Connection, gitApi, parseRemote } from './connection';
 
@@ -95,4 +95,18 @@ export function describeCommits(branch: string, messages: string[]): { title: st
     title: titleFromBranch(branch),
     description: subjects.length ? [...subjects].reverse().map(s => `- ${s}`).join('\n') : '',
   };
+}
+
+/**
+ * Refuses branch names git would misread: a leading "-" is taken as an option, and names that
+ * `git check-ref-format` rejects would fail later with a less helpful message.
+ */
+export function assertBranchName(name: string): string {
+  const bad = !name || name.startsWith('-') || name.startsWith('/') || name.endsWith('/') || name.endsWith('.')
+    || name.endsWith('.lock') || name.includes('..') || name.includes('//') || name.includes('@{')
+    || [...name].some(ch => ch <= ' ' || ch === '\x7f' || '~^:?*[\\'.includes(ch));
+  if (bad) {
+    throw new Error(`"${name}" is not a valid branch name.`);
+  }
+  return name;
 }
