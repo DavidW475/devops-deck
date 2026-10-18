@@ -2,7 +2,7 @@
   "name": "devops-deck",
   "displayName": "DevOps Deck for Azure DevOps",
   "description": "Review and create pull requests, plan sprints, manage work items, watch pipelines with live logs, approve deployments and browse the wiki from inside VS Code.",
-  "version": "0.2.1",
+  "version": "1.0.0",
   "publisher": "davidw475",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -343,6 +343,24 @@
         "title": "Open Wiki Page",
         "category": "DevOps Deck",
         "icon": "$(book)"
+      },
+      {
+        "command": "azureDevOps.yaml.showTemplates",
+        "title": "Show Pipeline Templates",
+        "category": "DevOps Deck",
+        "icon": "$(list-tree)"
+      },
+      {
+        "command": "azureDevOps.yaml.previewPipeline",
+        "title": "Validate and Preview Expanded Pipeline",
+        "category": "DevOps Deck",
+        "icon": "$(open-preview)"
+      },
+      {
+        "command": "azureDevOps.yaml.showPreview",
+        "title": "Show Pipeline Preview",
+        "category": "DevOps Deck",
+        "icon": "$(type-hierarchy)"
       }
     ],
     "keybindings": [
@@ -434,9 +452,29 @@
           "command": "azureDevOps.wi.createFromCode",
           "when": "resourceScheme == file",
           "group": "1_ado@3"
+        },
+        {
+          "command": "azureDevOps.yaml.showTemplates",
+          "when": "resourceLangId == yaml || resourceLangId == azure-pipelines || resourceScheme == ado-template",
+          "group": "1_ado@4"
+        },
+        {
+          "command": "azureDevOps.yaml.previewPipeline",
+          "when": "resourceScheme == file && (resourceLangId == yaml || resourceLangId == azure-pipelines)",
+          "group": "1_ado@5"
+        },
+        {
+          "command": "azureDevOps.yaml.showPreview",
+          "when": "resourceLangId == yaml || resourceLangId == azure-pipelines || resourceScheme == ado-template",
+          "group": "1_ado@6"
         }
       ],
       "editor/title": [
+        {
+          "command": "azureDevOps.yaml.showPreview",
+          "when": "resourceLangId == yaml || resourceLangId == azure-pipelines || resourceScheme == ado-template",
+          "group": "navigation@8"
+        },
         {
           "command": "azureDevOps.pr.addComment",
           "when": "resourceScheme == ado-pr",
@@ -456,6 +494,11 @@
           "command": "azureDevOps.pr.unmarkReviewed",
           "when": "resourceScheme == ado-pr && azureDevOps.fileReviewed",
           "group": "navigation@3"
+        },
+        {
+          "command": "azureDevOps.yaml.previewPipeline",
+          "when": "resourceScheme == file && (resourceLangId == yaml || resourceLangId == azure-pipelines)",
+          "group": "navigation@9"
         }
       ],
       "comments/comment/title": [
@@ -638,6 +681,18 @@
         {
           "command": "azureDevOps.wi.createFromCode",
           "when": "editorIsOpen"
+        },
+        {
+          "command": "azureDevOps.yaml.showTemplates",
+          "when": "editorLangId == yaml || editorLangId == azure-pipelines"
+        },
+        {
+          "command": "azureDevOps.yaml.previewPipeline",
+          "when": "resourceScheme == file && (editorLangId == yaml || editorLangId == azure-pipelines)"
+        },
+        {
+          "command": "azureDevOps.yaml.showPreview",
+          "when": "editorLangId == yaml || editorLangId == azure-pipelines"
         }
       ],
       "view/item/context": [
@@ -926,6 +981,16 @@
           "type": "boolean",
           "default": false,
           "description": "Show timestamps in pipeline logs."
+        },
+        "azureDevOps.yaml.templateDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Check the `parameters` passed to `template:` and `extends:` references in pipeline YAML against what the template declares (unknown, missing required, values that don't fit), also for templates from repository resources."
+        },
+        "azureDevOps.yaml.preferLocalRepositories": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Read templates of a repository resource (`template: file.yml@alias`) from a local clone in the workspace when there is one, so unpushed template changes count. Turn off to always read Azure Repos repositories from the server at the resource's `ref`."
         }
       }
     },

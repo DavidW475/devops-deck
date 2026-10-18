@@ -34,7 +34,7 @@ Default `7.1`. These calls pass a preview version explicitly:
 | `searchIdentities` (`IdentityPicker/Identities`) | `7.1-preview.1` |
 | `listPendingApprovals`, `getApproval`, `updateApproval` (`pipelines/approvals`) | `7.1-preview.1` |
 
-`previewPipeline` (`POST pipelines/{id}/preview` with `previewRun: true`) is the pipelines "preview run" endpoint and uses the default 7.1.
+`previewPipeline` (`POST pipelines/{id}/preview` with `previewRun: true`, api-version `7.1-preview.1`) is the pipelines "preview run" endpoint. With `yamlOverride` it expands the given YAML instead of the committed root file (used by *Validate and Preview Expanded Pipeline*); other files still come from the server.
 
 ## Org vs project routes
 
@@ -61,6 +61,10 @@ Default `7.1`. These calls pass a preview version explicitly:
 - **Artifacts:** `download(url)` uses `send` with `binary: true` and a 30 minute timeout. `fetch` drops the `Authorization` header on cross-origin redirects (e.g. to blob storage), so credentials do not leak.
 - **Paging:** `getIterationChanges` follows `nextSkip`; `diffBranches` pages with `$skip` while `allChangesIncluded === false`.
 - **Web links:** `webUrl(kind, ...)` builds browser URLs for PRs, work items, builds, definitions and repos.
+
+## Files at a ref
+
+`getFileTextAtRef(repoId, path, ref?)` maps a repository resource `ref` to a version descriptor: `refs/tags/x` → tag, a 40-character SHA → commit, `refs/heads/x` or a plain name → branch, none → the repository's default branch. `listYamlDefinitions(repoId)` lists the YAML pipelines of a repository (`includeAllProperties` for `process.yamlFilename`).
 
 ## Code search is intentionally not supported
 

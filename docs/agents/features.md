@@ -33,6 +33,10 @@ Short map from user features to code, plus pitfalls found while building them. C
 | Live log terminal and read-only step log documents | `logs.ts` (`BuildLogTerminal`, `LogDocumentProvider`, `stripControl`) |
 | Run form: branch, commit, YAML runtime parameters or classic queue-time variables | `runPanel.ts`, `yamlParameters.ts` (`parsePipelineParameters`) |
 | Approve / reject a pending approval | `approvals.ts` (`answerApproval`), sidebar "approvals" filter |
+| YAML editing: parameter completions, hover, go to definition, diagnostics for `template:` / `extends:` | `yamlTemplates.ts` (`YamlTemplateSupport`), logic in `templateRefs.ts` |
+| Templates of repository resources, recursive resolution, `ado-template:` read-only documents | `templateResolver.ts` (`TemplateResolver`, `decodeContext`, `uriOf`) |
+| Template tree, server preview with local YAML | `YamlTemplateSupport.showTemplates` / `previewPipeline` (`yamlOverride`) |
+| Pipeline preview panel (Local / Azure DevOps buttons, runtime parameters, stage graph, jobs, steps, sources) | `previewPanel.ts` (`PipelinePreviewPanel`) + `media/pipelinePreview.js`; model in `pipelineModel.ts`; local expansion in `templateExpander.ts` and `templateExpressions.ts` |
 
 ## Other
 
@@ -46,6 +50,11 @@ Code search is not a feature; see [azure-devops-api.md](azure-devops-api.md#code
 
 ## Pitfalls and decisions
 
+- **Template resolution:** paths without alias are relative to the including file (`/` = repository root) and stay in that file's repository; `@self` is the root pipeline's repository; `@alias` looks in the declarations inherited from the including files first (root wins), then the file's own `resources.repositories`, then any YAML file in the workspace. The context travels in the `ado-template:` URI query (`TemplateContext` as JSON); `decodeContext` validates it and only accepts local roots inside a workspace folder.
+- **Template sources:** Azure Repos (`type: git`) through `AdoClient` (same auth as everything else); a local clone (matched with `localAdoRepos`, else a workspace folder with the repository's name) wins while `azureDevOps.yaml.preferLocalRepositories` is on. GitHub/Bitbucket repositories are never fetched (credentials only go to Azure DevOps), only read from a local clone.
+- **Local expansion** (`TemplateExpander`) follows the server's compile-time rules: parameters are bound with types and defaults (problems become warnings, not errors), whole-value expressions keep their type, booleans become `True`/`False` in text, a `- template:` item inserts the template's list of the same kind as the surrounding key (`steps`, `jobs`, `stages`, `variables`), at most 100 files and 20 levels. Unreadable templates stay in the result marked with `__unresolved` and show as error items. Sources are kept in a `WeakMap` from expanded mappings to file + line (`yamlLine` from the parser).
+- **Preview panel:** the mode is remembered in `globalState` (`pipelinePreview.mode`); local previews re-render 700 ms after any YAML edit, server previews on save of the file. The page opens sources only by index into the list the panel sent.
+- **Template diagnostics** are debounced (600 ms) and skip expression values, `${{ if }}` keys and parameters passed as one expression; auth and "not configured" errors are silent. Remote files are cached for 30 s; saving a YAML file clears the cache.
 - **Stage dependencies:** the build timeline has no dependency information. `RunViewPanel.resolveYaml` asks the pipelines preview endpoint (`previewPipeline`, `previewRun: true`) for the expanded YAML with the run's ref, commit and template parameters, then reads `stages[].dependsOn` (`parseStageDependencies`; no `dependsOn` = previous stage). Fallback: the YAML file at the run's commit. If neither works, `stageDependencies` infers edges from start and finish times. The YAML arrives after the first render and redraws the graph (`deps` message).
 - **Jobs stay open:** jobs opened automatically (failed, running or once running) stay open after the run finishes, so steps and logs remain visible. Explicit user choices are kept in webview state.
 - **Log completeness:** the page decides it at request time. If the step was no longer active when the log was requested, the answer is the complete log; otherwise the page asks again (only for lines after `have`).

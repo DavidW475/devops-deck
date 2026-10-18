@@ -13,3 +13,4 @@ out/test/**
 coverage/**
 AGENTS.md
 docs/**
+tmp/**

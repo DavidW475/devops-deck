@@ -16,28 +16,50 @@ export interface PipelineParameter {
 interface Line {
   indent: number;
   text: string;
+  /** 0-based line in the source */
+  n: number;
+  /** all source lines (block scalars are read from them, so comments, blank lines and `---` inside stay text) */
+  src: string[];
+}
+
+/** Source line (0-based) of a parsed mapping or list, for "go to source". */
+const lineOf = new WeakMap<object, number>();
+export function yamlLine(v: unknown): number | undefined {
+  return v && typeof v === 'object' ? lineOf.get(v) : undefined;
+}
+
+/**
+ * Sets `key` as an own property, also for "__proto__" (a plain assignment would replace the object's prototype).
+ * For mappings built from YAML or template output, whose keys anyone can write.
+ */
+export function setOwn<V>(obj: Record<string, V>, key: string, value: V): void {
+  if (key === '__proto__') {
+    Object.defineProperty(obj, key, { value, writable: true, enumerable: true, configurable: true });
+  } else {
+    obj[key] = value;
+  }
+}
+
+/** Lines `from` to `to` (exclusive) of `src` without comments and blank lines; `n` stays the index in `src`. */
+function toLines(src: string[], from = 0, to = src.length): Line[] {
+  const out: Line[] = [];
+  for (let n = from; n < to; n++) {
+    const text = stripComment(src[n]).trimEnd();
+    if (text.trim() && text.trim() !== '---') {
+      out.push({ indent: text.length - text.trimStart().length, text: text.trimStart(), n, src });
+    }
+  }
+  return out;
+}
+
+/** Parses a whole document (the YAML subset pipelines use: block and flow collections, quoted and block scalars). */
+export function parseYamlDocument(yaml: string): Value | undefined {
+  const block = toLines(yaml.replace(/^\uFEFF/, '').split(/\r?\n/));
+  return block.length ? parseBlock(block, 0, block[0].indent)[0] : undefined;
 }
 
 export function parsePipelineParameters(yaml: string): PipelineParameter[] {
-  const raw = yaml.replace(/^﻿/, '').split(/\r?\n/);
-  const start = raw.findIndex(l => /^parameters\s*:\s*(#.*)?$/.test(l));
-  if (start < 0) {
-    return [];
-  }
-  const block: Line[] = [];
-  for (const l of raw.slice(start + 1)) {
-    if (/^\S/.test(l) && !l.startsWith('-') && !l.startsWith('#')) {
-      break;
-    }
-    const text = stripComment(l).trimEnd();
-    if (text.trim()) {
-      block.push({ indent: text.length - text.trimStart().length, text: text.trimStart() });
-    }
-  }
-  if (!block.length) {
-    return [];
-  }
-  const [value] = parseBlock(block, 0, block[0].indent);
+  const value = topLevelValue(yaml, 'parameters');
   if (Array.isArray(value)) {
     return value.filter(isRecord).filter(p => typeof p.name === 'string').map(p => ({
       name: String(p.name),
@@ -54,9 +76,32 @@ export function parsePipelineParameters(yaml: string): PipelineParameter[] {
   return [];
 }
 
-type Value = string | boolean | null | Value[] | { [k: string]: Value };
+/** Parses the value of a top-level key (`parameters`, `resources`, …); undefined when the key is missing or empty. */
+export function topLevelValue(yaml: string, key: string): Value | undefined {
+  const raw = yaml.replace(/^\uFEFF/, '').split(/\r?\n/);
+  const start = raw.findIndex(l => isTopLevelKey(l, key));
+  if (start < 0) {
+    return undefined;
+  }
+  let end = start + 1;
+  while (end < raw.length && !(/^\S/.test(raw[end]) && !raw[end].startsWith('-') && !raw[end].startsWith('#'))) {
+    end++;
+  }
+  const block = toLines(raw, start + 1, end);
+  return block.length ? parseBlock(block, 0, block[0].indent)[0] : undefined;
+}
 
-const isRecord = (v: unknown): v is Record<string, Value> => !!v && typeof v === 'object' && !Array.isArray(v);
+function isTopLevelKey(line: string, key: string): boolean {
+  if (isSpace(line[0])) {
+    return false;
+  }
+  const kv = splitKey(stripComment(line).trimEnd());
+  return !!kv && kv[0] === key && !kv[1];
+}
+
+export type Value = string | boolean | null | Value[] | { [k: string]: Value };
+
+export const isRecord = (v: unknown): v is Record<string, Value> => !!v && typeof v === 'object' && !Array.isArray(v);
 const isNil = (v: unknown): v is null | undefined => v === undefined || v === null;
 
 function legacyType(d: Value): string {
@@ -73,7 +118,7 @@ function toParamText(v: Value): string {
   return typeof v === 'boolean' ? String(v) : JSON.stringify(v, null, 2);
 }
 
-function stripComment(line: string): string {
+export function stripComment(line: string): string {
   let quote = '';
   for (let i = 0; i < line.length; i++) {
     const c = line[i];
@@ -109,6 +154,7 @@ const isListItem = (text: string) => text === '-' || text.startsWith('- ');
 
 function parseList(lines: Line[], start: number, indent: number): [Value, number] {
   const items: Value[] = [];
+  lineOf.set(items, lines[start].n);
   let i = start;
   while (i < lines.length && lines[i].indent === indent && isListItem(lines[i].text)) {
     const [v, next] = parseListItem(lines, i, indent);
@@ -130,16 +176,19 @@ function parseListItem(lines: Line[], i: number, indent: number): [Value, number
   // "- key: value" opens a mapping whose further keys sit at the column after "- ".
   const inner = indent + (lines[i].text.length - rest.length);
   const copy = [...lines];
-  copy[i] = { indent: inner, text: rest };
+  copy[i] = { ...lines[i], indent: inner, text: rest };
   return parseBlock(copy, i, inner);
 }
 
 function parseMap(lines: Line[], start: number, indent: number): [Value, number] {
   const map: Record<string, Value> = {};
+  lineOf.set(map, lines[start].n);
   let i = start;
   while (i < lines.length && lines[i].indent === indent && isKeyLine(lines[i].text)) {
     const [key, rest] = splitKey(lines[i].text)!;
-    [map[key], i] = parseMapValue(lines, i, indent, rest);
+    const [value, next] = parseMapValue(lines, i, indent, rest);
+    setOwn(map, key, value);
+    i = next;
   }
   return [map, i];
 }
@@ -158,22 +207,50 @@ function parseMapValue(lines: Line[], i: number, indent: number, rest: string): 
   return [null, i + 1];
 }
 
-/** "key: |" or "key: >" followed by more indented lines. */
+/**
+ * "key: |" or "key: >" followed by more indented lines, read from the source: "#", blank lines and "---" in there are
+ * text, not comments or document markers. The scalar ends at the first non-blank line that is not indented deeper.
+ */
 function blockScalar(lines: Line[], i: number, indent: number, folded: boolean): [Value, number] {
+  const { src, n } = lines[i];
   const body: string[] = [];
+  for (let k = n + 1; k < src.length; k++) {
+    const l = src[k].trimEnd();
+    if (l && l.length - l.trimStart().length <= indent) {
+      break;
+    }
+    body.push(l);
+  }
+  while (body.length && !body.at(-1)) {
+    body.pop();
+  }
+  const end = n + 1 + body.length;
   let j = i + 1;
-  while (j < lines.length && lines[j].indent > indent) {
-    body.push(' '.repeat(lines[j].indent) + lines[j].text);
+  while (j < lines.length && lines[j].n < end) {
     j++;
   }
-  const min = Math.min(...body.map(b => b.length - b.trimStart().length));
-  return [body.map(b => b.slice(min)).join(folded ? ' ' : '\n'), j];
+  const min = Math.min(...body.filter(Boolean).map(b => b.length - b.trimStart().length));
+  const text = body.map(b => b.slice(min));
+  return [folded ? fold(text) : text.join('\n'), j];
+}
+
+/** Folded scalar: neighbouring lines join with a space, a blank line becomes a line break. */
+function fold(lines: string[]): string {
+  let out = '';
+  lines.forEach((l, k) => {
+    if (!l) {
+      out += '\n';
+    } else {
+      out += k > 0 && lines[k - 1] ? ' ' + l : l;
+    }
+  });
+  return out;
 }
 
 const isSpace = (c: string | undefined) => c === ' ' || c === '\t';
 
 /** "key: rest" → [key, rest]; undefined when the line is not a mapping entry. A scanner, no backtracking regex. */
-function splitKey(text: string): [string, string] | undefined {
+export function splitKey(text: string): [string, string] | undefined {
   let colon: number;
   const q = text[0];
   if (q === '"' || q === "'") {
@@ -201,7 +278,7 @@ function isKeyLine(text: string): boolean {
   return splitKey(text) !== undefined;
 }
 
-function unquote(s: string): string {
+export function unquote(s: string): string {
   const t = s.trim();
   if (t.length >= 2 && (t[0] === '"' || t[0] === "'") && t[t.length - 1] === t[0]) {
     return t[0] === "'" ? t.slice(1, -1).replace(/''/g, "'") : t.slice(1, -1).replace(/\\"/g, '"').replace(/\\n/g, '\n');
@@ -229,14 +306,14 @@ function flowMap(content: string): Value {
   for (const part of splitFlow(content)) {
     const idx = part.indexOf(':');
     if (idx > 0) {
-      map[unquote(part.slice(0, idx))] = scalar(part.slice(idx + 1));
+      setOwn(map, unquote(part.slice(0, idx)), scalar(part.slice(idx + 1)));
     }
   }
   return map;
 }
 
 /** Splits flow-collection content on top-level commas. */
-function splitFlow(s: string): string[] {
+export function splitFlow(s: string): string[] {
   const out: string[] = [];
   let depth = 0;
   let quote = '';

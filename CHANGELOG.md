@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.0
+
+### Added
+
+- Pipeline YAML: suggestions for the parameters of `template:` and `extends:` references (names with type, default and allowed values, values, a block with all required parameters), hover, go to definition and checks for unknown, missing and invalid parameters
+- Templates from repository resources (`file.yml@alias`) are read from Azure Repos at the resource's `ref` or from a clone in the workspace, recursively through templates that include templates from further repositories
+- Pipeline preview: stage graph, jobs and steps of what the templates produce, expanded locally (with the template file and line of every item, unsaved changes included) or by Azure DevOps; runtime parameters can be changed in the preview
+- *Show Pipeline Templates* lists every template a pipeline includes; *Validate and Preview Expanded Pipeline* lets Azure DevOps expand the pipeline with the local file content and marks its errors
+
+### Fixed
+
+- Runtime parameters: multi-line defaults (`|`, `>`) keep `#`, blank lines and `---` instead of dropping them
+
 ## 0.2.1
 
 ### Fixed
