@@ -22,6 +22,7 @@
 | `features.test.ts` | `git.ts` helpers, work item from code, `wiModel.ts`, `sprint.ts`, wiki `flattenPages` |
 | `stageGraph.test.ts`, `timeline.test.ts`, `logs.test.ts`, `yamlParameters.test.ts` | pipeline logic |
 | `checks.test.ts` | `summarizeChecks` |
+| `templateRefs.test.ts`, `yamlTemplates.test.ts`, `templateExpressions.test.ts`, `templateExpander.test.ts`, `previewPanel.test.ts` | template references, parameter checks, completion context; `TemplateResolver` (local, Azure Repos, clones, recursion, URIs) and the YAML providers and commands; expression functions, local expansion and the preview model; the preview panel with a fake `YamlTemplateSupport` |
 | `watchers.test.ts` | watcher matching, events, the `Watchers` engine with a fake client |
 | `clientApi.test.ts` | every `AdoClient` API method (method, path, query, body, mapping), paging, auth, `isSafeApiPath` |
 | `git.test.ts`, `logsStream.test.ts`, `approvals.test.ts`, `utilUi.test.ts`, `securityHelpers.test.ts` | local repos and `ConnectionManager`, live log terminal, approvals, UI helpers, `assertBranchName` / `glob` / watcher command guard |
@@ -33,7 +34,7 @@
 
 - `src/test/fakeWebview.ts`: `createWebviewPanel` in the stub returns a `FakeWebviewPanel`. Its webview records `html` and `posted` messages; `send(msg)` runs the panel's message handlers and waits for them; `last(type)`, `ofType(type)`, `lastPanel()`, `flush()`, `cspNonce(html)`.
 - The stub answers dialogs from queues (`answers.inputBox`, `answers.quickPick`, `answers.saveDialog`, `answers.message`), returns `commandResults[name]` from `executeCommand`, records `opened` URLs and `terminals`, and fakes extensions via `extensionExports[id]` (e.g. `vscode.git`).
-- `src/test/vscodeExtras.ts`: more fakes (quick pick, comment controller, editor and document events, git repositories via `setGitRepositories`/`fakeRepo`, `fakeDoc`, `fakeEditor`) for the feature module tests.
+- `src/test/vscodeExtras.ts`: more fakes (quick pick, comment controller, editor and document events, diagnostics and language providers (`diagnosticSets`, `providers`), a file map for `workspace.fs` / `findFiles` (`files`), git repositories via `setGitRepositories`/`fakeRepo`, `fakeDoc`, `fakeEditor`) for the feature module tests.
 
 ### How to write tests
 

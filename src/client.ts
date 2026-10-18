@@ -725,9 +725,10 @@ export class AdoClient {
   }
 
   /** The fully expanded YAML (templates resolved) a run would use, without starting it. */
-  async previewPipeline(pipelineId: number, refName: string, version: string | undefined, templateParameters?: Record<string, unknown>): Promise<string> {
+  async previewPipeline(pipelineId: number, refName: string, version: string | undefined, templateParameters?: Record<string, unknown>,
+    yamlOverride?: string): Promise<string> {
     const r = await this.request<{ finalYaml?: string }>('POST', this.url('project', `pipelines/${pipelineId}/preview`, { 'api-version': '7.1-preview.1' }), {
-      previewRun: true, resources: { repositories: { self: { refName, version } } }, templateParameters,
+      previewRun: true, resources: { repositories: { self: { refName, version } } }, templateParameters, yamlOverride,
     });
     return r.finalYaml ?? '';
   }
@@ -738,6 +739,23 @@ export class AdoClient {
       path, includeContent: true, 'versionDescriptor.version': commit, 'versionDescriptor.versionType': 'commit',
     });
     return r.content ?? '';
+  }
+
+  /**
+   * Text of a file at a repository resource `ref`: `refs/heads/x` or a plain name = branch, `refs/tags/x` = tag,
+   * a full SHA = commit, none = the default branch.
+   */
+  async getFileTextAtRef(repoId: string, path: string, ref?: string): Promise<string> {
+    const r = await this.get<{ content?: string }>('project', `git/repositories/${repoId}/items`, { path, includeContent: true, ...versionQuery(ref) });
+    return r.content ?? '';
+  }
+
+  /** YAML pipelines whose file lives in an Azure Repos repository (with `process.yamlFilename`). */
+  async listYamlDefinitions(repoId: string): Promise<T.BuildDefinition[]> {
+    const r = await this.get<{ value: T.BuildDefinition[] }>('project', 'build/definitions', {
+      repositoryId: repoId, repositoryType: 'TfsGit', includeAllProperties: true, $top: 500,
+    });
+    return r.value.filter(d => d.process?.type === 2);
   }
 
   async listPendingApprovals(): Promise<T.Approval[]> {
@@ -870,6 +888,19 @@ export function parsePrArtifact(url: string): PrArtifact | undefined {
 function sameArtifact(url: string, pr: PrArtifact): boolean {
   const a = parsePrArtifact(url);
   return !!a && a.prId === pr.prId && a.repoId.toLowerCase() === pr.repoId.toLowerCase();
+}
+
+function versionQuery(ref: string | undefined): Query {
+  if (!ref) {
+    return {};
+  }
+  if (ref.startsWith('refs/tags/')) {
+    return { 'versionDescriptor.version': ref.slice(10), 'versionDescriptor.versionType': 'tag' };
+  }
+  if (/^[0-9a-f]{40}$/i.test(ref)) {
+    return { 'versionDescriptor.version': ref, 'versionDescriptor.versionType': 'commit' };
+  }
+  return { 'versionDescriptor.version': ref.replace(/^refs\/heads\//, ''), 'versionDescriptor.versionType': 'branch' };
 }
 
 export const ZERO_OBJECT_ID = '0000000000000000000000000000000000000000';

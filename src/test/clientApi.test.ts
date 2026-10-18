@@ -227,6 +227,32 @@ const cases: Case[] = [
     name: 'getFileTextAtCommit', call: c => c.getFileTextAtCommit('web-shop', '/a.yml', 'abc'), reply: { content: 'x' }, path: `${P}git/repositories/web-shop/items`,
     query: { 'versionDescriptor.version': 'abc', 'versionDescriptor.versionType': 'commit', includeContent: 'true' }, result: 'x',
   },
+  {
+    name: 'previewPipeline with local YAML', call: c => c.previewPipeline(12, 'refs/heads/main', undefined, undefined, 'steps: []'), reply: { finalYaml: 'jobs: []' },
+    method: 'POST', path: `${P}pipelines/12/preview`,
+    body: { previewRun: true, resources: { repositories: { self: { refName: 'refs/heads/main' } } }, yamlOverride: 'steps: []' }, result: 'jobs: []',
+  },
+  {
+    name: 'getFileTextAtRef at a tag', call: c => c.getFileTextAtRef('web-shop', '/a.yml', 'refs/tags/v1.2'), reply: { content: 'x' }, path: `${P}git/repositories/web-shop/items`,
+    query: { path: '/a.yml', 'versionDescriptor.version': 'v1.2', 'versionDescriptor.versionType': 'tag', includeContent: 'true' }, result: 'x',
+  },
+  {
+    name: 'getFileTextAtRef at a branch', call: c => c.getFileTextAtRef('web-shop', '/a.yml', 'refs/heads/release/1'), reply: { content: 'x' },
+    path: `${P}git/repositories/web-shop/items`, query: { 'versionDescriptor.version': 'release/1', 'versionDescriptor.versionType': 'branch' }, result: 'x',
+  },
+  {
+    name: 'getFileTextAtRef at a commit', call: c => c.getFileTextAtRef('web-shop', '/a.yml', 'A'.repeat(40)), reply: {},
+    path: `${P}git/repositories/web-shop/items`, query: { 'versionDescriptor.version': 'A'.repeat(40), 'versionDescriptor.versionType': 'commit' }, result: '',
+  },
+  {
+    name: 'getFileTextAtRef at the default branch', call: c => c.getFileTextAtRef('web-shop', '/a.yml'), reply: { content: 'y' },
+    path: `${P}git/repositories/web-shop/items`, query: { path: '/a.yml' }, result: 'y',
+  },
+  {
+    name: 'listYamlDefinitions keeps YAML pipelines', call: c => c.listYamlDefinitions('repo-1'),
+    reply: { value: [{ id: 1, process: { type: 2, yamlFilename: 'ci.yml' } }, { id: 2, process: { type: 1 } }] }, path: `${P}build/definitions`,
+    query: { repositoryId: 'repo-1', repositoryType: 'TfsGit', includeAllProperties: 'true' }, result: [{ id: 1, process: { type: 2, yamlFilename: 'ci.yml' } }],
+  },
   { name: 'getFileTextAtCommit of an empty item', call: c => c.getFileTextAtCommit('web-shop', '/a.yml', 'abc'), reply: {}, path: `${P}git/repositories/web-shop/items`, result: '' },
   {
     name: 'listPendingApprovals', call: c => c.listPendingApprovals(), path: `${P}pipelines/approvals`,

@@ -70,6 +70,23 @@ The *Sprint* tab shows a team's sprint: dates, working days left, progress again
 
 ![Run overview with parallel stages, a stage waiting for approval and the log of a finished step](media/screenshots/run-overview.png)
 
+### Editing pipeline YAML
+
+Help for `template:` and `extends:` references in local pipeline files (language `yaml` or `azure-pipelines`):
+
+- **Parameter suggestions:** inside `parameters:` of a template reference, the parameters the template declares are suggested with their type, default and allowed values (required ones first; choices for booleans and `values`). After `name: ` the allowed values are suggested. On a new line below `template:`, *parameters* inserts a block with all required parameters.
+- **Templates from other repositories:** `file.yml@alias` is resolved through `resources.repositories`. Azure Repos repositories are read from the server at the resource's `ref` (branch, tag or commit) with your usual sign-in. If a clone of the repository is open in the workspace, it is used instead, so template changes you have not pushed count (`azureDevOps.yaml.preferLocalRepositories`). GitHub and other external repositories are only read from a clone in the workspace.
+- **Recursive:** templates from other repositories open as read-only documents that know where they come from. References inside them work the same way: relative paths stay in that repository, `@self` is the pipeline's repository, and aliases resolve through the template's own `resources.repositories` and those of the files that include it. A template opened on its own finds aliases declared in other YAML files of the workspace.
+- **Hover and go to definition:** hover a template path to see where it is read from, its parameters and the templates it includes; hover a parameter for its type and default. *Go to Definition* (F12) opens the template, or jumps to a parameter's declaration.
+- **Checks while you type:** unknown parameters, missing required parameters, values outside `values` and non-boolean or non-number values are marked, as are templates that cannot be found (`azureDevOps.yaml.templateDiagnostics`). Values with expressions (`${{ }}`, `$( )`, `$[ ]`) and parameters inside `${{ if }}` blocks are not checked.
+- **Pipeline Preview** (button in the editor title): shows what the templates produce, without running anything: the stage graph with the `dependsOn` lines, and for each stage its jobs (pool, environment, strategy, conditions) and steps. Switch between two sources at the top:
+  - **Local** expands the templates in VS Code. Templates come from local files and clones, unsaved changes included, and the preview follows your edits. Every stage, job and step links to the template file and line it comes from. `${{ }}` expressions, `if` / `elseif` / `else`, `each` and `insert` are evaluated; runtime expressions (`$[ ]`, `$( )`) and `condition:` are shown as written.
+  - **Azure DevOps** lets the server expand the pipeline with the content of the file (same as *Validate and Preview Expanded Pipeline*), so the result is exactly what a run would use. It updates when you save.
+
+  Runtime parameters of the pipeline can be changed in the preview, for example to see the stages with `runTests` turned off.
+- **Show Pipeline Templates:** lists every template the file includes, recursively, with nesting, source and number of parameters; pick one to open it.
+- **Validate and Preview Expanded Pipeline** (button in the editor title): Azure DevOps expands the pipeline with the local content of the file, without starting a run. You see the final YAML, or the errors marked in the file. Other files, including local templates, are read from the server at the checked-out branch.
+
 ### Repositories and wiki
 
 - **Repositories and branches:** every branch with how far it is ahead of and behind the default branch, its last commit and author. Compare a branch with the default branch file by file in the diff editor, create a pull request, create or delete branches on the server, check a branch out, or clone the repository.
@@ -161,6 +178,8 @@ If there is no Azure Repos remote, or you want a different project, click the pr
 | `azureDevOps.pipelines.refreshInterval` | `10` | Seconds between refreshes while a run is in progress |
 | `azureDevOps.pipelines.logPollInterval` | `3` | Seconds between polls when streaming logs |
 | `azureDevOps.pipelines.showTimestamps` | `false` | Show timestamps in pipeline logs |
+| `azureDevOps.yaml.templateDiagnostics` | `true` | Check the parameters passed to `template:` and `extends:` in pipeline YAML |
+| `azureDevOps.yaml.preferLocalRepositories` | `true` | Read templates of repository resources from a clone in the workspace when there is one |
 
 Example of a custom query:
 
@@ -187,6 +206,7 @@ Example of a custom query:
 - **Reviewed-file check marks are not synced** with the check marks in the Azure DevOps web UI, because that storage is not a public API. The same applies to "new since your last visit" in pull requests, which is remembered locally.
 - **Stage dependencies of classic pipelines and of YAML that cannot be expanded** (for example with required runtime parameters that have no default) are inferred from start and finish times, which is right for runs that have started but can only guess for stages that have not.
 - **Watchers, saved queries, the wiki and repositories** use the primary project when several projects are selected.
+- **Template checks are local:** template paths built from expressions (`${{ }}`) are not followed by hovers and checks. The *Local* pipeline preview evaluates them, but it is a re-implementation and can differ from Azure DevOps in edge cases (for example YAML anchors or variable templates in compile-time expressions); the *Azure DevOps* preview gives the exact result.
 - **No code search:** Azure DevOps Code Search is only served from `almsearch.dev.azure.com`, and DevOps Deck sends credentials to `dev.azure.com` and `*.visualstudio.com` only.
 
 ## Development

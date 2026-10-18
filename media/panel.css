@@ -444,3 +444,40 @@ input.field-input { padding: 0 8px; }
 @media (max-width: 900px) { .branch-row { grid-template-columns: minmax(0, 1fr); } .branch-actions { flex-wrap: wrap; justify-content: flex-start; opacity: 1; } }
 
 .btn .i { width: 16px; height: 16px; }
+
+/* ---------- pipeline preview ---------- */
+.pv-head { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; padding: 24px 32px 4px; }
+.pv-title { flex: 1; min-width: 200px; }
+.pv-title h1 { font-size: 20px; margin: 0 0 2px; font-weight: 650; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 9px; padding: 2px; gap: 2px; background: var(--card); }
+.seg .btn { border: 0; background: transparent; }
+.seg .btn.active { background: var(--primary); color: var(--vscode-button-foreground); box-shadow: none; }
+.pv-hint { margin: 4px 32px 12px; max-width: 900px; }
+.pv-params { margin: 0 32px 12px; }
+.pv-params summary { cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.pv-grid { display: grid; grid-template-columns: minmax(140px, max-content) minmax(0, 360px); gap: 8px 16px; margin-top: 12px; align-items: center; }
+.pv-grid label { display: flex; flex-direction: column; }
+.pv-grid input[type=text], .pv-grid input[type=number], .pv-grid select, .pv-grid textarea {
+  width: 100%; padding: 4px 8px; border-radius: 6px; font: inherit; color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--border)); }
+.pv-grid textarea { font-family: var(--vscode-editor-font-family); font-size: 12px; resize: vertical; }
+.pv-grid input[type=checkbox] { justify-self: start; }
+.pv-error { margin: 0 32px 12px; padding: 10px 14px; border-radius: 10px; color: var(--bad); white-space: pre-wrap;
+  background: color-mix(in srgb, var(--bad) 9%, transparent); border: 1px solid color-mix(in srgb, var(--bad) 30%, transparent); }
+.pv-warn { margin: 0 32px 12px; padding: 8px 14px; border-radius: 10px; background: color-mix(in srgb, var(--warn) 9%, transparent); }
+.pv-warn summary { cursor: pointer; color: var(--warn); font-weight: 600; }
+.pv-warn ul { margin: 6px 0 2px; padding-left: 18px; }
+.pv-note { margin: 0 32px 8px; }
+.pv-note .link { margin-left: 0; }
+.pv-stage { cursor: pointer; }
+.pv-stage-head { display: flex; align-items: center; gap: 8px; }
+.pv-stage-head h2 { margin: 0; }
+.pv-meta { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 10px; }
+.pv-job-head { cursor: default; }
+.job .pv-meta { margin: 0 12px 8px; }
+.pv-chip { display: inline-flex; gap: 4px; align-items: center; padding: 1px 8px; border-radius: 99px; font-size: 11.5px; background: var(--border); }
+.pv-kind { flex: none; min-width: 64px; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.pv-detail { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pv-src { flex: none; background: none; border: 0; padding: 0 2px; font-size: 11.5px; color: var(--vscode-textLink-foreground); font-family: var(--vscode-editor-font-family); }
+.pv-src:hover { text-decoration: underline; }
+body.pv-busy .graph-wrap, body.pv-busy .jobs { opacity: .55; transition: opacity .2s; }

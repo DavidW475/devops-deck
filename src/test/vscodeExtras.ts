@@ -173,6 +173,9 @@ export function resetExtras(): void {
   s.window.visibleTextEditors = [];
   s.workspace.textDocuments = [];
   s.window.state.focused = true;
+  s.workspace.workspaceFolders = [];
+  files.clear();
+  providers.length = 0;
   setGitRepositories(undefined);
 }
 
@@ -201,6 +204,8 @@ s.window.withProgress ??= async (_o: unknown, task: (p: unknown) => Promise<unkn
 Object.assign(s.workspace, {
   onDidOpenTextDocument: event('openDoc'),
   onDidCloseTextDocument: event('closeDoc'),
+  onDidChangeTextDocument: event('changeDoc'),
+  onDidSaveTextDocument: event('saveDoc'),
   openTextDocument: async (uri: any) => { openedDocs.push(uri); return fakeDoc(uri, ['# Page']); },
   applyEdit: async (e: WorkspaceEdit) => { appliedEdits.push(e); return true; },
   getWorkspaceFolder: () => undefined,
@@ -211,6 +216,91 @@ s.commands.registerCommand = (id: string, fn: (...args: any[]) => any) => {
   registered.set(id, fn);
   return { dispose: () => registered.delete(id) };
 };
-s.languages = { registerCodeActionsProvider: () => noop, setTextDocumentLanguage: async (d: unknown) => d };
+/** Diagnostic collections created through languages.createDiagnosticCollection, by name. */
+export const diagnosticSets = new Map<string, Map<string, unknown[]>>();
+/** Language providers registered through languages.register*Provider. */
+export const providers: { kind: string; provider: any }[] = [];
+/** Files served by workspace.fs.readFile / stat, by fsPath; findFiles returns those matching its pattern's extension. */
+export const files = new Map<string, string>();
+/** Adds a file to the fake file system. */
+export function setFile(fsPath: string, text: string): void {
+  files.set(fsPath, text);
+}
+
+class Diagnostic {
+  source?: string;
+  constructor(readonly range: unknown, readonly message: string, readonly severity: number) {}
+}
+class CompletionItem {
+  insertText?: unknown;
+  detail?: string;
+  sortText?: string;
+  documentation?: unknown;
+  constructor(readonly label: string, readonly kind?: number) {}
+}
+class SnippetString {
+  constructor(readonly value: string) {}
+}
+class Hover {
+  constructor(readonly contents: unknown) {}
+}
+class Location {
+  constructor(readonly uri: unknown, readonly range: unknown) {}
+}
+class RelativePattern {
+  constructor(readonly base: string, readonly pattern: string) {}
+}
+
+function createDiagnosticCollection(name: string) {
+  const set = new Map<string, unknown[]>();
+  diagnosticSets.set(name, set);
+  return {
+    set: (uri: unknown, list: unknown[]) => set.set(String(uri), list),
+    delete: (uri: unknown) => set.delete(String(uri)),
+    get: (uri: unknown) => set.get(String(uri)),
+    dispose() { set.clear(); },
+  };
+}
+const register = (kind: string) => (_selector: unknown, provider: unknown) => {
+  providers.push({ kind, provider });
+  return noop;
+};
+
+s.languages = {
+  registerCodeActionsProvider: () => noop,
+  setTextDocumentLanguage: async (d: unknown) => d,
+  createDiagnosticCollection,
+  registerCompletionItemProvider: register('completion'),
+  registerHoverProvider: register('hover'),
+  registerDefinitionProvider: register('definition'),
+};
+s.Diagnostic ??= Diagnostic;
+s.DiagnosticSeverity ??= { Error: 0, Warning: 1, Information: 2, Hint: 3 };
+s.CompletionItem ??= CompletionItem;
+s.CompletionItemKind ??= { File: 16, Module: 8, Property: 9, EnumMember: 19, Snippet: 14 };
+s.SnippetString ??= SnippetString;
+s.Hover ??= Hover;
+s.Location ??= Location;
+s.RelativePattern ??= RelativePattern;
+s.ViewColumn.Beside ??= -2;
+const fileError = (p: string) => Object.assign(new Error(`not found: ${p}`), { code: 'FileNotFound' });
+s.workspace.fs = {
+  stat: async (u: { fsPath: string }) => {
+    if (!files.has(u.fsPath) && ![...files.keys()].some(k => k.startsWith(u.fsPath + '/'))) {
+      throw fileError(u.fsPath);
+    }
+    return { type: files.has(u.fsPath) ? 1 : 2 };
+  },
+  readFile: async (u: { fsPath: string }) => {
+    if (!files.has(u.fsPath)) {
+      throw fileError(u.fsPath);
+    }
+    return new TextEncoder().encode(files.get(u.fsPath));
+  },
+};
+s.workspace.findFiles = async (pattern: string | RelativePattern) => {
+  const base = typeof pattern === 'string' ? '' : pattern.base + '/';
+  return [...files.keys()].filter(k => k.startsWith(base) && /\.ya?ml$/.test(k)).map(k => stub.Uri.file(k));
+};
 s.comments = { createCommentController };
 resetExtras();

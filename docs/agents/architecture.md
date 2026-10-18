@@ -13,7 +13,7 @@
 | `src/sidebar/sidebarProvider.ts` + `media/sidebar.js`, `media/sidebar.css` | The "Dashboard" webview view: tabs for pull requests, work items, sprint, pipelines. |
 | `src/pullRequests/` | `prPanel.ts` (overview), `createPrPanel.ts`, `prStatusBar.ts`, `iterations.ts` (compare updates), `prComments.ts` (inline threads in diffs), `prFiles.ts` (`ado-pr:` / `ado-git:` content, diff, checkout), `reviewed.ts` (local "reviewed" marks), `checks.ts` (policy summary). |
 | `src/workItems/` | `wiPanel.ts` (detail panel), `wiCommands.ts` (state, assign, comment, create, branch, from code + `TodoCodeActions`), `wiModel.ts` and `sprint.ts` (pure logic). |
-| `src/pipelines/` | `runView.ts` + `media/runView.js` (run overview), `runPanel.ts` (run form), `logs.ts` (log terminal, `ado-log:` documents), `timeline.ts`, `stageGraph.ts`, `yamlParameters.ts`, `approvals.ts`. |
+| `src/pipelines/` | `runView.ts` + `media/runView.js` (run overview), `runPanel.ts` (run form), `logs.ts` (log terminal, `ado-log:` documents), `timeline.ts`, `stageGraph.ts`, `yamlParameters.ts` (YAML subset parser, `topLevelValue`), `approvals.ts`; YAML editing: `templateRefs.ts` (pure: references, parameters, checks, completion context), `templateResolver.ts` (`TemplateResolver`, `ado-template:` documents), `yamlTemplates.ts` (`YamlTemplateSupport`: completion, hover, definition, diagnostics, template tree, `expandLocally` / `expandOnServer`), `templateExpressions.ts` (`${{ }}` evaluator), `templateExpander.ts` (local expansion with sources), `pipelineModel.ts` (stages/jobs/steps), `previewPanel.ts` + `media/pipelinePreview.js` (pipeline preview). |
 | `src/watchers/` | `watchers.ts` (polling engine), `watchersPanel.ts` (editor), `watchersTree.ts` (tree view). |
 | `src/wiki/wiki.ts` | `WikiFileSystem` (`ado-wiki:` scheme), page picker. |
 | `src/repos/reposPanel.ts` + `media/repos.js` | Repositories and branches panel. |
@@ -25,7 +25,7 @@
 Activation event is `onStartupFinished`.
 
 1. Creates one instance each of `ConnectionManager`, `AdoClient`, `ReviewedFiles`, `SidebarProvider`, `PrCommentController`, `Watchers`, `PrStatusBar`, `LogDocumentProvider`; `PullRequestPanel.useStore(globalState)`.
-2. Registers disposables: the code action provider, the `azureDevOps.dashboard` webview view (`retainContextWhenHidden`), content providers for `ado-pr`, `ado-git`, `ado-log`, the `ado-wiki` file system provider.
+2. Registers disposables: the code action provider, the `azureDevOps.dashboard` webview view (`retainContextWhenHidden`), content providers for `ado-pr`, `ado-git`, `ado-log`, `ado-template` (via `YamlTemplateSupport.register()`, which also adds the YAML language providers), the `ado-wiki` file system provider.
 3. Listeners: connection change, `azureDevOps.*` configuration change and Microsoft session change call `client.reset()` and `refresh()` (sidebar + PR status bar).
 4. Registers all commands (below).
 5. `await connections.resolve()`, then `connections.watchGit()` (re-resolves when the git extension opens repositories).

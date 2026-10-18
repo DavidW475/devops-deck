@@ -5,6 +5,8 @@ import { BuildLogTerminal, LOG_SCHEME, LogDocumentProvider, makeLogUri } from '.
 import { answerApproval } from './pipelines/approvals';
 import { RunPipelinePanel } from './pipelines/runPanel';
 import { RunViewPanel } from './pipelines/runView';
+import { PipelinePreviewPanel, PreviewMode } from './pipelines/previewPanel';
+import { YamlTemplateSupport } from './pipelines/yamlTemplates';
 import { PrCommentController } from './pullRequests/prComments';
 import { CreatePullRequestPanel } from './pullRequests/createPrPanel';
 import { compareIterations } from './pullRequests/iterations';
@@ -33,7 +35,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const watchers = new Watchers(client, connections);
   const prStatus = new PrStatusBar(client, connections);
   const logDocs = new LogDocumentProvider(client);
+  const yamlTemplates = new YamlTemplateSupport(client, connections).register();
   PullRequestPanel.useStore(context.globalState);
+  PipelinePreviewPanel.useStore(context.globalState);
   const refresh = () => {
     sidebar.refresh();
     prStatus.refresh();
@@ -58,6 +62,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     new WatchersTree(watchers),
     reviewed,
     prStatus,
+    yamlTemplates,
     vscode.languages.registerCodeActionsProvider({ scheme: 'file' }, new TodoCodeActions(), { providedCodeActionKinds: TodoCodeActions.kinds }),
     vscode.window.registerWebviewViewProvider('azureDevOps.dashboard', sidebar, { webviewOptions: { retainContextWhenHidden: true } }),
     vscode.workspace.registerTextDocumentContentProvider(PR_SCHEME, new PrContentProvider(client)),
@@ -269,6 +274,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.env.openExternal(vscode.Uri.parse(at(project).webUrl('build', buildId))));
   command('azureDevOps.pipelines.openDefinition', async (definitionId: number, project?: string) =>
     vscode.env.openExternal(vscode.Uri.parse(at(project).webUrl('definition', definitionId))));
+  command('azureDevOps.yaml.showTemplates', (uri?: vscode.Uri) => yamlTemplates.showTemplates(uri instanceof vscode.Uri ? uri : undefined));
+  command('azureDevOps.yaml.showPreview', async (uri?: vscode.Uri, mode?: PreviewMode) => {
+    const doc = uri instanceof vscode.Uri ? await vscode.workspace.openTextDocument(uri) : vscode.window.activeTextEditor?.document;
+    if (!doc) {
+      void vscode.window.showInformationMessage('Open an Azure Pipelines YAML file first.');
+      return;
+    }
+    PipelinePreviewPanel.show(yamlTemplates, context.extensionUri, doc, mode === 'local' || mode === 'server' ? mode : undefined);
+  });
+  command('azureDevOps.yaml.previewPipeline', (uri?: vscode.Uri) => yamlTemplates.previewPipeline(uri instanceof vscode.Uri ? uri : undefined));
 
   async function queue(api: AdoClient, definitionId: number, name: string, branch: string): Promise<void> {
     const ref = branch.startsWith('refs/') ? branch : `refs/heads/${branch}`;

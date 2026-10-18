@@ -1,6 +1,7 @@
 import * as assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, it } from 'node:test';
-import { openedDocs, quickPicks, registered, resetExtras, shownDocs } from './vscodeExtras';
+import { fakeDoc, openedDocs, quickPicks, registered, resetExtras, shownDocs } from './vscodeExtras';
+import { lastPanel } from './fakeWebview';
 import * as vscode from './vscodeStub';
 import { activate, deactivate } from '../extension';
 
@@ -92,6 +93,19 @@ describe('activate', () => {
     await run('azureDevOps.setPat');
     assert.equal(secrets.get('azureDevOps.pat'), 'new-pat');
     assert.equal(vscode.settings['azureDevOps.authMethod'], 'pat');
+  });
+
+  it('runs the pipeline YAML commands for the active editor', async () => {
+    w.activeTextEditor = undefined;
+    await run('azureDevOps.yaml.showTemplates', 'not a uri');
+    await run('azureDevOps.yaml.previewPipeline');
+    await run('azureDevOps.yaml.showPreview');
+    assert.deepEqual(vscode.messages, ['Open an Azure Pipelines YAML file first.', 'Open a local Azure Pipelines YAML file first.', 'Open an Azure Pipelines YAML file first.']);
+    w.activeTextEditor = { document: Object.assign(fakeDoc(vscode.Uri.file('/work/ci.yml'), ['steps: []'], 'yaml'), { version: 1 }) };
+    await run('azureDevOps.yaml.showPreview', undefined, 'local');
+    assert.equal(lastPanel().viewType, 'azureDevOps.pipelinePreview');
+    lastPanel().dispose();
+    w.activeTextEditor = undefined;
   });
 
   it('opens items in the browser for the right project', async () => {

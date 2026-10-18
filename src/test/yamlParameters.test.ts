@@ -1,6 +1,6 @@
 import * as assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { parsePipelineParameters } from '../pipelines/yamlParameters';
+import { parsePipelineParameters, parseYamlDocument, setOwn } from '../pipelines/yamlParameters';
 
 describe('parsePipelineParameters', () => {
   it('reads the list form with types, defaults and allowed values', () => {
@@ -120,5 +120,45 @@ describe('parsePipelineParameters', () => {
     assert.deepEqual(parsePipelineParameters('parameters:\n  "unclosed: x\n'), []);
     assert.deepEqual(parsePipelineParameters('parameters:\n  url:https://x\n'), []);
     assert.deepEqual(parsePipelineParameters('parameters:\n  "k" x: y\n'), []);
+  });
+});
+
+describe('parseYamlDocument', () => {
+  it('keeps "#", blank lines and "---" inside block scalars', () => {
+    const doc = parseYamlDocument([
+      'steps:',
+      '- script: |',
+      '    echo "build #1" # not a comment',
+      '',
+      '    ---',
+      '    echo done',
+      '  displayName: Build',
+      '# a real comment',
+      '- bash: >',
+      '    one',
+      '    two',
+      '',
+      '    three',
+      '',
+      'pool: contoso-linux',
+    ].join('\n')) as any;
+    assert.deepEqual(doc.steps, [
+      { script: 'echo "build #1" # not a comment\n\n---\necho done', displayName: 'Build' },
+      { bash: 'one two\nthree' },
+    ]);
+    assert.equal(doc.pool, 'contoso-linux');
+    assert.deepEqual(parseYamlDocument('a: |\nb: 1\n'), { a: '', b: '1' });
+  });
+
+  it('keeps "__proto__" as an own key instead of changing the prototype', () => {
+    const doc = parseYamlDocument('a: 1\n__proto__:\n  injected: yes\nflow: { __proto__: x }\n') as any;
+    assert.deepEqual(Object.keys(doc), ['a', '__proto__', 'flow']);
+    assert.equal(Object.getPrototypeOf(doc), Object.prototype);
+    assert.equal(doc.injected, undefined);
+    assert.deepEqual(Object.getOwnPropertyDescriptor(doc.flow, '__proto__')?.value, 'x');
+    const o: Record<string, string> = {};
+    setOwn(o, '__proto__', 'v');
+    setOwn(o, 'k', 'w');
+    assert.deepEqual(Object.entries(o), [['__proto__', 'v'], ['k', 'w']]);
   });
 });
