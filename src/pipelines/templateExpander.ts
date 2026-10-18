@@ -39,6 +39,11 @@ function assignOwn(to: Obj, from: Obj): Obj {
   return to;
 }
 
+/** A value as text for comparisons and messages: scalars as they are, lists and mappings as JSON. */
+function display(v: EValue): string {
+  return v !== null && typeof v === 'object' ? JSON.stringify(v) : String(v);
+}
+
 function without(o: Obj, ...keys: string[]): Obj {
   return Object.fromEntries(Object.entries(o).filter(([k]) => !keys.includes(k)));
 }
@@ -62,8 +67,8 @@ interface DeclaredParam {
 export function declaredParameters(doc: EValue | undefined): DeclaredParam[] {
   const p = isObj(doc) ? doc.parameters : undefined;
   if (Array.isArray(p)) {
-    return p.filter(isObj).filter(x => typeof x.name === 'string').map(x => ({
-      name: String(x.name), type: typeof x.type === 'string' ? x.type : 'string',
+    return p.filter(isObj).flatMap(x => (typeof x.name === 'string' ? [x as Obj & { name: string }] : [])).map(x => ({
+      name: x.name, type: typeof x.type === 'string' ? x.type : 'string',
       default: x.default ?? undefined, values: Array.isArray(x.values) ? x.values : undefined,
     }));
   }
@@ -88,7 +93,7 @@ export function coerce(p: DeclaredParam, v: EValue): EValue {
   return v;
 }
 
-const sameValue = (a: EValue, b: EValue) => String(a).toLowerCase() === String(b).toLowerCase();
+const sameValue = (a: EValue, b: EValue) => display(a).toLowerCase() === display(b).toLowerCase();
 
 /** Binds passed values to declared parameters; problems become warnings, like the server's errors. */
 export function bindParameters(declared: DeclaredParam[], passed: Obj, where: string, warn: (m: string) => void): Obj {
@@ -101,7 +106,7 @@ export function bindParameters(declared: DeclaredParam[], passed: Obj, where: st
     }
     const value = coerce(p, has ? given : p.default ?? null);
     if (p.values?.length && has && !p.values.some(v => sameValue(v, value))) {
-      warn(`${where}: '${String(value)}' is not an allowed value of '${p.name}'.`);
+      warn(`${where}: '${display(value)}' is not an allowed value of '${p.name}'.`);
     }
     setOwn(out, p.name, value);
   }
@@ -124,7 +129,11 @@ export function staticVariables(doc: EValue | undefined, branch: string | undefi
   if (isObj(v)) {
     Object.entries(v).filter(([k]) => !k.startsWith('${{')).forEach(([k, x]) => setOwn(out, k, x));
   } else if (Array.isArray(v)) {
-    v.filter(isObj).filter(x => typeof x.name === 'string').forEach(x => setOwn(out, String(x.name), x.value ?? ''));
+    for (const x of v.filter(isObj)) {
+      if (typeof x.name === 'string') {
+        setOwn(out, x.name, x.value ?? '');
+      }
+    }
   }
   return out;
 }
@@ -193,7 +202,12 @@ export class TemplateExpander {
     return isObj(v) ? this.expandMap(v, f) : v;
   }
 
-  /** Expands a mapping; `origin` is the parsed node whose line is remembered (defaults to `map`). */
+  /**
+   * Expands a mapping; `origin` is the parsed node whose line is remembered (defaults to `map`).
+   * Mappings, lists and `each` expand one entry after another on purpose: an `if`/`elseif`/`else` chain depends on
+   * the entries before it, the file budget (MAX_FILES) must cut the same templates on every run, and warnings keep
+   * the order of the source.
+   */
   private async expandMap(map: Obj, f: Frame, origin: object = map): Promise<Obj> {
     const out: Obj = {};
     this.remember(out, origin, f);
@@ -203,10 +217,10 @@ export class TemplateExpander {
       if (!d) {
         chain = undefined;
         const k = this.text(key, f);
-        setOwn(out, typeof k === 'string' ? k : key, await this.value(v, f, key));
+        setOwn(out, typeof k === 'string' ? k : key, await this.value(v, f, key)); // NOSONAR: sequential on purpose, see expandMap
         continue;
       }
-      const parts = await this.directive(d, v, f, chain);
+      const parts = await this.directive(d, v, f, chain); // NOSONAR: sequential on purpose, see expandMap
       chain = parts.chain;
       for (const part of parts.values) {
         if (isObj(part)) {
@@ -253,7 +267,7 @@ export class TemplateExpander {
     }
     const out: EValue[] = [];
     for (const item of items) {
-      out.push(await this.value(body, { ...f, scope: { ...f.scope, [name]: item } }, key));
+      out.push(await this.value(body, { ...f, scope: { ...f.scope, [name]: item } }, key)); // NOSONAR: sequential on purpose, see expandMap
     }
     return out;
   }
@@ -265,16 +279,16 @@ export class TemplateExpander {
       const keys = isObj(item) ? Object.keys(item) : [];
       const d = keys.length === 1 ? directiveOf(keys[0]) : undefined;
       if (d && isObj(item)) {
-        const parts = await this.directive(d, item[keys[0]], f, chain, key);
+        const parts = await this.directive(d, item[keys[0]], f, chain, key); // NOSONAR: sequential on purpose, see expandMap
         chain = parts.chain;
         parts.values.forEach(p => (Array.isArray(p) ? out.push(...p) : p !== null && out.push(p)));
         continue;
       }
       chain = undefined;
       if (isObj(item) && typeof item.template === 'string') {
-        out.push(...await this.include(item, f, key));
+        out.push(...await this.include(item, f, key)); // NOSONAR: sequential on purpose, see expandMap
       } else {
-        out.push(await this.value(item, f));
+        out.push(await this.value(item, f)); // NOSONAR: sequential on purpose, see expandMap
       }
     }
     return out;

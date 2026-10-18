@@ -51,7 +51,23 @@
 ## SonarQube
 
 - `sonar-project.properties`: project key `DavidW475_devops-deck`, organization `davidw475`, sources `src,media`, tests `src/test`, coverage from `coverage/lcov.info`, `media/**` excluded from coverage.
-- CI (`.github/workflows/build.yml`, job `sonar`): runs only when the `SONAR_TOKEN` secret is set (and not for PRs from forks); it runs `npm ci && npm run test:coverage`, then `SonarSource/sonarqube-scan-action` against `vars.SONAR_HOST_URL` or `https://sonarcloud.io`. So far no analysis has run on SonarCloud, so check locally.
+- CI (`.github/workflows/build.yml`, job `sonar`): runs only when the `SONAR_TOKEN` secret is set (and not for PRs from forks); it runs `npm ci && npm run test:coverage`, then `SonarSource/sonarqube-scan-action` against `vars.SONAR_HOST_URL` or `https://sonarcloud.io`.
+- **Rule: no open issues.** Every issue SonarCloud reports on a pull request's new code is fixed before the PR is done: bugs, vulnerabilities, code smells of every severity (also *minor* and *info*) and security hotspots. Passing the quality gate is not enough.
+- **Suppressing** is the exception: only where a rule does not apply, with `// NOSONAR: <reason>` on the line of the issue (the reason can also live in the function's doc comment). Example: the template expander awaits in loops on purpose, because `if`/`else` chains, the file budget and the order of warnings depend on it. Do not suppress to save work, and never mark issues as accepted on SonarCloud instead of fixing them.
+
+### Reading the issues of a pull request
+
+The project is public, so the Web API needs no token:
+
+```bash
+PR=5
+curl -s "https://sonarcloud.io/api/issues/search?componentKeys=DavidW475_devops-deck&pullRequest=$PR&resolved=false&ps=100" \
+  | node -e 'const d=JSON.parse(require("fs").readFileSync(0));console.log("total",d.total);for(const i of d.issues)console.log(i.severity,i.rule,i.component.split(":").pop()+":"+i.line,"-",i.message)'
+curl -s "https://sonarcloud.io/api/hotspots/search?projectKey=DavidW475_devops-deck&pullRequest=$PR&ps=100"   # hotspots
+curl -s "https://sonarcloud.io/api/qualitygates/project_status?projectKey=DavidW475_devops-deck&pullRequest=$PR"   # gate
+```
+
+Line numbers refer to the analysed commit; after a push, wait for the new analysis before checking again. The local ESLint run below covers most, but not all, SonarCloud rules (e.g. not `S9382` or the CSS rules), so always check the PR as well.
 
 ### Running the SonarJS rules locally (no new dependencies)
 
@@ -93,3 +109,8 @@ npx jscpd repo/src repo/media --min-tokens 50     # duplicated blocks
 - `void` only in front of promises (fire-and-forget), never on non-promise values.
 - Pluralize with `plural(n, word)` from `src/util.ts`, not hand-written `n === 1 ? … : …`.
 - Do not write the words TODO or FIXME in comments (Sonar flags them). Say "to-do" or describe the limitation.
+- `replaceAll('x', 'y')` instead of `replace(/x/g, 'y')` for plain strings.
+- Do not pass a named function straight to `.map()` / `.forEach()` (`.map(scanLine)`): wrap it, `.map((line, n) => scanLine(line, n))`, so extra callback arguments are explicit.
+- No `String(v)` or template interpolation on values that may be objects (prints `[object Object]`); narrow the type first or format objects explicitly (e.g. `JSON.stringify`).
+- No `await` inside loops: run independent calls with `Promise.all` / `mapLimit` (results keep their order). When the order really matters, say why and add `// NOSONAR`.
+- CSS in `media/panel.css` is shared by all editor panels: no selector twice, and scope panel-specific rules under the panel's own class (e.g. `.pv-head .seg`) instead of redefining a shared one.

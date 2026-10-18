@@ -9,6 +9,7 @@ import * as vscode from 'vscode';
 import { AdoClient, AdoError } from '../client';
 import { Connection } from '../connection';
 import { isInside, localAdoRepos } from '../git';
+import { mapLimit } from '../util';
 import { findTemplateRefs, joinTemplatePath, parseRepositories, RepoResource, TemplatePath, TemplateRef } from './templateRefs';
 import { parsePipelineParameters, PipelineParameter, setOwn } from './yamlParameters';
 
@@ -126,6 +127,7 @@ export class TemplateResolver {
     return this.walk(ctx, text, [originKey(ctx.location.origin) + ctx.location.path], budget);
   }
 
+  /** One reference after another on purpose: the file budget must cut the same templates on every run. */
   private async walk(ctx: TemplateContext, text: string, chain: string[], budget: { files: number }): Promise<TemplateNode[]> {
     const nodes: TemplateNode[] = [];
     for (const ref of findTemplateRefs(text)) {
@@ -140,7 +142,7 @@ export class TemplateResolver {
         continue;
       }
       try {
-        node.resolved = await this.resolve(ctx, ref.target);
+        node.resolved = await this.resolve(ctx, ref.target); // NOSONAR: sequential on purpose (file budget)
       } catch (e) {
         node.error = (e as Error).message;
         continue;
@@ -151,7 +153,7 @@ export class TemplateResolver {
       } else if (chain.length >= MAX_DEPTH) {
         node.error = `Nested deeper than ${MAX_DEPTH} levels`;
       } else {
-        node.children = await this.walk(node.resolved.context, node.resolved.text, [...chain, key], budget);
+        node.children = await this.walk(node.resolved.context, node.resolved.text, [...chain, key], budget); // NOSONAR: sequential on purpose
       }
     }
     return nodes;
@@ -229,11 +231,10 @@ export class TemplateResolver {
     this.workspaceAliases ??= (async () => {
       const map = new Map<string, RepoResource>();
       const files = await vscode.workspace.findFiles('**/*.{yml,yaml}', '**/node_modules/**', 500);
-      for (const f of files) {
-        const text = await readLocal(f.fsPath).catch(() => '');
-        if (text.includes('repositories')) {
-          parseRepositories(text).forEach(r => map.has(r.alias) || map.set(r.alias, r));
-        }
+      const texts = await mapLimit(files, 8, f => readLocal(f.fsPath).catch(() => ''));
+      // In file order, so the first declaration of an alias wins as before.
+      for (const text of texts.filter(t => t.includes('repositories'))) {
+        parseRepositories(text).forEach(r => map.has(r.alias) || map.set(r.alias, r));
       }
       return map;
     })();

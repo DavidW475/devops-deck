@@ -8,7 +8,7 @@ import * as vscode from 'vscode';
 import { AdoClient, AdoError } from '../client';
 import { Connection } from '../connection';
 import { currentBranch, isInside, localAdoRepos } from '../git';
-import { plural } from '../util';
+import { mapLimit, plural } from '../util';
 import {
   checkTemplateParameters, completionContext, CompletionContext, describeParameter, findTemplateRefs, mdEscape, parameterSnippet,
   parsePreviewErrors, TemplateRef,
@@ -230,10 +230,8 @@ export class YamlTemplateSupport implements vscode.CompletionItemProvider, vscod
       return;
     }
     const version = doc.version;
-    const out: vscode.Diagnostic[] = [];
-    for (const ref of findTemplateRefs(doc.getText()).filter(r => r.target)) {
-      out.push(...await this.checkRef(doc, ref));
-    }
+    const refs = findTemplateRefs(doc.getText()).filter(r => r.target);
+    const out = (await mapLimit(refs, 6, ref => this.checkRef(doc, ref))).flat();
     if (doc.version === version && !doc.isClosed) {
       this.diagnostics.set(doc.uri, out);
     }
@@ -418,7 +416,7 @@ export function parameterItems(cc: Exclude<CompletionContext, { kind: 'path' }>,
 /** Hover text: where the template comes from, its parameters and the templates it includes itself. */
 export function templateSummary(r: ResolvedTemplate): string {
   const params = r.parameters.length ? r.parameters.map(p => '- ' + describeParameter(p)).join('\n') : '_No parameters._';
-  const nested = findTemplateRefs(r.text).filter(t => t.target).map(t => '`' + templateText(t.target!).replace(/`/g, "'") + '`');
+  const nested = findTemplateRefs(r.text).filter(t => t.target).map(t => '`' + templateText(t.target!).replaceAll('`', "'") + '`');
   const includes = nested.length ? `\n\nIncludes ${[...new Set(nested)].join(', ')}` : '';
   return `$(file-code) **${mdEscape(r.label)}**\n\n${params}${includes}`;
 }

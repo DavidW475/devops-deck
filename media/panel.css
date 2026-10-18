@@ -449,9 +449,9 @@ input.field-input { padding: 0 8px; }
 .pv-head { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; padding: 24px 32px 4px; }
 .pv-title { flex: 1; min-width: 200px; }
 .pv-title h1 { font-size: 20px; margin: 0 0 2px; font-weight: 650; }
-.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 9px; padding: 2px; gap: 2px; background: var(--card); }
-.seg .btn { border: 0; background: transparent; }
-.seg .btn.active { background: var(--primary); color: var(--vscode-button-foreground); box-shadow: none; }
+.pv-head .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 9px; padding: 2px; gap: 2px; background: var(--card); }
+.pv-head .seg .btn { border: 0; background: transparent; }
+.pv-head .seg .btn.active { background: var(--primary); color: var(--vscode-button-foreground); box-shadow: none; }
 .pv-hint { margin: 4px 32px 12px; max-width: 900px; }
 .pv-params { margin: 0 32px 12px; }
 .pv-params summary { cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: 8px; }

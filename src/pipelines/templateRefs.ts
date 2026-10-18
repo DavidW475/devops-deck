@@ -140,7 +140,7 @@ function scanLine(raw: string, n: number): YLine {
 
 /** Scans every line; contents of block scalars (`script: |`) count as blank so their text is never read as keys. */
 function scan(text: string): YLine[] {
-  const lines = text.split(/\r?\n/).map(scanLine);
+  const lines = text.split(/\r?\n/).map((raw, n) => scanLine(raw, n));
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i];
     if (l.key !== undefined && /^[|>][-+]?\d*$/.test(l.rest)) {
@@ -389,7 +389,7 @@ export function describeParameter(p: PipelineParameter): string {
 function inlineValue(v: string): string {
   const one = v.replace(/\s+/g, ' ');
   const short = one.length > 60 ? one.slice(0, 57) + '…' : one;
-  return '`' + short.replace(/`/g, "'") + '`';
+  return '`' + short.replaceAll('`', "'") + '`';
 }
 
 /** Snippet text for the parameters of a template: required ones first, each with a tab stop (choices for values/booleans). */
