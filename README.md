@@ -84,6 +84,20 @@ Help for `template:` and `extends:` references in local pipeline files (language
   - **Azure DevOps** lets the server expand the pipeline with the content of the file (same as *Validate and Preview Expanded Pipeline*), so the result is exactly what a run would use. It updates when you save.
 
   Runtime parameters of the pipeline can be changed in the preview, for example to see the stages with `runTests` turned off.
+
+  ![Pipeline preview of a locally expanded pipeline with runtime parameters, the stage graph with parallel stages, and the jobs and steps of the selected stage, each linked to its template file and line](media/screenshots/pipeline-preview.png)
+
+- **Pipeline Designer** (*Open in Designer* above a `template:` / `extends:` line, *Open Pipeline Designer* in the editor context menu, or *Designer* in the pipeline preview): a form for the parameters of a template call instead of hand-written YAML.
+  - Each parameter gets a control from its declaration: text, number, buttons for `values`, a switch for booleans. Required parameters without a value, values outside `values` and non-numbers are marked before anything is written. Values inside `${{ if }}` and multi-line text values are shown read-only with a link to the line.
+  - Object parameters get a tree form: edit keys and values, add or remove keys and list items, switch a node between text, yes/no, mapping and list. `${{ if }}` / `${{ each }}` keys stay keys. *Form* / *YAML* switches to the value as YAML text. Step, job and stage parameters (`stepList`, `jobList`, `stageList`, `step`, `job`, `stage`) get a YAML field with the block as it is written, comments included. Only that parameter's block is rewritten, with the file's indentation. The form rebuilds the block, so comments inside it are lost; the YAML field keeps them.
+  - *Update in pipeline* changes only the affected lines (comments and formatting stay); the file is not saved, so undo works as usual. Values equal to the default are removed unless *Write defaults* is checked; *Reset to defaults* sets every parameter back.
+  - The catalog on the left lists the templates of a repository resource at a tag or branch (or of the pipeline's own repository) and marks the ones already used. Picking a new one shows it as a dashed card in the structure strip; *Insert into pipeline* adds the call at the end of the chosen `steps:` / `jobs:` / `stages:` list. Switching the `ref` updates `resources.repositories` as well and warns when it points to a branch. *Add repository…* declares another repository of the project.
+  - The YAML preview shows the pending changes with `+` (inserted) and `~` (changed); *YAML only* shows the whole file. *Validate* lets Azure DevOps expand the pipeline with the pending changes and lists the errors.
+
+  ![Pipeline designer with the template catalog, the stages and their template calls, the parameter form of a .NET build template with two unsaved changes, the YAML preview with the inserted line marked, and a successful validation](media/screenshots/pipeline-designer.png)
+
+  ![Object parameter of a deployment template in the designer's tree form, with nested keys, a yes/no switch, a list and an if-expression key, next to a step list parameter edited as YAML](media/screenshots/designer-objects.png)
+
 - **Show Pipeline Templates:** lists every template the file includes, recursively, with nesting, source and number of parameters; pick one to open it.
 - **Validate and Preview Expanded Pipeline** (button in the editor title): Azure DevOps expands the pipeline with the local content of the file, without starting a run. You see the final YAML, or the errors marked in the file. Other files, including local templates, are read from the server at the checked-out branch.
 
@@ -180,6 +194,7 @@ If there is no Azure Repos remote, or you want a different project, click the pr
 | `azureDevOps.pipelines.showTimestamps` | `false` | Show timestamps in pipeline logs |
 | `azureDevOps.yaml.templateDiagnostics` | `true` | Check the parameters passed to `template:` and `extends:` in pipeline YAML |
 | `azureDevOps.yaml.preferLocalRepositories` | `true` | Read templates of repository resources from a clone in the workspace when there is one |
+| `azureDevOps.yaml.designerCodeLens` | `true` | Show *Open in Designer* above `template:` and `extends:` calls |
 
 Example of a custom query:
 

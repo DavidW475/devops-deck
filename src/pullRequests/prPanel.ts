@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { AdoClient, PrArtifact } from '../client';
 import { GitCommitRef, PolicyEvaluation, PrIteration, PrThread, PullRequest, WorkItem } from '../types';
 import {
-  avatarHtml, errorMessage, escapeHtml, guarded, LINK_PICKER_SCRIPT, LinkCandidate, linkPickerHtml, panelHtml, plural, renderMarkdown, shortRef, showError, timeAgo, viewButtonsHtml, VOTE_LABELS,
+  avatarHtml, errorMessage, escapeHtml, guarded, LINK_PICKER_SCRIPT, LinkCandidate, linkPickerHtml, LivePanel, panelHtml, plural, renderMarkdown, shortRef, showError, timeAgo, viewButtonsHtml, VOTE_LABELS,
 } from '../util';
 import { CheckKind, summarizeChecks } from './checks';
 import { checkoutPullRequest } from './prFiles';
@@ -32,6 +32,7 @@ export class PullRequestPanel {
   private linkedWorkItems: number[] = [];
   private latestIteration = 0;
   private requiredReviewer = false;
+  private readonly page: LivePanel;
 
   static show(client: AdoClient, extensionUri: vscode.Uri, repoId: string, prId: number, onChange: () => void): void {
     const key = `${repoId}/${prId}`;
@@ -69,11 +70,12 @@ export class PullRequestPanel {
   private constructor(
     private readonly panel: vscode.WebviewPanel,
     private readonly client: AdoClient,
-    private readonly extensionUri: vscode.Uri,
+    extensionUri: vscode.Uri,
     private readonly repoId: string,
     private readonly prId: number,
     private readonly onChange: () => void,
   ) {
+    this.page = new LivePanel(panel, extensionUri, SCRIPT);
     panel.webview.onDidReceiveMessage(guarded(m => this.handle(m)));
     panel.webview.html = panelHtml(panel.webview, extensionUri, 'Loading', '<div class="loading"><div class="spinner"></div></div>', '');
   }
@@ -121,9 +123,9 @@ export class PullRequestPanel {
           title: `#${w.id} ${w.fields['System.Title']}`,
           sub: `${w.fields['System.WorkItemType']} · ${w.fields['System.State']}`,
         }));
-      void this.panel.webview.postMessage({ type: 'linkResults', seq, items });
+      this.page.post({ type: 'linkResults', seq, items });
     } catch (e) {
-      void this.panel.webview.postMessage({ type: 'linkResults', seq, error: errorMessage(e) });
+      this.page.post({ type: 'linkResults', seq, error: errorMessage(e) });
     }
   }
 
@@ -131,66 +133,74 @@ export class PullRequestPanel {
     if (await this.handleView(m)) {
       return;
     }
+    if (await this.page.action(() => this.act(m))) {
+      await this.render();
+      this.onChange();
+    }
+  }
+
+  /** Runs a page action; true when the pull request changed (re-render), false when it was cancelled or unknown. */
+  private async act(m: any): Promise<boolean> {
     const { repoId, prId, client } = this;
     switch (m.type) {
       case 'vote':
         await client.vote(repoId, prId, Number(m.vote));
         await this.markSeen();
         vscode.window.setStatusBarMessage(`$(check) Voted: ${VOTE_LABELS[String(m.vote)]}`, 3000);
-        break;
+        return true;
       case 'removeReviewer':
         await client.removeReviewer(repoId, prId, String(m.id));
-        break;
+        return true;
       case 'autoComplete':
-        if (!(await this.autoComplete(!!m.value))) {
-          return;
-        }
-        break;
+        return this.autoComplete(!!m.value);
       case 'seen':
         await this.markSeen();
-        break;
+        return true;
       case 'comment':
         await client.createThread(repoId, prId, { comments: [{ parentCommentId: 0, content: String(m.text ?? ''), commentType: 1 }], status: 1 });
-        break;
+        return true;
       case 'reply':
         await client.replyToThread(repoId, prId, Number(m.threadId), String(m.text ?? ''));
-        break;
+        return true;
       case 'threadStatus':
         await client.updateThreadStatus(repoId, prId, Number(m.threadId), Number(m.status));
-        break;
+        return true;
       case 'complete':
-        if (!(await this.complete())) {
-          return;
-        }
-        break;
+        return this.complete();
       case 'draft':
         await client.updatePullRequest(repoId, prId, { isDraft: !!m.value });
-        break;
-      case 'abandon': {
-        const ok = await vscode.window.showWarningMessage(`Abandon PR !${prId}?`, { modal: true }, 'Abandon');
-        if (ok !== 'Abandon') {
-          return;
-        }
-        await client.updatePullRequest(repoId, prId, { status: 'abandoned' });
-        break;
-      }
+        return true;
+      case 'abandon':
+        return this.abandon();
       case 'link':
-        if (m.picker === 'reviewer') {
-          await client.addReviewer(repoId, prId, String(m.key), this.requiredReviewer);
-        } else {
-          await client.linkPullRequest(Number(m.key), this.artifact());
-        }
-        break;
+        await this.link(m);
+        return true;
       case 'unlink':
         await client.unlinkPullRequest(Number(m.key), this.artifact());
-        break;
+        return true;
       case 'refresh':
-        break;
+        return true;
       default:
-        return;
+        return false;
     }
-    await this.render();
-    this.onChange();
+  }
+
+  private async abandon(): Promise<boolean> {
+    const ok = await vscode.window.showWarningMessage(`Abandon PR !${this.prId}?`, { modal: true }, 'Abandon');
+    if (ok !== 'Abandon') {
+      return false;
+    }
+    await this.client.updatePullRequest(this.repoId, this.prId, { status: 'abandoned' });
+    return true;
+  }
+
+  /** Adds a reviewer (reviewer picker) or links a work item (link picker). */
+  private async link(m: { key?: unknown; picker?: unknown }): Promise<void> {
+    if (m.picker === 'reviewer') {
+      await this.client.addReviewer(this.repoId, this.prId, String(m.key), this.requiredReviewer);
+    } else {
+      await this.client.linkPullRequest(Number(m.key), this.artifact());
+    }
   }
 
   private artifact(): PrArtifact {
@@ -207,9 +217,9 @@ export class PullRequestPanel {
       const people = text.trim().length >= 2 ? await this.client.searchIdentities(text.trim()) : [];
       const items = people.filter(p => !present.has(p.id))
         .map((p): LinkCandidate => ({ key: p.id, title: p.displayName, sub: p.isGroup ? 'Group' : p.uniqueName }));
-      void this.panel.webview.postMessage({ type: 'linkResults', picker: 'reviewer', seq, items });
+      this.page.post({ type: 'linkResults', picker: 'reviewer', seq, items });
     } catch (e) {
-      void this.panel.webview.postMessage({ type: 'linkResults', picker: 'reviewer', seq, error: errorMessage(e) });
+      this.page.post({ type: 'linkResults', picker: 'reviewer', seq, error: errorMessage(e) });
     }
   }
 
@@ -289,10 +299,10 @@ export class PullRequestPanel {
         .sort((a, b) => (b.publishedDate ?? '').localeCompare(a.publishedDate ?? ''))
         .map(t => this.threadHtml(t)));
       const myVote = pr.reviewers.find(r => r.id === me.id)?.vote ?? 0;
-      this.panel.webview.html = panelHtml(this.panel.webview, this.extensionUri, pr.title,
-        this.bodyHtml(pr, description, threadHtml, workItems, myVote, checks)
-          .replace('<!--updates-->', () => this.updatesHtml(iterations) + this.commitsHtml(commits)), SCRIPT);
+      this.page.show(pr.title, this.bodyHtml(pr, description, threadHtml, workItems, myVote, checks)
+        .replace('<!--updates-->', () => this.updatesHtml(iterations) + this.commitsHtml(commits)));
     } catch (e) {
+      this.page.idle();
       await showError(e);
     }
   }
@@ -368,7 +378,7 @@ export class PullRequestPanel {
     const rows = commits.slice(0, 50).map(c => `<div class="commit"><span class="mono muted">${escapeHtml(c.commitId.slice(0, 8))}</span>
         <span class="grow" title="${escapeHtml(c.comment ?? '')}">${escapeHtml((c.comment ?? '').split('\n')[0])}</span>
         <span class="muted small">${escapeHtml(c.author?.name ?? '')} · ${timeAgo(c.author?.date)}</span></div>`).join('');
-    return `<details class="card"><summary><h2>Commits <span class="count">${commits.length}</span></h2></summary>${rows}</details>`;
+    return `<details class="card" id="commits"><summary><h2>Commits <span class="count">${commits.length}</span></h2></summary>${rows}</details>`;
   }
 
   private bodyHtml(pr: PullRequest, description: string, threads: string[], workItems: WorkItem[], myVote: number,
@@ -384,7 +394,7 @@ export class PullRequestPanel {
         <button class="unlink" data-remove-reviewer="${escapeHtml(r.id)}" title="Remove reviewer">✕</button></div>`).join('')
       : '<p class="muted">No reviewers.</p>')
       + linkPickerHtml('Add reviewer… (name or e-mail)', 'reviewer')
-      + '<label class="req-toggle"><input type="checkbox" id="reqReviewer"> Add as required reviewer</label>';
+      + `<label class="req-toggle"><input type="checkbox" id="reqReviewer"${this.requiredReviewer ? ' checked' : ''}> Add as required reviewer</label>`;
     const auto = pr.autoCompleteSetBy
       ? `<span class="pill ok" title="Completes automatically once all required policies pass">Auto-complete · ${escapeHtml(pr.autoCompleteSetBy.displayName)}</span>` : '';
     const wis = (workItems.length ? workItems.map(w => `<div class="linked"><a class="wi-link" data-wi="${w.id}"><span class="pill muted">${escapeHtml(w.fields['System.WorkItemType'])}</span>
@@ -435,19 +445,24 @@ export class PullRequestPanel {
   }
 }
 
+/** Delegated listeners only: LIVE_UPDATE_SCRIPT replaces the page content in place after every action. */
 const SCRIPT = LINK_PICKER_SCRIPT + `
-document.getElementById('reqReviewer')?.addEventListener('change', e => vscode.postMessage({ type: 'reviewerRequired', value: e.target.checked }));
+const VIEW_ACTIONS = ['checkout', 'browser'];
+document.addEventListener('change', e => {
+  if (e.target.id === 'reqReviewer') vscode.postMessage({ type: 'reviewerRequired', value: e.target.checked });
+});
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-vote],[data-action],[data-status],[data-wi],[data-run],[data-compare],[data-remove-reviewer]');
   if (!el || el.closest('.md')) return; // ignore look-alike controls inside rendered descriptions/comments
-  if (el.dataset.compare !== undefined) { vscode.postMessage({ type: 'compare', base: Number(el.dataset.compare), target: Number(el.dataset.target) }); return; }
-  if (el.dataset.removeReviewer) { el.classList.add('busy'); vscode.postMessage({ type: 'removeReviewer', id: el.dataset.removeReviewer }); return; }
-  if (el.dataset.vote !== undefined) vscode.postMessage({ type: 'vote', vote: Number(el.dataset.vote) });
-  else if (el.dataset.status) vscode.postMessage({ type: 'threadStatus', threadId: Number(el.dataset.thread), status: Number(el.dataset.status) });
-  else if (el.dataset.wi) vscode.postMessage({ type: 'openWorkItem', id: Number(el.dataset.wi) });
-  else if (el.dataset.run) { vscode.postMessage({ type: 'openRun', id: Number(el.dataset.run) }); return; }
-  else vscode.postMessage({ type: el.dataset.action, value: el.dataset.value === 'true' });
-  if (el.classList.contains('btn')) el.classList.add('busy');
+  const d = el.dataset;
+  if (d.compare !== undefined) vscode.postMessage({ type: 'compare', base: Number(d.compare), target: Number(d.target) });
+  else if (d.wi) vscode.postMessage({ type: 'openWorkItem', id: Number(d.wi) });
+  else if (d.run) vscode.postMessage({ type: 'openRun', id: Number(d.run) });
+  else if (d.removeReviewer) postAction({ type: 'removeReviewer', id: d.removeReviewer }, el);
+  else if (d.vote !== undefined) postAction({ type: 'vote', vote: Number(d.vote) }, el);
+  else if (d.status) postAction({ type: 'threadStatus', threadId: Number(d.thread), status: Number(d.status) }, el);
+  else if (VIEW_ACTIONS.includes(d.action)) vscode.postMessage({ type: d.action });
+  else postAction({ type: d.action, value: d.value === 'true' }, el);
 });
 document.addEventListener('submit', e => {
   e.preventDefault();
@@ -455,8 +470,8 @@ document.addEventListener('submit', e => {
   if (form.closest('.md')) return;
   const text = form.elements.text.value.trim();
   if (!text) return;
-  if (form.id === 'new-comment') vscode.postMessage({ type: 'comment', text });
-  else vscode.postMessage({ type: 'reply', threadId: Number(form.dataset.thread), text });
-  form.querySelector('button').classList.add('busy');
+  const button = form.querySelector('button');
+  if (form.id === 'new-comment') postAction({ type: 'comment', text }, button);
+  else postAction({ type: 'reply', threadId: Number(form.dataset.thread), text }, button);
 });
 `;

@@ -23,9 +23,17 @@ export interface ServerPreview {
   filePath: string;
 }
 
+/** An error location the server reported while expanding a pipeline. */
+export interface PreviewProblem {
+  file: string;
+  line: number;
+  col: number;
+  text: string;
+}
+
 /** A preview problem for the user (not a bug): shown as a message or in the preview panel. */
 export class PreviewError extends Error {
-  constructor(message: string, readonly level: 'info' | 'warning' | 'error') {
+  constructor(message: string, readonly level: 'info' | 'warning' | 'error', readonly problems: PreviewProblem[] = []) {
     super(message);
   }
 
@@ -287,9 +295,10 @@ export class YamlTemplateSupport implements vscode.CompletionItemProvider, vscod
    * Lets Azure DevOps expand the pipeline with the local content of this file (`yamlOverride`). Other files are read
    * from the server at the checked-out branch. `definitionId` skips the pipeline picker (the preview panel keeps the
    * choice). Returns undefined when the user cancels; problems the user has to fix throw a `PreviewError`, and the
-   * server's template errors are also marked in the file.
+   * server's template errors are also marked in the file. `text` replaces the document's content (the designer
+   * validates its pending changes); errors are only marked in the file when it is the document's own text.
    */
-  async expandOnServer(doc: vscode.TextDocument, templateParameters?: Record<string, string>, definitionId?: number):
+  async expandOnServer(doc: vscode.TextDocument, templateParameters?: Record<string, string>, definitionId?: number, text?: string):
     Promise<ServerPreview | undefined> {
     if (doc.uri.scheme !== 'file') {
       throw new PreviewError('Open a local Azure Pipelines YAML file first.', 'info');
@@ -307,14 +316,16 @@ export class YamlTemplateSupport implements vscode.CompletionItemProvider, vscod
       return undefined;
     }
     const branch = currentBranch(local.repo) ?? repo.defaultBranch?.replace(/^refs\/heads\//, '') ?? 'main';
+    const own = text === undefined || text === doc.getText();
     this.previewDiagnostics.delete(doc.uri);
     try {
       const yaml = await vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: `Expanding ${def.name}` },
-        () => api.previewPipeline(def.id, `refs/heads/${branch}`, undefined, templateParameters, doc.getText()));
+        () => api.previewPipeline(def.id, `refs/heads/${branch}`, undefined, templateParameters, text ?? doc.getText()));
       return { yaml, definition: { id: def.id, name: def.name }, branch, filePath };
     } catch (e) {
       if (e instanceof AdoError && !e.isAuthError) {
-        throw new PreviewError(this.markPreviewErrors(doc, filePath, e.message), 'error');
+        const problems = parsePreviewErrors(e.message);
+        throw new PreviewError(this.markPreviewErrors(own ? doc : undefined, filePath, e.message, problems), 'error', problems);
       }
       throw e;
     }
@@ -355,12 +366,13 @@ export class YamlTemplateSupport implements vscode.CompletionItemProvider, vscod
     await vscode.window.showTextDocument(preview, { viewColumn: vscode.ViewColumn.Beside, preview: true });
   }
 
-  /** Marks the server's errors that point into this file; returns a one-line summary. */
-  private markPreviewErrors(doc: vscode.TextDocument, filePath: string, message: string): string {
-    const errors = parsePreviewErrors(message);
-    const own = errors.filter(e => e.file.replace(/^\//, '').toLowerCase() === filePath.slice(1).toLowerCase());
-    this.previewDiagnostics.set(doc.uri, own.map(e =>
-      diagnostic(new vscode.Range(e.line - 1, Math.max(e.col - 1, 0), e.line - 1, Number.MAX_SAFE_INTEGER), e.text, vscode.DiagnosticSeverity.Error)));
+  /** Marks the server's errors that point into this file (when given); returns a one-line summary. */
+  private markPreviewErrors(doc: vscode.TextDocument | undefined, filePath: string, message: string, errors: PreviewProblem[]): string {
+    const own = errors.filter(e => sameFile(e.file, filePath));
+    if (doc) {
+      this.previewDiagnostics.set(doc.uri, own.map(e =>
+        diagnostic(new vscode.Range(e.line - 1, Math.max(e.col - 1, 0), e.line - 1, Number.MAX_SAFE_INTEGER), e.text, vscode.DiagnosticSeverity.Error)));
+    }
     const first = errors[0] ? `${errors[0].file} (line ${errors[0].line}): ${errors[0].text}` : message;
     const more = errors.length > 1 ? ` (${plural(errors.length, 'error')})` : '';
     return `Azure DevOps could not expand the pipeline${more}: ${first}`;
@@ -436,7 +448,7 @@ function treeItems(nodes: TemplateNode[], depth: number): TreeItem[] {
   });
 }
 
-const sameFile = (a: string | undefined, b: string) => !!a && a.replace(/^\//, '').toLowerCase() === b.replace(/^\//, '').toLowerCase();
+export const sameFile = (a: string | undefined, b: string) => !!a && a.replace(/^\//, '').toLowerCase() === b.replace(/^\//, '').toLowerCase();
 
 async function pickDefinition<D extends { id: number; name: string; path: string; process?: { yamlFilename?: string } }>(
   defs: D[], filePath: string, repoName: string): Promise<D | undefined> {

@@ -6,11 +6,11 @@
     "ghcr.io/devcontainers/features/github-cli:1": {},
     "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {}
   },
-  "postCreateCommand": "npm install && npm run compile",
+  "postCreateCommand": "sudo chown -R node:node /home/node/.claude && npm install && npm run compile",
   "customizations": {
     "vscode": {
       "settings": {
-        "typescript.tsdk": "node_modules/typescript/lib"
+        "js/ts.tsdk.path": "node_modules/typescript/lib"
       },
       "extensions": [
         "Anthropic.claude-code",
@@ -19,4 +19,10 @@
     }
   },
   "remoteUser": "node",
+  "mounts": [
+    "source=claude-code-config-${devcontainerId},target=/home/node/.claude,type=volume"
+  ],
+  "containerEnv": {
+    "CLAUDE_CONFIG_DIR": "/home/node/.claude"
+  },
 }

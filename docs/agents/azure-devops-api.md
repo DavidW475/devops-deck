@@ -34,7 +34,7 @@ Default `7.1`. These calls pass a preview version explicitly:
 | `searchIdentities` (`IdentityPicker/Identities`) | `7.1-preview.1` |
 | `listPendingApprovals`, `getApproval`, `updateApproval` (`pipelines/approvals`) | `7.1-preview.1` |
 
-`previewPipeline` (`POST pipelines/{id}/preview` with `previewRun: true`, api-version `7.1-preview.1`) is the pipelines "preview run" endpoint. With `yamlOverride` it expands the given YAML instead of the committed root file (used by *Validate and Preview Expanded Pipeline*); other files still come from the server.
+`previewPipeline` (`POST pipelines/{id}/preview` with `previewRun: true`, api-version `7.1-preview.1`) is the pipelines "preview run" endpoint. With `yamlOverride` it expands the given YAML instead of the committed root file (used by *Validate and Preview Expanded Pipeline* and the designer's *Validate*, which sends its pending, unsaved text); other files still come from the server.
 
 ## Org vs project routes
 
@@ -64,7 +64,7 @@ Default `7.1`. These calls pass a preview version explicitly:
 
 ## Files at a ref
 
-`getFileTextAtRef(repoId, path, ref?)` maps a repository resource `ref` to a version descriptor: `refs/tags/x` → tag, a 40-character SHA → commit, `refs/heads/x` or a plain name → branch, none → the repository's default branch. `listYamlDefinitions(repoId)` lists the YAML pipelines of a repository (`includeAllProperties` for `process.yamlFilename`).
+`getFileTextAtRef(repoId, path, ref?)` maps a repository resource `ref` to a version descriptor: `refs/tags/x` → tag, a 40-character SHA → commit, `refs/heads/x` or a plain name → branch, none → the repository's default branch. `listYamlDefinitions(repoId)` lists the YAML pipelines of a repository (`includeAllProperties` for `process.yamlFilename`). For the designer's catalog, `listFilePaths(repoId, ref?)` lists every file at the same kind of ref (Git Items API, `scopePath=/`, `recursionLevel=Full`; folders dropped) and `listRefNames(repoId)` reads tags and branches (`git/repositories/{id}/refs` with `filter=tags/` and `filter=heads/`, 500 each).
 
 ## Code search is intentionally not supported
 

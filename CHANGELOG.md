@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.1.0
+
+### Added
+
+- Pipeline designer: a form for the parameters of `template:` and `extends:` calls (text, number, choices, switches; required and changed values marked, type and allowed-value errors shown). Inserts or updates the call with targeted line edits, so formatting and comments stay, undo works and the file shows as unsaved; values equal to the default are left out unless *Write defaults* is on
+- Template catalog in the designer: the templates of a repository resource (or of the pipeline's own repository) at a tag or branch, with an "in pipeline" mark; pick one to insert a new call at the end of a chosen `steps:`, `jobs:` or `stages:` list. The `ref:` of the repository resource can be switched (warns when it points to a branch), and *Add repository…* declares another repository of the project
+- Structure strip with the stages and their template calls, YAML preview with the pending changes marked (`+` inserted, `~` changed), and *Validate*, which lets Azure DevOps expand the pipeline with the pending changes and lists its errors
+- Calls with parameters under `${{ if }}` / `${{ else }}` stay editable: only the conditional parameters are read-only
+- Object parameters in the designer: a tree form (keys, values, list items; text, yes/no, mapping or list; `${{ if }}` / `${{ each }}` keys stay keys) with a switch to YAML text. Step, job and stage parameters (`stepList`, `jobList`, `stageList`, `step`, `job`, `stage`) get a YAML field with the block as written, comments included. Writing back replaces only that parameter's block, with the file's indentation, and drops a value equal to the default unless *Write defaults* is on. Values under `${{ if }}` stay read-only
+- Opens with *Open in Designer* above every call (`azureDevOps.yaml.designerCodeLens`), the command *Open Pipeline Designer* or the *Designer* button of the pipeline preview
+
+### Changed
+
+- Smoother UI: the pull request and work item panels update in place after an action instead of reloading the page (no flash; scroll position, focus, open sections and drafts stay), with a thin progress bar while the action runs
+- Sidebar: refreshes and pipeline polling change only what differs, so hover, focus, open cards and dropdowns stay; open cards no longer flash "Loading…" on refresh; the tab indicator slides; search filters once per frame
+- Run view, pipeline preview, designer and repositories rewrite only changed sections (open artifact menu, scroll positions and the field being edited stay); animations use only transform and opacity
+- Screenshots of the pipeline designer (parameter form and object parameters) and the pipeline preview in the README
+
+### Fixed
+
+- Pipeline preview: the job count in the stage cards lines up with the stage name instead of being indented
+- Designer: a new parameter added after a parameter whose block ends with a multi-line script (`script: |`) goes after the script instead of into it
+- Local pipeline preview: a list item that is only an expression returning a list (`- ${{ parameters.stages }}`, typical in extends templates) inserts its items instead of a nested list
+
 ## 1.0.0
 
 ### Added

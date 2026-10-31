@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { AdoClient, PrArtifact, parsePrArtifact } from '../client';
 import { PullRequest, WorkItem, WorkItemComment, WorkItemState, WorkItemTypeField, WorkItemUpdate } from '../types';
 import {
-  asText, avatarHtml, errorMessage, escapeHtml, guarded, LINK_PICKER_SCRIPT, LinkCandidate, linkPickerHtml, panelHtml, sanitizeHtml, shortRef, showError, timeAgo, viewButtonsHtml,
+  asText, avatarHtml, errorMessage, escapeHtml, guarded, LINK_PICKER_SCRIPT, LinkCandidate, linkPickerHtml, LivePanel, panelHtml, sanitizeHtml, shortRef, showError, timeAgo, viewButtonsHtml,
 } from '../util';
 import { EditableField, editableFields, hierarchyOf, HistoryEntry, historyEntries, joinTags, PARENT_REL, splitTags } from './wiModel';
 
@@ -37,6 +37,7 @@ export class WorkItemPanel {
   private item?: WorkItem;
   /** client for the work item's own project (types, states, comments, classification nodes) */
   private scoped?: AdoClient;
+  private readonly page: LivePanel;
 
   static show(client: AdoClient, extensionUri: vscode.Uri, id: number, onChange: () => void): void {
     const existing = WorkItemPanel.panels.get(id);
@@ -56,10 +57,11 @@ export class WorkItemPanel {
   private constructor(
     private readonly panel: vscode.WebviewPanel,
     private readonly client: AdoClient,
-    private readonly extensionUri: vscode.Uri,
+    extensionUri: vscode.Uri,
     private readonly id: number,
     private readonly onChange: () => void,
   ) {
+    this.page = new LivePanel(panel, extensionUri, LINK_PICKER_SCRIPT + SCRIPT);
     panel.webview.onDidReceiveMessage(guarded(m => this.handle(m)));
     panel.webview.html = panelHtml(panel.webview, extensionUri, 'Loading', '<div class="loading"><div class="spinner"></div></div>', '');
   }
@@ -77,6 +79,14 @@ export class WorkItemPanel {
     if (await this.handleView(m)) {
       return;
     }
+    if (await this.page.action(() => this.act(m))) {
+      await this.render();
+      this.onChange();
+    }
+  }
+
+  /** Runs a page action; true when the work item may have changed (re-render), false for unknown messages. */
+  private async act(m: any): Promise<boolean> {
     switch (m.type) {
       case 'state':
         await this.api.updateWorkItem(this.id, { 'System.State': m.value });
@@ -118,10 +128,9 @@ export class WorkItemPanel {
         cache.clear();
         break;
       default:
-        return;
+        return false;
     }
-    await this.render();
-    this.onChange();
+    return true;
   }
 
   /** Messages that only navigate or search; true when handled. */
@@ -184,9 +193,9 @@ export class WorkItemPanel {
       const people = text.trim().length >= 2 ? await this.api.searchIdentities(text.trim()) : [];
       const items = people.filter(p => !p.isGroup && p.uniqueName)
         .map((p): LinkCandidate => ({ key: `${p.displayName} <${p.uniqueName}>`, title: p.displayName, sub: p.uniqueName }));
-      void this.panel.webview.postMessage({ type: 'linkResults', picker: 'assignee', seq, items });
+      this.page.post({ type: 'linkResults', picker: 'assignee', seq, items });
     } catch (e) {
-      void this.panel.webview.postMessage({ type: 'linkResults', picker: 'assignee', seq, error: errorMessage(e) });
+      this.page.post({ type: 'linkResults', picker: 'assignee', seq, error: errorMessage(e) });
     }
   }
 
@@ -205,9 +214,9 @@ export class WorkItemPanel {
           title: `!${pr.pullRequestId} ${pr.title}`,
           sub: `${pr.repository.name} · ${shortRef(pr.sourceRefName)} → ${shortRef(pr.targetRefName)} · ${pr.createdBy.displayName}`,
         }));
-      void this.panel.webview.postMessage({ type: 'linkResults', seq, items });
+      this.page.post({ type: 'linkResults', seq, items });
     } catch (e) {
-      void this.panel.webview.postMessage({ type: 'linkResults', seq, error: errorMessage(e) });
+      this.page.post({ type: 'linkResults', seq, error: errorMessage(e) });
     }
   }
 
@@ -235,8 +244,9 @@ export class WorkItemPanel {
       this.linkedPrs = linkedPrs;
       this.panel.title = `#${item.id} ${item.fields['System.Title']}`;
       const view: View = { w: item, states, comments, linkedPrs, fields: editableFields(typeFields), history: historyEntries(updates), related, types, iterations, areas };
-      this.panel.webview.html = panelHtml(this.panel.webview, this.extensionUri, this.panel.title, bodyHtml(view), LINK_PICKER_SCRIPT + SCRIPT);
+      this.page.show(this.panel.title, bodyHtml(view));
     } catch (e) {
+      this.page.idle();
       await showError(e);
     }
   }
@@ -377,7 +387,7 @@ function historyHtml(history: HistoryEntry[]): string {
   const rows = history.slice(0, 50).map(h => `<div class="hist">
       <div class="hist-head">${avatarHtml(h.by, 20)}<strong>${escapeHtml(h.by)}</strong><span class="muted small">${timeAgo(h.date)} · rev ${h.rev}</span></div>
       <ul>${h.changes.map(change).join('')}${h.links.map(link).join('')}</ul></div>`).join('');
-  return `<details class="card"><summary><h2>History <span class="count">${history.length}</span></h2></summary>${rows}</details>`;
+  return `<details class="card" id="history"><summary><h2>History <span class="count">${history.length}</span></h2></summary>${rows}</details>`;
 }
 
 function bodyHtml(v: View): string {
@@ -396,7 +406,7 @@ function bodyHtml(v: View): string {
   return `
 <header class="hero" style="--accent:#${escapeHtml(stateColor)}">
   <div class="hero-top"><span class="pill info">${escapeHtml(f['System.WorkItemType'])}</span><span class="muted">#${v.w.id} · rev ${v.w.rev}</span></div>
-  <h1 contenteditable="true" id="title" spellcheck="false">${escapeHtml(f['System.Title'])}</h1>
+  <h1 contenteditable="true" id="title" spellcheck="false" data-original="${escapeHtml(f['System.Title'])}">${escapeHtml(f['System.Title'])}</h1>
   <div class="hero-meta">
     <label class="state-select"><span class="dot" style="background:#${escapeHtml(stateColor)}"></span>
       <select id="state">${stateOptions}</select></label>
@@ -430,7 +440,9 @@ function bodyHtml(v: View): string {
 </main>`;
 }
 
+/** Delegated listeners only: LIVE_UPDATE_SCRIPT replaces the page content in place after every action. */
 const SCRIPT = `
+const VIEW_ACTIONS = ['browser', 'branch'];
 document.addEventListener('click', e => {
   if (e.target.closest('.md')) return; // work item HTML: ignore look-alike controls inside it
   const pr = e.target.closest('[data-pr]');
@@ -438,35 +450,42 @@ document.addEventListener('click', e => {
   const wi = e.target.closest('[data-wi]');
   if (wi) { vscode.postMessage({ type: 'openWi', id: Number(wi.dataset.wi) }); return; }
   const rp = e.target.closest('[data-remove-parent]');
-  if (rp) { rp.classList.add('busy'); vscode.postMessage({ type: 'removeParent', id: Number(rp.dataset.removeParent) }); return; }
+  if (rp) { postAction({ type: 'removeParent', id: Number(rp.dataset.removeParent) }, rp); return; }
   const el = e.target.closest('[data-action]');
   if (!el) return;
-  vscode.postMessage({ type: el.dataset.action });
-  el.classList.add('busy');
+  if (VIEW_ACTIONS.includes(el.dataset.action)) vscode.postMessage({ type: el.dataset.action });
+  else postAction({ type: el.dataset.action }, el);
 });
-document.getElementById('state').addEventListener('change', e => vscode.postMessage({ type: 'state', value: e.target.value }));
-document.querySelectorAll('[data-field]').forEach(el => el.addEventListener('change', () => {
-  el.disabled = true;
-  vscode.postMessage({ type: 'field', name: el.dataset.field, kind: el.dataset.kind, value: el.value });
-}));
-const tags = document.getElementById('tags');
-const tagsBefore = tags.value;
-tags.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); tags.blur(); } });
-tags.addEventListener('blur', () => { if (tags.value !== tagsBefore) { tags.disabled = true; vscode.postMessage({ type: 'tags', value: tags.value }); } });
-const title = document.getElementById('title');
-const original = title.textContent;
-title.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); title.blur(); } if (e.key === 'Escape') { title.textContent = original; title.blur(); } });
-title.addEventListener('blur', () => { const v = title.textContent.trim(); if (v && v !== original) vscode.postMessage({ type: 'title', value: v }); });
-document.getElementById('new-comment').addEventListener('submit', e => {
-  e.preventDefault();
-  const text = e.target.elements.text.value.trim();
-  if (text) { vscode.postMessage({ type: 'comment', text }); e.target.querySelector('button').classList.add('busy'); }
+document.addEventListener('change', e => {
+  const el = e.target;
+  if (el.closest('.md')) return;
+  if (el.id === 'state') postAction({ type: 'state', value: el.value }, el);
+  else if (el.dataset.field) postAction({ type: 'field', name: el.dataset.field, kind: el.dataset.kind, value: el.value }, el);
 });
-document.getElementById('add-child').addEventListener('submit', e => {
+document.addEventListener('keydown', e => {
+  const el = e.target;
+  if (el.id === 'tags' && e.key === 'Enter') { e.preventDefault(); el.blur(); }
+  if (el.id !== 'title') return;
+  if (e.key === 'Enter') { e.preventDefault(); el.blur(); }
+  if (e.key === 'Escape') { el.textContent = el.dataset.original; el.blur(); }
+});
+document.addEventListener('focusout', e => {
+  const el = e.target;
+  if (el.id === 'tags' && !el.disabled && el.value !== el.defaultValue) postAction({ type: 'tags', value: el.value }, el);
+  if (el.id !== 'title') return;
+  const v = el.textContent.trim();
+  if (v && v !== el.dataset.original) postAction({ type: 'title', value: v });
+});
+document.addEventListener('submit', e => {
   e.preventDefault();
-  const f = e.target.elements;
-  if (!f.title.value.trim()) return;
-  vscode.postMessage({ type: 'addChild', childType: f.childType.value, title: f.title.value });
-  e.target.querySelector('button').classList.add('busy');
+  const form = e.target;
+  const f = form.elements;
+  const button = form.querySelector('button');
+  if (form.id === 'new-comment') {
+    const text = f.text.value.trim();
+    if (text) postAction({ type: 'comment', text }, button);
+  } else if (form.id === 'add-child' && f.title.value.trim()) {
+    postAction({ type: 'addChild', childType: f.childType.value, title: f.title.value }, button);
+  }
 });
 `;

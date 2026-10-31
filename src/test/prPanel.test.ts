@@ -4,7 +4,7 @@ import type { Memento, Uri as VsUri } from 'vscode';
 import { AdoClient } from '../client';
 import { PullRequestPanel } from '../pullRequests/prPanel';
 import { GitCommitRef, IdentityRef, PolicyEvaluation, PrIteration, PrThread, PullRequest, WorkItem } from '../types';
-import { cspNonce, FakeWebview, FakeWebviewPanel, flush, lastPanel } from './fakeWebview';
+import { cspNonce, FakeWebview, FakeWebviewPanel, flush, inlineScript, lastPanel } from './fakeWebview';
 import * as vscode from './vscodeStub';
 
 const EXT = vscode.Uri.file('/ext') as unknown as VsUri;
@@ -60,7 +60,7 @@ function fakeClient() {
     pr: pullRequest(), wiIds: [42], iterations: ITERATIONS, evaluations: [
       evaluation('rejected', 'Fabrikam CI', { context: { buildId: 900, buildDefinitionName: 'Fabrikam CI build' } }),
       evaluation('approved', 'Required reviewers'),
-    ] as PolicyEvaluation[] | undefined, failPr: false, failSearch: false,
+    ] as PolicyEvaluation[] | undefined, failPr: false, failSearch: false, failVote: false,
   };
   const client: Record<string, unknown> = {
     connection: { orgUrl: 'https://dev.azure.com/contoso' },
@@ -83,7 +83,7 @@ function fakeClient() {
       return state.evaluations;
     },
     webUrl: (kind: string, repo: string, id: number, project?: string) => `https://dev.azure.com/contoso/${project}/_git/${repo}/${kind}/${id}`,
-    searchIdentities: async () => [{ id: 'me', displayName: 'Alex Morgan' }, { id: 'u2', displayName: 'Marco Rossi', uniqueName: 'marco@contoso.com' }, { id: 'g', displayName: 'Testers', isGroup: true }],
+    searchIdentities: async () => state.failSearch ? Promise.reject(new Error('identities unavailable')) : [{ id: 'me', displayName: 'Alex Morgan' }, { id: 'u2', displayName: 'Marco Rossi', uniqueName: 'marco@contoso.com' }, { id: 'g', displayName: 'Testers', isGroup: true }],
     searchWorkItems: async () => {
       if (state.failSearch) {
         throw new Error('search failed');
@@ -91,7 +91,13 @@ function fakeClient() {
       return [workItem(42), workItem(43)];
     },
   };
-  for (const name of ['vote', 'removeReviewer', 'setAutoComplete', 'createThread', 'replyToThread', 'updateThreadStatus', 'updatePullRequest',
+  client.vote = async (...args: unknown[]) => {
+    if (state.failVote) {
+      throw new Error('TF401027: vote denied');
+    }
+    calls.vote = [...(calls.vote ?? []), args];
+  };
+  for (const name of ['removeReviewer', 'setAutoComplete', 'createThread', 'replyToThread', 'updateThreadStatus', 'updatePullRequest',
     'addReviewer', 'linkPullRequest', 'unlinkPullRequest']) {
     client[name] = record(name);
   }
@@ -279,6 +285,8 @@ describe('PullRequestPanel', () => {
     state.failSearch = true;
     await wv.send({ type: 'linkSearch', picker: 'link', seq: 4 });
     assert.deepEqual(wv.last('linkResults'), { type: 'linkResults', seq: 4, error: 'search failed' });
+    await wv.send({ type: 'linkSearch', picker: 'reviewer', text: 'marco', seq: 5 });
+    assert.deepEqual(wv.last('linkResults'), { type: 'linkResults', picker: 'reviewer', seq: 5, error: 'identities unavailable' });
 
     await wv.send({ type: 'reviewerRequired', value: 1 });
     await wv.send({ type: 'link', picker: 'reviewer', key: 'u2' });
@@ -328,5 +336,57 @@ describe('PullRequestPanel', () => {
     const wv = await open(client);
     await wv.send({ type: 'checkout' });
     assert.deepEqual(vscode.messages, ['DevOps Deck: The built-in Git extension is not available.']);
+  });
+  it('renders the page once and updates it in place after actions', async () => {
+    const { client } = fakeClient();
+    const wv = await open(client);
+    assert.equal(wv.htmlWrites, 2, 'loading page, then the pull request');
+    assert.ok(wv.html.includes('<body><div id="root">'));
+    const script = inlineScript(wv.html);
+    assert.ok(script.indexOf('window.postAction') < script.indexOf("'reviewerRequired'"), 'the live update script runs first');
+    assert.ok(!script.includes("getElementById('reqReviewer')"), 'no listeners bound to replaced elements');
+
+    await wv.send({ type: 'reviewerRequired', value: true });
+    await wv.send({ type: 'vote', vote: -5 });
+    assert.equal(wv.htmlWrites, 2, 'the document is not replaced');
+    const update = wv.last('update');
+    assert.equal(update.title, 'Fix <checkout> & totals');
+    assert.ok(update.html.includes('<h1>Fix &lt;checkout&gt; &amp; totals</h1>'));
+    assert.ok(!update.html.includes('<checkout>'));
+    assert.ok(!update.html.includes('alert(1)'));
+    assert.ok(!update.html.includes('<div id="root">'), 'only the content of #root is sent');
+    assert.ok(update.html.includes('id="reqReviewer" checked'), 'the required reviewer choice survives the update');
+    assert.ok(update.html.includes('<details class="card" id="commits">'));
+    assert.equal(wv.ofType('idle').length, 0);
+  });
+
+  it('tells the page when an action ends without new content', async () => {
+    const { client, state } = fakeClient();
+    const wv = await open(client);
+    await wv.send({ type: 'abandon' });
+    assert.equal(wv.ofType('idle').length, 1, 'cancelled');
+    state.failVote = true;
+    await wv.send({ type: 'vote', vote: 10 });
+    assert.equal(wv.ofType('idle').length, 2, 'failed');
+    assert.ok(vscode.messages.includes('DevOps Deck: TF401027: vote denied'));
+    state.failPr = true;
+    await wv.send({ type: 'refresh' });
+    assert.equal(wv.ofType('idle').length, 3, 'the re-render failed');
+    assert.equal(wv.ofType('update').length, 0);
+    await wv.send({ type: 'unknown' });
+    assert.equal(wv.ofType('idle').length, 4);
+    await wv.send({ type: 'openWorkItem', id: 42 });
+    assert.equal(wv.ofType('idle').length, 4, 'navigation does not mark the page busy');
+  });
+
+  it('posts nothing after the panel is closed', async () => {
+    const { client } = fakeClient();
+    const wv = await open(client);
+    panel?.dispose();
+    const before = wv.posted.length;
+    await wv.send({ type: 'refresh' });
+    await wv.send({ type: 'linkSearch', picker: 'link', text: 'totals', seq: 1 });
+    assert.equal(wv.posted.length, before);
+    assert.equal(wv.htmlWrites, 2);
   });
 });

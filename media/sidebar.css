@@ -117,8 +117,9 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
   border-radius: 7px;
   background: var(--vscode-editor-background);
   box-shadow: 0 1px 3px rgb(0 0 0 / .18), 0 0 0 1px var(--border);
-  transition: transform .28s var(--ease), width .28s var(--ease);
 }
+/* slides only once placed, so it does not glide in from the left when the view opens */
+.tabs.ready .tab-indicator { transition: transform .28s var(--ease), width .28s var(--ease); }
 .tab {
   position: relative; z-index: 1; display: flex; align-items: center; justify-content: center; gap: 6px;
   height: 28px; padding: 0 6px; border-radius: 7px; color: var(--muted); font-weight: 500; font-size: 12px;
@@ -155,7 +156,7 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 .chip {
   height: 24px; padding: 0 10px; border-radius: 99px; font-size: 11.5px; font-weight: 500;
   border: 1px solid var(--border-strong); color: var(--muted);
-  transition: all .15s;
+  transition: background-color .15s, color .15s, border-color .15s, box-shadow .15s;
 }
 .chip:hover { color: var(--fg); border-color: var(--fg); }
 .chip.active { background: var(--accent); color: var(--accent-fg); border-color: transparent; box-shadow: 0 1px 6px -1px color-mix(in srgb, var(--accent) 60%, transparent); }
@@ -183,14 +184,19 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 }
 @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(260%); } }
 
+/* Hover only fades colors: a transitioned box-shadow repaints the card on every frame. */
 .card {
   position: relative; border-radius: var(--radius); background: var(--card);
   border: 1px solid var(--border); cursor: pointer; overflow: hidden;
-  transition: background .15s, border-color .15s, box-shadow .2s, transform .2s var(--ease);
+  transition: background-color .15s, border-color .15s;
+  /* a card's layout and paint never leak out (it clips anyway), so updating one card stays cheap */
+  contain: layout paint;
 }
+/* Cards scrolled out of view are not laid out or painted; `auto` remembers their last real height. */
+.list > .card, .group > .card { content-visibility: auto; contain-intrinsic-block-size: auto 84px; }
 /* entrance animation only when fresh data arrives, not on every re-render */
 .list.animate > .card { animation: rise .25s var(--ease) both; }
-.card:hover { background: var(--card-hover); border-color: var(--border-strong); box-shadow: 0 4px 16px -8px rgb(0 0 0 / .35); }
+.card:hover { background: var(--card-hover); border-color: var(--border-strong); }
 .card:focus-visible { outline: 1px solid var(--focus); }
 .card.open { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
 .card.pr.ready, .card.pr.ready:hover { border-color: color-mix(in srgb, var(--ok) 70%, var(--border)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--ok) 25%, transparent); }
@@ -285,7 +291,6 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 
 /* expand area */
 .expand { border-top: 1px solid var(--border); background: color-mix(in srgb, var(--bg) 60%, transparent); cursor: default; }
-.expand.entering { animation: rise .2s var(--ease); }
 .files-head { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px 4px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
 .link { display: inline-flex; align-items: center; gap: 3px; color: var(--vscode-textLink-foreground); text-transform: none; letter-spacing: 0; font-size: 12px; }
 .link .i { width: 12px; height: 12px; }
@@ -347,8 +352,14 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 @keyframes spin { to { transform: rotate(360deg); } }
 .card.build.r-failed { border-left: 3px solid var(--fail); }
 .card.build.is-running { border-color: color-mix(in srgb, var(--info) 40%, var(--border)); }
-.run-bar { height: 2px; background: linear-gradient(90deg, transparent, var(--info), transparent); background-size: 50% 100%; background-repeat: no-repeat; animation: run 1.6s linear infinite; }
-@keyframes run { from { background-position: -50% 0; } to { background-position: 150% 0; } }
+/* Running indicators move a pseudo-element with transform (compositor only), not background-position (a repaint per frame). */
+.run-bar { position: relative; height: 2px; overflow: hidden; }
+.run-bar::after {
+  content: ''; position: absolute; inset: 0; width: 50%;
+  background: linear-gradient(90deg, transparent, var(--info), transparent);
+  animation: run 1.6s linear infinite;
+}
+@keyframes run { from { transform: translateX(-100%); } to { transform: translateX(200%); } }
 
 .timeline, .timeline ul { list-style: none; margin: 0; padding: 0; }
 .timeline { padding: 8px 8px 10px; }
@@ -371,12 +382,17 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 
 /* states */
 .skeleton { display: flex; gap: 10px; padding: 12px; cursor: default; }
-.sk { display: block; border-radius: 6px; background: linear-gradient(90deg, var(--border) 0%, var(--border-strong) 50%, var(--border) 100%); background-size: 200% 100%; animation: shimmer 1.3s infinite linear; }
+.sk { display: block; position: relative; overflow: hidden; border-radius: 6px; background: var(--border); }
+.sk::after {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--fg) 8%, transparent), transparent);
+  animation: shimmer 1.3s infinite linear;
+}
 .sk-avatar { width: 32px; height: 32px; border-radius: 50%; flex: none; }
 .sk-lines { flex: 1; display: flex; flex-direction: column; gap: 7px; padding-top: 2px; }
 .sk-line { height: 9px; }
 .w80 { width: 80%; } .w50 { width: 50%; } .w30 { width: 30%; }
-@keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+@keyframes shimmer { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
 
 .empty { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 4px; padding: 36px 16px; color: var(--muted); }
 .empty .i { width: 36px; height: 36px; stroke-width: 1.4; opacity: .6; }
@@ -455,7 +471,7 @@ button.crumb:hover { background: var(--card-hover); color: var(--fg); }
 /* ---------- sprint ---------- */
 .sprint-head { margin: 0 0 10px; padding: 10px 12px; border-radius: var(--radius); background: var(--card); border: 1px solid var(--border); }
 .sprint-title { display: flex; align-items: baseline; gap: 8px; justify-content: space-between; }
-.bar { position: relative; height: 6px; margin-top: 8px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.bar { position: relative; contain: layout paint; height: 6px; margin-top: 8px; border-radius: 3px; background: var(--border); overflow: hidden; }
 .bar-done { position: absolute; inset: 0 auto 0 0; background: var(--ok); border-radius: 3px; transition: width .3s var(--ease); }
 .bar-time { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--fg); opacity: .6; }
 .loads { margin-top: 8px; font-size: 12px; }

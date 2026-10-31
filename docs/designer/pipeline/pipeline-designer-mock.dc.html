@@ -1,0 +1,866 @@
+<!doctype html>
+<html lang="de">
+
+<head>
+    <meta charset="utf-8">
+    <title>Pipeline Designer – Template-Katalog</title>
+    <script src="./support.js"></script>
+</head>
+
+<body>
+    <x-dc>
+        <helmet>
+            <link rel="preconnect" href="https://fonts.googleapis.com">
+            <link
+                href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap"
+                rel="stylesheet">
+            <style>
+                body {
+                    margin: 0;
+                    background: #0e1015
+                }
+
+                a {
+                    color: #8fc7ff
+                }
+
+                a:hover {
+                    color: #b9dcff
+                }
+
+                button,
+                input {
+                    font-family: inherit
+                }
+
+                button:focus-visible,
+                input:focus-visible {
+                    outline: 2px solid #8fc7ff;
+                    outline-offset: 1px
+                }
+            </style>
+        </helmet>
+        <div
+            style="width: 100%; min-height: 1000px; box-sizing: border-box; display: flex; flex-direction: column; background: #0e1015; color: #d7dbe3; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 13px">
+
+            <header
+                style="min-height: 36px; display: flex; align-items: center; justify-content: center; padding: 0 16px; background: #0b0d11; border-bottom: 1px solid #232833; color: #9aa2b1; font-size: 12px">
+                <span>azure-pipelines.yml — webshop-api</span>
+            </header>
+
+            <div style="display: flex; flex-wrap: wrap; flex: 1 1 auto; min-height: 0">
+
+                <div
+                    style="flex: 1 1 300px; min-width: 0; display: flex; background: #151820; border-right: 1px solid #232833">
+
+                    <nav aria-label="Aktivitätsleiste"
+                        style="width: 48px; flex: 0 0 48px; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 0; background: #0b0d11; border-right: 1px solid #232833">
+                        <button aria-label="Explorer"
+                            style="width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 6px; background: transparent; color: #7f8899; cursor: pointer"><svg
+                                aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none"
+                                stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"></path>
+                                <path d="M14 3v5h5"></path>
+                            </svg></button>
+                        <button aria-label="Suche"
+                            style="width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 6px; background: transparent; color: #7f8899; cursor: pointer"><svg
+                                aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none"
+                                stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                                <circle cx="11" cy="11" r="6"></circle>
+                                <path d="M20 20l-4.5-4.5"></path>
+                            </svg></button>
+                        <button aria-label="Quellcodeverwaltung"
+                            style="width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 6px; background: transparent; color: #7f8899; cursor: pointer"><svg
+                                aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none"
+                                stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                                <circle cx="6" cy="5" r="2"></circle>
+                                <circle cx="6" cy="19" r="2"></circle>
+                                <circle cx="18" cy="7" r="2"></circle>
+                                <path d="M6 7v10"></path>
+                                <path d="M18 9v1a4 4 0 0 1-4 4H8"></path>
+                            </svg></button>
+                        <button aria-label="Pipeline Designer" aria-pressed="true"
+                            style="width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 6px; background: #1d222c; color: {{accent}}; cursor: pointer"><svg
+                                aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none"
+                                stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M12 3l9 5-9 5-9-5z"></path>
+                                <path d="M3 13l9 5 9-5"></path>
+                            </svg></button>
+                        <div style="flex: 1 1 auto"></div>
+                        <button aria-label="Einstellungen"
+                            style="width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 6px; background: transparent; color: #7f8899; cursor: pointer"><svg
+                                aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none"
+                                stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"></path>
+                                <circle cx="15" cy="6" r="2"></circle>
+                                <circle cx="9" cy="12" r="2"></circle>
+                                <circle cx="17" cy="18" r="2"></circle>
+                            </svg></button>
+                    </nav>
+
+                    <aside aria-label="Pipeline-Templates"
+                        style="flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column">
+                        <div
+                            style="min-height: 40px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 8px 0 14px">
+                            <h2
+                                style="margin: 0; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #9aa2b1">
+                                Pipeline-Templates</h2>
+                            <button aria-label="Template-Repo synchronisieren"
+                                style="width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 6px; background: transparent; color: #9aa2b1; cursor: pointer"><svg
+                                    aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                                    stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+                                    stroke-linejoin="round">
+                                    <path d="M20 11a8 8 0 1 0-2.3 5.7"></path>
+                                    <path d="M20 4v7h-7"></path>
+                                </svg></button>
+                        </div>
+
+                        <div
+                            style="margin: 0 12px 12px; padding: 12px; display: flex; flex-direction: column; gap: 10px; background: #1b1f29; border: 1px solid #262c38; border-radius: 8px">
+                            <div style="display: flex; align-items: center; gap: 10px">
+                                <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none"
+                                    stroke="#9aa2b1" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M5 4h11a2 2 0 0 1 2 2v14H7a2 2 0 0 1-2-2z"></path>
+                                    <path d="M5 18a2 2 0 0 1 2-2h11"></path>
+                                </svg>
+                                <div style="display: flex; flex-direction: column; min-width: 0">
+                                    <span style="font-weight: 600; color: #e6e9ef">pipeline-templates</span>
+                                    <span style="font-size: 12px; color: #8b93a3">Projekt Plattform · Alias
+                                        templates</span>
+                                </div>
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 6px">
+                                <span style="font-size: 11px; color: #9aa2b1">Version (ref)</span>
+                                <div role="group" aria-label="Template-Version"
+                                    style="display: flex; flex-wrap: wrap; gap: 6px">
+                                    <sc-for list="{{refs}}" as="r" hint-placeholder-count="3">
+                                        <button aria-pressed="{{r.pressed}}" onClick="{{r.pick}}"
+                                            style="min-height: 30px; padding: 0 12px; border-radius: 6px; border: 1px solid {{r.bd}}; background: {{r.bg}}; color: {{r.fg}}; font-family: 'JetBrains Mono', monospace; font-size: 12px; cursor: pointer">{{r.label}}</button>
+                                    </sc-for>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div style="padding: 0 12px 10px">
+                            <label for="tpl-search"
+                                style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap">Templates
+                                filtern</label>
+                            <div
+                                style="display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; background: #0f1218; border: 1px solid #2a3040; border-radius: 6px">
+                                <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                                    stroke="#8b93a3" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <circle cx="11" cy="11" r="6"></circle>
+                                    <path d="M20 20l-4.5-4.5"></path>
+                                </svg>
+                                <input id="tpl-search" type="search" placeholder="Templates filtern …" value="{{query}}"
+                                    onChange="{{onQuery}}"
+                                    style="flex: 1 1 auto; min-width: 0; height: 30px; padding: 0; border: 0; background: transparent; color: #d7dbe3; font-size: 13px">
+                            </div>
+                        </div>
+
+                        <div
+                            style="flex: 1 1 auto; display: flex; flex-direction: column; gap: 2px; padding: 0 6px 16px; overflow: auto">
+                            <sc-for list="{{folders}}" as="f" hint-placeholder-count="3">
+                                <div style="display: flex; flex-direction: column; gap: 2px">
+                                    <div
+                                        style="display: flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 8px; color: #9aa2b1; font-size: 12px">
+                                        <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                            stroke-linejoin="round">
+                                            <path d="M6 9l6 6 6-6"></path>
+                                        </svg>
+                                        <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+                                            stroke-linejoin="round">
+                                            <path
+                                                d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z">
+                                            </path>
+                                        </svg>
+                                        <span>{{f.name}}/</span>
+                                    </div>
+                                    <sc-for list="{{f.items}}" as="t" hint-placeholder-count="2">
+                                        <button aria-current="{{t.current}}" onClick="{{t.pick}}"
+                                            style="width: 100%; min-height: 34px; display: flex; align-items: center; gap: 8px; padding: 4px 8px 4px 30px; border: 0; border-radius: 6px; background: {{t.bg}}; color: {{t.fg}}; text-align: left; cursor: pointer">
+                                            <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24"
+                                                fill="none" stroke="currentColor" stroke-width="1.6"
+                                                stroke-linecap="round" stroke-linejoin="round">
+                                                <path d="M9 4c-2 0-3 1-3 3v2c0 1-1 2-2 2 1 0 2 1 2 2v2c0 2 1 3 3 3">
+                                                </path>
+                                                <path d="M15 4c2 0 3 1 3 3v2c0 1 1 2 2 2-1 0-2 1-2 2v2c0 2-1 3-3 3">
+                                                </path>
+                                            </svg>
+                                            <span
+                                                style="flex: 1 1 auto; min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 12.5px">{{t.file}}</span>
+                                            <sc-if value="{{t.used}}" hint-placeholder-val="{{ false }}">
+                                                <span
+                                                    style="display: flex; align-items: center; gap: 5px; font-size: 11px; color: #4cc38a"><span
+                                                        style="width: 6px; height: 6px; border-radius: 50%; background: #4cc38a"></span>in
+                                                    Pipeline</span>
+                                            </sc-if>
+                                        </button>
+                                    </sc-for>
+                                </div>
+                            </sc-for>
+                            <sc-if value="{{noResults}}" hint-placeholder-val="{{ false }}">
+                                <p style="margin: 8px 10px; color: #8b93a3">Kein Template passt zum Filter.</p>
+                            </sc-if>
+                        </div>
+                    </aside>
+                </div>
+
+                <main
+                    style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; background: #111318">
+
+                    <div
+                        style="display: flex; align-items: stretch; min-height: 38px; background: #0e1015; border-bottom: 1px solid #232833; overflow-x: auto">
+                        <div
+                            style="display: flex; align-items: center; gap: 8px; padding: 0 14px; background: #111318; border-top: 2px solid {{accent}}; border-right: 1px solid #232833; color: #e6e9ef; white-space: nowrap">
+                            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                                stroke="#f2b880" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M9 4c-2 0-3 1-3 3v2c0 1-1 2-2 2 1 0 2 1 2 2v2c0 2 1 3 3 3"></path>
+                                <path d="M15 4c2 0 3 1 3 3v2c0 1 1 2 2 2-1 0-2 1-2 2v2c0 2-1 3-3 3"></path>
+                            </svg>
+                            <span>azure-pipelines.yml</span>
+                            <span style="color: #9aa2b1">· Designer</span>
+                        </div>
+                        <div
+                            style="display: flex; align-items: center; gap: 8px; padding: 0 14px; border-right: 1px solid #232833; color: #9aa2b1; white-space: nowrap">
+                            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                                stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M9 4c-2 0-3 1-3 3v2c0 1-1 2-2 2 1 0 2 1 2 2v2c0 2 1 3 3 3"></path>
+                                <path d="M15 4c2 0 3 1 3 3v2c0 1 1 2 2 2-1 0-2 1-2 2v2c0 2-1 3-3 3"></path>
+                            </svg>
+                            <span>{{selFile}}</span>
+                            <span style="font-size: 11px">templates · schreibgeschützt</span>
+                        </div>
+                    </div>
+
+                    <div
+                        style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 20px; border-bottom: 1px solid #232833">
+                        <nav aria-label="Pfad"
+                            style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; color: #8b93a3">
+                            <span>webshop-api</span><span
+                                aria-hidden="true">›</span><span>azure-pipelines.yml</span><span
+                                aria-hidden="true">›</span><span>Stage {{selStage}}</span><span
+                                aria-hidden="true">›</span><span
+                                style="color: #d7dbe3; font-family: 'JetBrains Mono', monospace">{{selPath}}</span>
+                        </nav>
+                        <div role="group" aria-label="Ansicht"
+                            style="display: flex; gap: 2px; padding: 3px; background: #0e1015; border: 1px solid #2a3040; border-radius: 8px">
+                            <sc-for list="{{views}}" as="v" hint-placeholder-count="2">
+                                <button aria-pressed="{{v.pressed}}" onClick="{{v.pick}}"
+                                    style="min-height: 30px; padding: 0 14px; border: 0; border-radius: 6px; background: {{v.bg}}; color: {{v.fg}}; font-size: 12px; font-weight: 500; cursor: pointer">{{v.label}}</button>
+                            </sc-for>
+                        </div>
+                    </div>
+
+                    <section aria-label="Pipeline-Struktur"
+                        style="display: flex; flex-direction: column; gap: 10px; padding: 16px 20px; border-bottom: 1px solid #232833">
+                        <div
+                            style="display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 12px">
+                            <h2
+                                style="margin: 0; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #9aa2b1">
+                                Pipeline-Struktur</h2>
+                            <span style="font-size: 12px; color: #8b93a3">Klick auf einen Template-Aufruf öffnet seine
+                                Parameter</span>
+                        </div>
+                        <div style="display: flex; flex-wrap: wrap; align-items: stretch; gap: 10px">
+                            <sc-for list="{{stages}}" as="st" hint-placeholder-count="3">
+                                <div style="display: flex; align-items: center; gap: 10px">
+                                    <sc-if value="{{st.notFirst}}" hint-placeholder-val="{{ true }}">
+                                        <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none"
+                                            stroke="#5f6878" stroke-width="1.8" stroke-linecap="round"
+                                            stroke-linejoin="round">
+                                            <path d="M5 12h14M13 6l6 6-6 6"></path>
+                                        </svg>
+                                    </sc-if>
+                                    <div
+                                        style="min-width: 210px; display: flex; flex-direction: column; gap: 6px; padding: 10px; background: #171a22; border: 1px solid #262c38; border-radius: 8px">
+                                        <div
+                                            style="display: flex; align-items: center; justify-content: space-between; gap: 10px">
+                                            <span style="font-weight: 600; color: #e6e9ef">{{st.name}}</span>
+                                            <span style="font-size: 11px; color: #8b93a3">{{st.meta}}</span>
+                                        </div>
+                                        <sc-for list="{{st.items}}" as="si" hint-placeholder-count="1">
+                                            <button aria-pressed="{{si.pressed}}" onClick="{{si.pick}}"
+                                                style="min-height: 32px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border: 1px {{si.bdStyle}} {{si.bd}}; border-radius: 6px; background: {{si.bg}}; color: {{si.fg}}; text-align: left; cursor: pointer">
+                                                <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24"
+                                                    fill="none" stroke="currentColor" stroke-width="1.8"
+                                                    stroke-linecap="round" stroke-linejoin="round">
+                                                    <path d="M12 3l9 5-9 5-9-5z"></path>
+                                                    <path d="M3 13l9 5 9-5"></path>
+                                                </svg>
+                                                <span
+                                                    style="flex: 1 1 auto; font-family: 'JetBrains Mono', monospace; font-size: 12px">{{si.file}}</span>
+                                                <sc-if value="{{si.isNew}}" hint-placeholder-val="{{ false }}">
+                                                    <span style="font-size: 11px; color: #4cc38a">neu</span>
+                                                </sc-if>
+                                            </button>
+                                        </sc-for>
+                                    </div>
+                                </div>
+                            </sc-for>
+                        </div>
+                    </section>
+
+                    <div style="display: flex; flex-wrap: wrap; flex: 1 1 auto; min-height: 0">
+
+                        <sc-if value="{{isDesigner}}" hint-placeholder-val="{{ true }}">
+                            <section aria-label="Template-Parameter"
+                                style="flex: 1 1 400px; min-width: 0; display: flex; flex-direction: column; gap: 20px; padding: 20px; border-right: 1px solid #232833">
+                                <div style="display: flex; flex-direction: column; gap: 8px">
+                                    <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px">
+                                        <h1
+                                            style="margin: 0; font-family: 'JetBrains Mono', monospace; font-size: 17px; font-weight: 500; color: #f1f3f7">
+                                            {{selPath}}</h1>
+                                        <span
+                                            style="padding: 2px 8px; border: 1px solid #343b4a; border-radius: 999px; font-size: 11px; color: #a3abb9">{{selKind}}</span>
+                                        <span
+                                            style="padding: 2px 8px; border: 1px solid #343b4a; border-radius: 999px; font-size: 11px; color: {{statusColor}}">{{selStatus}}</span>
+                                    </div>
+                                    <p style="margin: 0; max-width: 60ch; line-height: 1.5; color: #a3abb9">{{selDesc}}
+                                    </p>
+                                    <span style="font-size: 12px; color: #8b93a3">Quelle: pipeline-templates ·
+                                        {{refFull}} · {{paramCount}} Parameter aus dem parameters-Block</span>
+                                </div>
+
+                                <div style="display: flex; flex-direction: column; gap: 16px">
+                                    <sc-for list="{{params}}" as="p" hint-placeholder-count="5">
+                                        <div style="display: flex; flex-direction: column; gap: 6px">
+                                            <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px">
+                                                <label for="{{p.inputId}}"
+                                                    style="font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 500; color: #e6e9ef">{{p.name}}</label>
+                                                <span
+                                                    style="padding: 1px 6px; background: #1d222c; border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #a3abb9">{{p.typeLabel}}</span>
+                                                <sc-if value="{{p.required}}" hint-placeholder-val="{{ false }}">
+                                                    <span style="font-size: 11px; color: #f0b44c">erforderlich</span>
+                                                </sc-if>
+                                                <sc-if value="{{p.unsaved}}" hint-placeholder-val="{{ false }}">
+                                                    <span
+                                                        style="font-size: 11px; color: {{accent}}">ungespeichert</span>
+                                                </sc-if>
+                                            </div>
+
+                                            <sc-if value="{{p.isText}}" hint-placeholder-val="{{ true }}">
+                                                <input id="{{p.inputId}}" type="text" value="{{p.value}}"
+                                                    placeholder="{{p.placeholder}}" onChange="{{p.onChange}}"
+                                                    style="height: 36px; box-sizing: border-box; padding: 0 10px; background: #0f1218; border: 1px solid {{p.borderColor}}; border-radius: 6px; color: #e6e9ef; font-family: 'JetBrains Mono', monospace; font-size: 12.5px">
+                                            </sc-if>
+
+                                            <sc-if value="{{p.isNum}}" hint-placeholder-val="{{ false }}">
+                                                <input id="{{p.inputId}}" type="number" value="{{p.value}}"
+                                                    placeholder="{{p.placeholder}}" onChange="{{p.onChange}}"
+                                                    style="width: 140px; height: 36px; box-sizing: border-box; padding: 0 10px; background: #0f1218; border: 1px solid {{p.borderColor}}; border-radius: 6px; color: #e6e9ef; font-family: 'JetBrains Mono', monospace; font-size: 12.5px">
+                                            </sc-if>
+
+                                            <sc-if value="{{p.isEnum}}" hint-placeholder-val="{{ false }}">
+                                                <div id="{{p.inputId}}" role="group" aria-label="{{p.name}}"
+                                                    style="display: flex; flex-wrap: wrap; gap: 6px">
+                                                    <sc-for list="{{p.options}}" as="o" hint-placeholder-count="3">
+                                                        <button aria-pressed="{{o.pressed}}" onClick="{{o.pick}}"
+                                                            style="min-height: 34px; padding: 0 14px; border: 1px solid {{o.bd}}; border-radius: 6px; background: {{o.bg}}; color: {{o.fg}}; font-family: 'JetBrains Mono', monospace; font-size: 12.5px; cursor: pointer">{{o.label}}</button>
+                                                    </sc-for>
+                                                </div>
+                                            </sc-if>
+
+                                            <sc-if value="{{p.isBool}}" hint-placeholder-val="{{ false }}">
+                                                <div
+                                                    style="display: flex; align-items: center; gap: 10px; min-height: 34px">
+                                                    <button id="{{p.inputId}}" role="switch"
+                                                        aria-checked="{{p.checked}}" onClick="{{p.toggle}}"
+                                                        style="position: relative; width: 40px; height: 22px; padding: 0; border: 0; border-radius: 11px; background: {{p.switchBg}}; cursor: pointer"><span
+                                                            style="position: absolute; top: 3px; left: {{p.knob}}; width: 16px; height: 16px; border-radius: 50%; background: #0e1015"></span></button>
+                                                    <span
+                                                        style="font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: #c3c8d2">{{p.boolText}}</span>
+                                                </div>
+                                            </sc-if>
+
+                                            <sc-if value="{{p.hasError}}" hint-placeholder-val="{{ false }}">
+                                                <span style="font-size: 12px; color: #ff8d8d">{{p.error}}</span>
+                                            </sc-if>
+                                            <span style="font-size: 12px; color: #8b93a3">{{p.help}} ·
+                                                {{p.defLabel}}</span>
+                                        </div>
+                                    </sc-for>
+                                </div>
+
+                                <div style="display: flex; flex-wrap: wrap; gap: 10px; padding-top: 4px">
+                                    <button onClick="{{apply}}"
+                                        style="min-height: 38px; padding: 0 18px; border: 0; border-radius: 7px; background: {{accent}}; color: #0b1220; font-size: 13px; font-weight: 600; cursor: pointer">{{applyLabel}}</button>
+                                    <button onClick="{{validate}}"
+                                        style="min-height: 38px; padding: 0 18px; border: 1px solid #3a4152; border-radius: 7px; background: transparent; color: #e6e9ef; font-size: 13px; cursor: pointer">Validieren</button>
+                                    <button onClick="{{reset}}"
+                                        style="min-height: 38px; padding: 0 12px; border: 0; border-radius: 7px; background: transparent; color: #9aa2b1; font-size: 13px; cursor: pointer">Auf
+                                        Defaults zurücksetzen</button>
+                                </div>
+                            </section>
+                        </sc-if>
+
+                        <section aria-label="YAML-Vorschau"
+                            style="flex: 1 1 400px; min-width: 0; display: flex; flex-direction: column; background: #0f1116">
+                            <div
+                                style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 16px; border-bottom: 1px solid #232833">
+                                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px">
+                                    <h2
+                                        style="margin: 0; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #9aa2b1">
+                                        YAML-Vorschau</h2>
+                                    <span style="font-size: 12px; color: {{changeColor}}">{{changeLabel}}</span>
+                                </div>
+                                <label
+                                    style="display: flex; align-items: center; gap: 8px; min-height: 30px; font-size: 12px; color: #a3abb9; cursor: pointer">
+                                    <input type="checkbox" checked="{{writeDefaults}}" onChange="{{toggleDefaults}}"
+                                        style="width: 16px; height: 16px; margin: 0; accent-color: {{accent}}">
+                                    Defaults mitschreiben
+                                </label>
+                            </div>
+                            <div
+                                style="flex: 1 1 auto; overflow: auto; padding: 10px 0; font-family: 'JetBrains Mono', monospace; font-size: 12.5px; line-height: 20px">
+                                <sc-for list="{{yaml}}" as="l" hint-placeholder-count="24">
+                                    <div
+                                        style="display: flex; min-width: max-content; padding-right: 16px; white-space: pre; background: {{l.bg}}">
+                                        <span aria-hidden="true"
+                                            style="flex: 0 0 44px; width: 44px; padding-right: 10px; box-sizing: border-box; text-align: right; color: #7a8394">{{l.no}}</span><span
+                                            aria-hidden="true"
+                                            style="flex: 0 0 16px; width: 16px; color: {{l.markColor}}">{{l.mark}}</span><span>{{l.ind}}</span><span
+                                            style="color: #8b93a3">{{l.dash}}</span><span
+                                            style="color: #8fc7ff">{{l.key}}</span><span
+                                            style="color: #f2b880">{{l.val}}</span><span
+                                            style="color: #7a8394">{{l.cmt}}</span></div>
+                                </sc-for>
+                            </div>
+                        </section>
+                    </div>
+
+                    <section aria-label="Validierung" style="background: #0e1015; border-top: 1px solid #232833">
+                        <div
+                            style="display: flex; align-items: center; gap: 20px; min-height: 34px; padding: 0 16px; border-bottom: 1px solid #1d222c; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; overflow-x: auto">
+                            <span
+                                style="padding: 9px 0 8px; border-bottom: 1px solid {{accent}}; color: #e6e9ef; white-space: nowrap">Validierung</span>
+                            <span style="color: #8b93a3; white-space: nowrap">Expandiertes YAML</span>
+                            <span style="color: #8b93a3; white-space: nowrap">Ausgabe</span>
+                        </div>
+                        <div
+                            style="min-height: 96px; display: flex; flex-direction: column; gap: 10px; padding: 12px 16px">
+                            <sc-for list="{{messages}}" as="m" hint-placeholder-count="1">
+                                <div style="display: flex; align-items: flex-start; gap: 10px">
+                                    <span
+                                        style="flex: 0 0 8px; width: 8px; height: 8px; margin-top: 6px; border-radius: 50%; background: {{m.color}}"></span>
+                                    <div style="display: flex; flex-direction: column; gap: 2px; min-width: 0">
+                                        <span style="color: #e6e9ef">{{m.title}}</span>
+                                        <span
+                                            style="font-size: 12px; line-height: 1.5; color: #8b93a3">{{m.detail}}</span>
+                                    </div>
+                                </div>
+                            </sc-for>
+                        </div>
+                    </section>
+                </main>
+            </div>
+
+            <footer
+                style="min-height: 26px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 14px; padding: 2px 12px; background: #151820; border-top: 1px solid #232833; font-size: 12px; color: #a3abb9">
+                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 14px">
+                    <span style="display: flex; align-items: center; gap: 6px"><svg aria-hidden="true" width="13"
+                            height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                            stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="6" cy="5" r="2"></circle>
+                            <circle cx="6" cy="19" r="2"></circle>
+                            <circle cx="18" cy="7" r="2"></circle>
+                            <path d="M6 7v10"></path>
+                            <path d="M18 9v1a4 4 0 0 1-4 4H8"></path>
+                        </svg>main</span>
+                    <span>Azure DevOps: nordlicht / Webshop</span>
+                </div>
+                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 14px">
+                    <span>Schema: Organisation</span>
+                    <span>YAML</span>
+                    <span>UTF-8</span>
+                </div>
+            </footer>
+
+        </div>
+    </x-dc>
+    <script type="text/x-dc" data-dc-script
+        data-props='{"accent":{"editor":"color","default":"#5aa9ff","options":["#5aa9ff","#4cc38a","#c792ea","#f0b44c"]},"$preview":{"width":1440,"height":1000}}'>
+const TPL = [
+  { id: 'dotnet', folder: 'build', file: 'dotnet.yml', kind: 'steps', stage: 'Build',
+    desc: 'Restore, Build, Test und Publish für .NET-Projekte. Legt das Ergebnis als Pipeline-Artefakt ab.',
+    params: [
+      { name: 'projectPath', type: 'string', def: '**/*.csproj', help: 'Glob-Pfad zu den Projekten' },
+      { name: 'configuration', type: 'enum', values: ['Debug', 'Release'], def: 'Release', help: 'Build-Konfiguration' },
+      { name: 'dotnetVersion', type: 'enum', values: ['8.0.x', '9.0.x', '10.0.x'], def: '10.0.x', help: 'SDK-Version für UseDotNet' },
+      { name: 'runTests', type: 'boolean', def: true, help: 'Tests direkt nach dem Build ausführen' },
+      { name: 'artifactName', type: 'string', def: 'drop', help: 'Name des veröffentlichten Artefakts' }
+    ] },
+  { id: 'node', folder: 'build', file: 'node.yml', kind: 'steps', stage: 'Build',
+    desc: 'Installiert Abhängigkeiten und führt Lint und Build für Node.js-Projekte aus.',
+    params: [
+      { name: 'workingDirectory', type: 'string', def: '', required: true, help: 'Ordner mit der package.json' },
+      { name: 'nodeVersion', type: 'enum', values: ['20.x', '22.x', '24.x'], def: '22.x', help: 'Node.js-Version' },
+      { name: 'packageManager', type: 'enum', values: ['npm', 'pnpm', 'yarn'], def: 'npm', help: 'Paketmanager für install und run' },
+      { name: 'runLint', type: 'boolean', def: true, help: 'Lint-Schritt vor dem Build' }
+    ] },
+  { id: 'docker', folder: 'build', file: 'docker.yml', kind: 'steps', stage: 'Package',
+    desc: 'Baut ein Container-Image und pusht es optional in eine Registry.',
+    params: [
+      { name: 'imageName', type: 'string', def: '', required: true, help: 'Repository-Name des Images' },
+      { name: 'dockerfile', type: 'string', def: 'Dockerfile', help: 'Pfad zum Dockerfile' },
+      { name: 'containerRegistry', type: 'string', def: '', required: true, help: 'Service Connection zur Registry' },
+      { name: 'tags', type: 'string', def: '$(Build.BuildId)', help: 'Image-Tags, kommagetrennt' },
+      { name: 'pushImage', type: 'boolean', def: false, help: 'Image nach dem Build pushen' }
+    ] },
+  { id: 'tests', folder: 'test', file: 'unit-tests.yml', kind: 'steps', stage: 'Build',
+    desc: 'Führt Unit-Tests aus, sammelt Code-Coverage und veröffentlicht die Ergebnisse.',
+    params: [
+      { name: 'testProjects', type: 'string', def: '**/*Tests.csproj', help: 'Glob-Pfad zu den Testprojekten' },
+      { name: 'collectCoverage', type: 'boolean', def: true, help: 'Coverage im Cobertura-Format erfassen' },
+      { name: 'coverageThreshold', type: 'number', def: 80, help: 'Mindest-Coverage in Prozent' },
+      { name: 'failOnLowCoverage', type: 'boolean', def: false, help: 'Build abbrechen, wenn die Schwelle unterschritten wird' }
+    ] },
+  { id: 'appsvc', folder: 'deploy', file: 'app-service.yml', kind: 'stage', stage: 'Deploy',
+    desc: 'Stage-Template: deployt das Artefakt in eine Web App, optional mit Slot-Swap.',
+    params: [
+      { name: 'environment', type: 'enum', values: ['dev', 'staging', 'prod'], def: 'dev', help: 'Environment inklusive Approvals und Checks' },
+      { name: 'azureSubscription', type: 'string', def: '', required: true, help: 'Service Connection (Azure Resource Manager)' },
+      { name: 'appName', type: 'string', def: '', required: true, help: 'Name der Web App' },
+      { name: 'slot', type: 'string', def: 'production', help: 'Deployment-Slot' },
+      { name: 'swapAfterDeploy', type: 'boolean', def: false, help: 'Slot nach erfolgreichem Smoke-Test tauschen' }
+    ] }
+];
+const TPL_BY = {};
+TPL.forEach(function (t) { TPL_BY[t.id] = t; });
+
+const IN_PIPELINE = {
+  dotnet: { projectPath: 'src/Webshop.Api/Webshop.Api.csproj', dotnetVersion: '9.0.x', artifactName: 'webshop-api' },
+  tests: { testProjects: 'tests/**/*Tests.csproj', failOnLowCoverage: true },
+  docker: { imageName: 'webshop/api', dockerfile: 'src/Webshop.Api/Dockerfile', containerRegistry: 'sc-acr-nordlicht', pushImage: true },
+  appsvc: { environment: 'staging', azureSubscription: 'sc-azure-webshop', appName: 'webshop-api-staging', slot: 'staging', swapAfterDeploy: true }
+};
+
+const REFS = [
+  { id: 'v2.1', label: 'v2.1', full: 'refs/tags/v2.1' },
+  { id: 'v2.0', label: 'v2.0', full: 'refs/tags/v2.0' },
+  { id: 'main', label: 'main', full: 'refs/heads/main' }
+];
+const FOLDERS = ['build', 'test', 'deploy'];
+
+function defaultsOf(t) {
+  const o = {};
+  t.params.forEach(function (p) { o[p.name] = p.def; });
+  return o;
+}
+function fmt(v, type) {
+  if (type === 'boolean') return v ? 'true' : 'false';
+  const s = String(v);
+  if (type === 'number') return s;
+  if (s === '') return "''";
+  if (/[*$:#{}\[\],&!|>'"%@`]/.test(s) || /^\s|\s$/.test(s)) return "'" + s.replace(/'/g, "''") + "'";
+  return s;
+}
+function rgba(hex, a) {
+  let h = String(hex || '#5aa9ff').replace('#', '');
+  if (h.length === 3) h = h.split('').map(function (c) { return c + c; }).join('');
+  const n = parseInt(h.slice(0, 6), 16) || 0;
+  return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+}
+
+class Component extends DCLogic {
+  constructor(...args) {
+    super(...args);
+    const values = {}, orig = {}, used = {};
+    TPL.forEach(function (t) {
+      const base = Object.assign(defaultsOf(t), IN_PIPELINE[t.id] || {});
+      values[t.id] = Object.assign({}, base);
+      orig[t.id] = Object.assign({}, base);
+      used[t.id] = !!IN_PIPELINE[t.id];
+    });
+    this.state = {
+      sel: 'dotnet', ref: 'v2.1', origRef: 'v2.1',
+      values: values, orig: orig, used: used,
+      view: 'designer', query: '', writeDefaults: false,
+      validation: 'idle', validationMsg: '', applied: ''
+    };
+  }
+
+  componentWillUnmount() { clearTimeout(this._t); }
+
+  pick(id) { this.setState({ sel: id, validation: 'idle', applied: '' }); }
+
+  setVal(name, v) {
+    const s = this.state;
+    const values = Object.assign({}, s.values);
+    values[s.sel] = Object.assign({}, values[s.sel]);
+    values[s.sel][name] = v;
+    this.setState({ values: values, validation: 'idle', applied: '' });
+  }
+
+  resetDefaults() {
+    const s = this.state;
+    const values = Object.assign({}, s.values);
+    values[s.sel] = defaultsOf(TPL_BY[s.sel]);
+    this.setState({ values: values, validation: 'idle', applied: '' });
+  }
+
+  findError() {
+    const s = this.state;
+    const t = TPL_BY[s.sel];
+    const vals = s.values[s.sel];
+    for (let i = 0; i < t.params.length; i++) {
+      const p = t.params[i];
+      const v = vals[p.name];
+      if (p.required && String(v).trim() === '') {
+        return "/azure-pipelines.yml: Parameter '" + p.name + "' für " + t.folder + '/' + t.file + ' ist erforderlich – das Template definiert keinen Default.';
+      }
+      if (p.type === 'number' && (String(v).trim() === '' || isNaN(Number(v)))) {
+        return "/azure-pipelines.yml: Parameter '" + p.name + "' erwartet einen Wert vom Typ number.";
+      }
+    }
+    return '';
+  }
+
+  validate() {
+    clearTimeout(this._t);
+    this.setState({ validation: 'running', applied: '' });
+    this._t = setTimeout(() => {
+      const err = this.findError();
+      this.setState(err ? { validation: 'error', validationMsg: err } : { validation: 'ok' });
+    }, 900);
+  }
+
+  apply() {
+    const s = this.state;
+    const t = TPL_BY[s.sel];
+    const err = this.findError();
+    if (err) { this.setState({ validation: 'error', validationMsg: err, applied: '' }); return; }
+    const wasUsed = s.used[s.sel];
+    const orig = Object.assign({}, s.orig);
+    orig[s.sel] = Object.assign({}, s.values[s.sel]);
+    const used = Object.assign({}, s.used);
+    used[s.sel] = true;
+    this.setState({
+      orig: orig, used: used, origRef: s.ref, validation: 'idle',
+      applied: 'Aufruf von ' + t.folder + '/' + t.file + ' ' + (wasUsed ? 'aktualisiert' : 'eingefügt') + ' (Stage ' + t.stage + ').'
+    });
+  }
+
+  buildYaml(s, sel, vals, orig, isNew, refObj) {
+    const out = [];
+    let no = 1;
+    const P = function (ind, dash, key, val, kind, cmt) {
+      out.push({ no: String(no), ind: ' '.repeat(ind), dash: dash ? '- ' : '', key: key || '', val: val || '', cmt: cmt || '', kind: kind || '' });
+      no += 1;
+    };
+    const GAP = function (skip) {
+      out.push({ no: '', ind: '', dash: '', key: '', val: '', cmt: '  ⋮', kind: '' });
+      no += skip;
+    };
+    const snippet = function (ind) {
+      const base = isNew ? 'new' : 'snip';
+      P(ind, true, 'template:', ' ' + sel.folder + '/' + sel.file + '@templates', base);
+      const rows = sel.params.filter(function (p) {
+        return s.writeDefaults || p.required || String(vals[p.name]) !== String(p.def);
+      });
+      if (rows.length) {
+        P(ind + 2, false, 'parameters:', '', base);
+        rows.forEach(function (p) {
+          const chg = !isNew && String(vals[p.name]) !== String(orig[p.name]);
+          P(ind + 4, false, p.name + ':', ' ' + fmt(vals[p.name], p.type), isNew ? 'new' : (chg ? 'chg' : 'snip'));
+        });
+      }
+    };
+    const collapsed = function (ind, id) {
+      const t = TPL_BY[id];
+      P(ind, true, 'template:', ' ' + t.folder + '/' + t.file + '@templates', '', '   # …');
+      no += 4;
+    };
+
+    P(0, false, 'trigger:');
+    P(2, true, '', 'main');
+    P(0, false, '');
+    P(0, false, 'resources:');
+    P(2, false, 'repositories:');
+    P(4, true, 'repository:', ' templates');
+    P(6, false, 'type:', ' git');
+    P(6, false, 'name:', ' Plattform/pipeline-templates');
+    P(6, false, 'ref:', ' ' + refObj.full, s.ref !== s.origRef ? 'chg' : '');
+    P(0, false, '');
+    P(0, false, 'stages:');
+
+    if (sel.stage === 'Build') {
+      P(2, true, 'stage:', ' Build');
+      P(4, false, 'jobs:');
+      P(6, true, 'job:', ' Build');
+      P(8, false, 'pool:');
+      P(10, false, 'vmImage:', ' ubuntu-latest');
+      P(8, false, 'steps:');
+      ['dotnet', 'tests', 'node'].forEach(function (id) {
+        if (id === sel.id) snippet(10);
+        else if (s.used[id]) collapsed(10, id);
+      });
+      GAP(20);
+    } else {
+      P(2, true, 'stage:', ' Build', '', '   # …');
+      no += 18;
+      if (sel.stage === 'Package') {
+        P(2, true, 'stage:', ' Package');
+        P(4, false, 'dependsOn:', ' Build');
+        P(4, false, 'jobs:');
+        P(6, true, 'job:', ' Image');
+        P(8, false, 'steps:');
+        snippet(10);
+        GAP(8);
+      } else {
+        P(2, true, 'stage:', ' Package', '', '   # …');
+        no += 9;
+        snippet(2);
+      }
+    }
+    return out;
+  }
+
+  renderVals() {
+    const s = this.state;
+    const accent = this.props.accent ?? '#5aa9ff';
+    const soft = rgba(accent, 0.16);
+    const sel = TPL_BY[s.sel];
+    const vals = s.values[s.sel];
+    const orig = s.orig[s.sel];
+    const isNew = !s.used[s.sel];
+    const refObj = REFS.find(function (r) { return r.id === s.ref; }) || REFS[0];
+    const q = String(s.query || '').trim().toLowerCase();
+
+    const folders = FOLDERS.map((f) => ({
+      name: f,
+      items: TPL.filter(function (t) {
+        return t.folder === f && (!q || (t.folder + '/' + t.file + ' ' + t.desc).toLowerCase().indexOf(q) !== -1);
+      }).map((t) => {
+        const on = t.id === s.sel;
+        return {
+          file: t.file, used: !!s.used[t.id], current: on ? 'true' : 'false',
+          bg: on ? soft : 'transparent', fg: on ? '#f1f3f7' : '#c3c8d2',
+          pick: () => this.pick(t.id)
+        };
+      })
+    })).filter(function (f) { return f.items.length > 0; });
+
+    const refs = REFS.map((r) => {
+      const on = r.id === s.ref;
+      return {
+        label: r.label, pressed: on ? 'true' : 'false',
+        bg: on ? soft : 'transparent', bd: on ? accent : '#343b4a', fg: on ? '#f1f3f7' : '#c3c8d2',
+        pick: () => this.setState({ ref: r.id, validation: 'idle', applied: '' })
+      };
+    });
+
+    const views = [['designer', 'Designer'], ['yaml', 'Nur YAML']].map((pair) => {
+      const on = s.view === pair[0];
+      return {
+        label: pair[1], pressed: on ? 'true' : 'false',
+        bg: on ? '#262c3a' : 'transparent', fg: on ? '#f1f3f7' : '#9aa2b1',
+        pick: () => this.setState({ view: pair[0] })
+      };
+    });
+
+    const stageDefs = [
+      { name: 'Build', meta: 'Job · ubuntu-latest', ids: ['dotnet', 'tests', 'node'] },
+      { name: 'Package', meta: 'Job · Image', ids: ['docker'] },
+      { name: 'Deploy', meta: 'Stage-Template', ids: ['appsvc'] }
+    ];
+    const stages = stageDefs.map((st, i) => ({
+      name: st.name, meta: st.meta, notFirst: i > 0,
+      items: st.ids.filter(function (id) { return s.used[id] || id === s.sel; }).map((id) => {
+        const t = TPL_BY[id];
+        const on = id === s.sel;
+        const fresh = !s.used[id];
+        return {
+          file: t.file, isNew: fresh, pressed: on ? 'true' : 'false',
+          bg: on ? soft : '#1d212b', bd: on ? accent : (fresh ? '#4cc38a' : '#2c3240'),
+          bdStyle: fresh ? 'dashed' : 'solid', fg: on ? '#f1f3f7' : '#c3c8d2',
+          pick: () => this.pick(id)
+        };
+      })
+    }));
+
+    const params = sel.params.map((p) => {
+      const v = vals[p.name];
+      const unsaved = !isNew && String(v) !== String(orig[p.name]);
+      const missing = !!p.required && String(v).trim() === '';
+      const badNum = p.type === 'number' && (String(v).trim() === '' || isNaN(Number(v)));
+      const on = v === true;
+      return {
+        name: p.name, help: p.help,
+        typeLabel: p.type === 'enum' ? 'string · values' : p.type,
+        defLabel: p.def === '' ? 'kein Default' : 'Default: ' + String(p.def),
+        required: !!p.required, unsaved: unsaved,
+        isText: p.type === 'string', isNum: p.type === 'number', isEnum: p.type === 'enum', isBool: p.type === 'boolean',
+        inputId: 'p-' + sel.id + '-' + p.name,
+        value: p.type === 'boolean' ? '' : String(v),
+        placeholder: p.def === '' ? 'Wert eingeben' : String(p.def),
+        borderColor: (missing || badNum) ? '#ff7a7a' : '#2f3646',
+        hasError: missing || badNum,
+        error: missing ? 'Pflichtfeld – das Template definiert keinen Default.' : (badNum ? 'Erwartet einen Wert vom Typ number.' : ''),
+        onChange: (e) => this.setVal(p.name, e.target.value),
+        checked: on ? 'true' : 'false', switchBg: on ? accent : '#3a4152', knob: on ? '21px' : '3px', boolText: on ? 'true' : 'false',
+        toggle: () => this.setVal(p.name, !on),
+        options: (p.values || []).map((o) => {
+          const chosen = o === v;
+          return {
+            label: o, pressed: chosen ? 'true' : 'false',
+            bg: chosen ? soft : 'transparent', bd: chosen ? accent : '#2f3646', fg: chosen ? '#f1f3f7' : '#c3c8d2',
+            pick: () => this.setVal(p.name, o)
+          };
+        })
+      };
+    });
+
+    const yaml = this.buildYaml(s, sel, vals, orig, isNew, refObj).map(function (l) {
+      return Object.assign(l, {
+        bg: l.kind === 'chg' ? rgba(accent, 0.2) : (l.kind === 'new' ? 'rgba(76,195,138,0.16)' : (l.kind === 'snip' ? 'rgba(255,255,255,0.04)' : 'transparent')),
+        mark: l.kind === 'chg' ? '~' : (l.kind === 'new' ? '+' : ''),
+        markColor: l.kind === 'chg' ? accent : '#4cc38a'
+      });
+    });
+    const nChanged = yaml.filter(function (l) { return l.kind === 'chg'; }).length;
+    const nNew = yaml.filter(function (l) { return l.kind === 'new'; }).length;
+    let changeLabel = 'Keine ungespeicherten Änderungen';
+    let changeColor = '#8b93a3';
+    if (nNew) { changeLabel = nNew + ' Zeilen werden eingefügt'; changeColor = '#4cc38a'; }
+    if (nChanged) { changeLabel = (nNew ? changeLabel + ' · ' : '') + nChanged + (nChanged === 1 ? ' Zeile geändert' : ' Zeilen geändert'); changeColor = accent; }
+
+    const callCount = TPL.filter(function (t) { return s.used[t.id] || t.id === s.sel; }).length;
+    const messages = [];
+    if (s.validation === 'idle') messages.push({ color: '#7a8394', title: 'Noch nicht validiert', detail: '„Validieren“ schickt das YAML als Preview-Run an Azure DevOps. Der Server löst die Templates auf und liefert das expandierte YAML oder die Fehler zurück.' });
+    if (s.validation === 'running') messages.push({ color: '#f0b44c', title: 'Validiere gegen Azure DevOps …', detail: 'Preview-Run mit yamlOverride · Templates aus pipeline-templates@' + refObj.full });
+    if (s.validation === 'ok') messages.push({ color: '#4cc38a', title: 'Pipeline gültig', detail: 'Alle Templates aus ' + refObj.full + ' aufgelöst · 3 Stages · ' + callCount + ' Template-Aufrufe · keine Fehler.' });
+    if (s.validation === 'error') messages.push({ color: '#ff7a7a', title: 'Validierung fehlgeschlagen', detail: s.validationMsg });
+    if (s.applied) messages.push({ color: accent, title: 'azure-pipelines.yml gespeichert', detail: s.applied });
+    if (s.ref === 'main') messages.push({ color: '#f0b44c', title: 'ref zeigt auf den Branch main', detail: 'Änderungen im Template-Repo wirken sofort auf diese Pipeline. Für reproduzierbare Builds besser einen Tag verwenden.' });
+
+    return {
+      accent: accent,
+      refs: refs, views: views, folders: folders, noResults: folders.length === 0,
+      query: s.query,
+      onQuery: (e) => this.setState({ query: e.target.value }),
+      stages: stages,
+      isDesigner: s.view === 'designer',
+      selPath: sel.folder + '/' + sel.file, selFile: sel.file, selStage: sel.stage, selDesc: sel.desc,
+      selKind: sel.kind === 'stage' ? 'stage-Template' : 'steps-Template',
+      selStatus: isNew ? 'noch nicht verwendet' : 'verwendet in Stage ' + sel.stage,
+      statusColor: isNew ? '#f0b44c' : '#4cc38a',
+      refFull: refObj.full, paramCount: String(sel.params.length),
+      params: params,
+      applyLabel: isNew ? 'In Pipeline einfügen' : 'In Pipeline aktualisieren',
+      apply: () => this.apply(),
+      validate: () => this.validate(),
+      reset: () => this.resetDefaults(),
+      writeDefaults: !!s.writeDefaults,
+      toggleDefaults: () => this.setState({ writeDefaults: !s.writeDefaults }),
+      yaml: yaml, changeLabel: changeLabel, changeColor: changeColor,
+      messages: messages
+    };
+  }
+}
+</script>
+</body>
+
+</html>

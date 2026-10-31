@@ -108,6 +108,23 @@ describe('activate', () => {
     w.activeTextEditor = undefined;
   });
 
+  it('opens the pipeline designer for the active editor or a file', async () => {
+    vscode.messages.length = 0;
+    await run('azureDevOps.yaml.openDesigner');
+    assert.deepEqual(vscode.messages, ['Open an Azure Pipelines YAML file first.']);
+    const ci = Object.assign(fakeDoc(vscode.Uri.file('/work/designer.yml'), ['steps:', '- template: a.yml'], 'yaml'), { version: 1, isClosed: false });
+    w.activeTextEditor = { document: ci, selection: { active: { line: 1 } } };
+    await run('azureDevOps.yaml.openDesigner');
+    assert.equal(lastPanel().viewType, 'azureDevOps.pipelineDesigner');
+    lastPanel().dispose();
+    await run('azureDevOps.yaml.openDesigner', vscode.Uri.file('/work/other.yml'), 0);
+    assert.equal(lastPanel().viewType, 'azureDevOps.pipelineDesigner');
+    assert.equal(String(openedDocs.at(-1)), 'file:///work/other.yml');
+    lastPanel().dispose();
+    w.activeTextEditor = undefined;
+    openedDocs.length = 0;
+  });
+
   it('opens items in the browser for the right project', async () => {
     await run('azureDevOps.wi.openInBrowser', 12, 'Contoso Web');
     await run('azureDevOps.pr.openInBrowser', 'web-shop', 7);

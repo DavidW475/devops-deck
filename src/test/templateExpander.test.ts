@@ -189,6 +189,15 @@ describe('TemplateExpander', () => {
     assert.match(empty.warnings[0], /empty or not a mapping/);
   });
 
+  it('inserts the items of a list parameter used as a list item', async () => {
+    const base = 'parameters:\n- name: buildStages\n  type: stageList\n  default: []\nstages:\n- stage: Compliance\n- ${{ parameters.buildStages }}\n- [nested, literal]\n';
+    const root = 'extends:\n  template: base.yml@governance\n  parameters:\n    buildStages:\n    - stage: Build\n    - stage: Package\n';
+    const res = await expand(root, { 'base.yml@governance': base });
+    const stages = res.doc.stages as unknown[];
+    assert.deepEqual(stages.slice(0, 3).map(s => (s as { stage: string }).stage), ['Compliance', 'Build', 'Package']);
+    assert.deepEqual(stages[3], ['nested', 'literal'], 'a literal list item stays a list');
+  });
+
   it('expands insert, each over mappings and expressions in keys', async () => {
     const root = [
       'parameters:',

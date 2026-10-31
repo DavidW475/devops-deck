@@ -1,4 +1,6 @@
 import * as assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import type { Uri as VsUri, WebviewView } from 'vscode';
 import { AdoClient, AdoError } from '../client';
@@ -372,5 +374,44 @@ describe('SidebarProvider', () => {
     provider.resolveWebviewView({ webview: wv } as unknown as WebviewView);
     await wv.send({ type: 'rpc', id: 1, method: 'me' });
     assert.deepEqual(wv.last('rpc'), { type: 'rpc', id: 1, error: { message: 'Sign in again.', auth: true } });
+  });
+});
+
+/** Body of each `@keyframes` rule (brace matching, no regex over the whole sheet). */
+function keyframes(css: string): Map<string, string> {
+  const found = new Map<string, string>();
+  let at = css.indexOf('@keyframes');
+  while (at >= 0) {
+    const open = css.indexOf('{', at);
+    const name = css.slice(at + '@keyframes'.length, open).trim();
+    let depth = 0;
+    let end = open;
+    for (; end < css.length; end++) {
+      if (css[end] === '{') depth++;
+      else if (css[end] === '}' && --depth === 0) break;
+    }
+    found.set(name, css.slice(open + 1, end));
+    at = css.indexOf('@keyframes', end);
+  }
+  return found;
+}
+
+describe('sidebar.css', () => {
+  const css = readFileSync(join(__dirname, '..', '..', 'media', 'sidebar.css'), 'utf8');
+
+  it('animates only compositor-friendly properties (transform, opacity)', () => {
+    const frames = keyframes(css);
+    assert.ok(frames.size >= 5);
+    for (const [name, body] of frames) {
+      const props = [...body.matchAll(/([a-z-]+)\s*:/g)].map(m => m[1]);
+      assert.deepEqual(props.filter(p => p !== 'transform' && p !== 'opacity'), [], `@keyframes ${name}`);
+    }
+  });
+
+  it('lists transitioned properties explicitly and does not transition box-shadow on cards', () => {
+    assert.ok(!/transition:\s*all\b/.test(css));
+    const card = /\n\.card \{([^}]*)\}/.exec(css)?.[1] ?? '';
+    assert.match(card, /transition: background-color/);
+    assert.ok(!card.includes('box-shadow'));
   });
 });

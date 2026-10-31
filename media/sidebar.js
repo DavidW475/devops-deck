@@ -186,6 +186,8 @@
       S.errors[tab] = null;
       S.counts[tab] = tab === 'sprint' ? data.items.filter((i) => i.stateCategory !== 'Completed').length : data.length;
       S.loadedAt[tab] = Date.now();
+      // The sprint toolbar lists the iterations of the loaded data.
+      if (tab === 'sprint' && S.tab === 'sprint') renderToolbar();
     } catch (e) {
       if (req !== S.req[tab]) return;
       S.errors[tab] = e;
@@ -214,12 +216,20 @@
     if (!S.sprintTeam || !S.teams.some((t) => teamKey(t) === S.sprintTeam)) { S.sprintTeam = S.teams[0] ? teamKey(S.teams[0]) : null; S.sprintIteration = null; persist(); }
     if (!S.sprintTeam) return { iterations: [], items: [], people: [] };
     const [project, team] = JSON.parse(S.sprintTeam);
-    const data = await rpc('sprint', { team, project: project || undefined, iteration: S.sprintIteration });
-    if (S.tab === 'sprint') setTimeout(renderToolbar);
-    return data;
+    return rpc('sprint', { team, project: project || undefined, iteration: S.sprintIteration });
   }
 
-  async function loadDetail(key, method, params, silent = false) {
+  /** Request for the details of an expandable card: [method, params, tab the card is on], or null. */
+  function detailRequest(key) {
+    const [kind, a, b] = key.split(':');
+    if (kind === 'pr') return ['prFiles', { repoId: a, prId: Number(b) }, 'prs'];
+    if (kind === 'def') return ['definitionBuilds', { id: Number(a), project: b || undefined }, 'pipelines'];
+    return null;
+  }
+
+  async function loadDetail(key, silent = false) {
+    const request = detailRequest(key);
+    if (!request) return;
     // Reopening shows the cached details at once and refreshes them in the background.
     const cached = S.details.get(key);
     if (!silent && !cached?.data) {
@@ -227,7 +237,7 @@
       renderCard(key);
     }
     try {
-      S.details.set(key, { data: await rpc(method, params) });
+      S.details.set(key, { data: await rpc(request[0], request[1]) });
     } catch (e) {
       if (cached?.data) return;
       S.details.set(key, { error: e });
@@ -235,26 +245,44 @@
     if (S.expanded.has(key)) renderCard(key);
   }
 
-  /** Re-renders a single expandable card in place instead of the whole list. */
-  function renderCard(key) {
-    const el = [...document.querySelectorAll('[data-toggle]')].find((x) => x instanceof HTMLElement && x.dataset.toggle === key);
+  /** HTML of the card `key` from the loaded data, or undefined when it is no longer listed. */
+  function cardHtml(key) {
     const [kind, a, b] = key.split(':');
     const items = S.data[kind === 'pr' ? 'prs' : 'pipelines'] || [];
-    let html;
-    if (kind === 'pr') { const pr = items.find((x) => x.repoId === a && x.id === Number(b)); html = pr && prCard(pr); }
-    else if (kind === 'build') { const r = items.find((x) => x.definitionName !== undefined && x.id === Number(a)); html = r && buildCard(r); }
-    else if (kind === 'def') { const d = items.find((x) => x.definitionName === undefined && x.id === Number(a) && (x.project || '') === (b || '')); html = d && defCard(d); }
+    if (kind === 'pr') { const pr = items.find((x) => x.repoId === a && x.id === Number(b)); return pr && prCard(pr); }
+    if (kind === 'build') { const r = items.find((x) => x.definitionName !== undefined && x.id === Number(a)); return r && buildCard(r); }
+    if (kind === 'def') { const d = items.find((x) => x.definitionName === undefined && x.id === Number(a) && (x.project || '') === (b || '')); return d && defCard(d); }
+    return undefined;
+  }
+
+  /**
+   * Updates a single expandable card in place instead of the whole list. The card element is kept
+   * (morphed), so hover, focus and running animations survive; unchanged details cause no DOM writes.
+   */
+  function renderCard(key) {
+    const el = document.querySelector(`[data-toggle="${CSS.escape(key)}"]`);
+    const html = cardHtml(key);
     if (!el || !html) { renderList(); return; }
     const tpl = document.createElement('template');
     tpl.innerHTML = html.trim();
     const next = tpl.content.firstElementChild;
     if (!next) return;
     const wasOpen = !!el.querySelector('.expand');
-    const expand = next.querySelector('.expand');
-    if (expand && !wasOpen) expand.classList.add('entering');
-    const focused = document.activeElement === el;
-    el.replaceWith(next);
-    if (focused && next instanceof HTMLElement) next.focus();
+    // The list no longer matches its last rendered HTML.
+    if (el.parentElement) rendered.delete(el.parentElement);
+    morph(el, next);
+    const expand = el.querySelector('.expand');
+    if (expand && !wasOpen) rise(expand);
+  }
+
+  const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+  /**
+   * Entrance of a just opened card section. A Web Animation, not a CSS class: the details arriving
+   * a moment later morph the card, which would strip a class and cut the animation short.
+   */
+  function rise(el) {
+    if (reducedMotion.matches) return;
+    el.animate([{ opacity: 0, transform: 'translateY(4px)' }, { opacity: 1, transform: 'none' }], { duration: 200, easing: 'cubic-bezier(.2, .8, .2, 1)' });
   }
 
   async function init() {
@@ -272,6 +300,85 @@
 
   // ---------- rendering ----------
   const app = document.getElementById('app');
+
+  /** Runs `fn` once in the next animation frame, however often it is scheduled before. */
+  const frames = new Set();
+  function onFrame(name, fn) {
+    if (frames.has(name)) return;
+    frames.add(name);
+    requestAnimationFrame(() => { frames.delete(name); fn(); });
+  }
+
+  /** Last HTML written to an element by `patchHtml` / `patchList`; equal HTML causes no DOM work. */
+  const rendered = new WeakMap();
+
+  function syncAttributes(el, next) {
+    for (const { name, value } of [...next.attributes]) if (el.getAttribute(name) !== value) el.setAttribute(name, value);
+    for (const { name } of [...el.attributes]) if (!next.hasAttribute(name)) el.removeAttribute(name);
+  }
+
+  /** Same node type and tag; a changed <select> is replaced so its selection follows the markup. */
+  const sameKind = (a, b) => a.nodeName === b.nodeName && (a.nodeName !== 'SELECT' || a.isEqualNode(b));
+
+  /**
+   * Turns the live element `el` into `next` with the fewest DOM writes: unchanged nodes stay untouched,
+   * so hover, focus, open dropdowns and running CSS animations (spinners, progress bars) are kept.
+   */
+  function morph(el, next) {
+    syncAttributes(el, next);
+    morphChildren(el, next);
+  }
+
+  function morphChildren(el, next) {
+    const nodes = [...next.childNodes];
+    nodes.forEach((n, i) => {
+      const cur = el.childNodes[i];
+      if (!cur) el.appendChild(n);
+      else if (!sameKind(cur, n)) cur.replaceWith(n);
+      else if (n instanceof Element) morph(/** @type {Element} */ (cur), n);
+      else if (cur.nodeValue !== n.nodeValue) cur.nodeValue = n.nodeValue;
+    });
+    while (el.childNodes.length > nodes.length) el.lastChild?.remove();
+  }
+
+  /** Replaces the content of `el` with `html` by morphing (toolbar). */
+  function patchHtml(el, html) {
+    if (rendered.get(el) === html) return;
+    rendered.set(el, html);
+    const tpl = document.createElement('template');
+    tpl.innerHTML = html;
+    morphChildren(el, tpl.content);
+  }
+
+  /** Identity of a list child: its `data-key` (cards, groups) or else tag and class (progress, empty state…). */
+  const keyOf = (el) => el.tagName + ':' + (el instanceof HTMLElement && el.dataset.key ? el.dataset.key : el.className);
+
+  /**
+   * Keyed update of the list: children with the same key are reused and morphed, others added or removed.
+   * Background refreshes therefore touch only the cards that changed, and nothing at all when the HTML is the same.
+   */
+  function patchList(el, html) {
+    if (rendered.get(el) === html) return;
+    rendered.set(el, html);
+    const tpl = document.createElement('template');
+    tpl.innerHTML = html;
+    const pool = new Map();
+    for (const c of el.children) {
+      const k = keyOf(c);
+      if (pool.has(k)) pool.get(k).push(c); else pool.set(k, [c]);
+    }
+    const nodes = [...tpl.content.children].map((n) => {
+      const old = pool.get(keyOf(n))?.shift();
+      if (!old) return n;
+      morph(old, n);
+      return old;
+    });
+    const focused = document.activeElement;
+    for (const rest of pool.values()) for (const c of rest) c.remove();
+    nodes.forEach((n, i) => { if (el.children[i] !== n) el.insertBefore(n, el.children[i] || null); });
+    // Moving an element blurs it; give focus back to a card that is still there.
+    if (focused instanceof HTMLElement && focused.isConnected && document.activeElement !== focused) focused.focus({ preventScroll: true });
+  }
 
   function renderShell() {
     if (!S.ctx.configured) {
@@ -301,7 +408,8 @@
       <main id="list" class="list"></main>`;
     const input = /** @type {HTMLInputElement} */ (document.getElementById('search'));
     input.value = S.search;
-    input.addEventListener('input', () => { S.search = input.value.trim().toLowerCase(); renderList(); });
+    // Typing fast filters once per frame, not once per keystroke.
+    input.addEventListener('input', () => { S.search = input.value.trim().toLowerCase(); onFrame('search', renderList); });
     renderHeader();
     renderTabs();
     renderToolbar();
@@ -467,23 +575,56 @@
       </li>`;
   }
 
+  /**
+   * The tab bar is built once; later calls only switch the active tab and update the badges,
+   * so the indicator slides instead of being rebuilt.
+   */
   function renderTabs() {
     const el = document.getElementById('tabs');
     if (!el) return;
-
-    el.innerHTML = `<span class="tab-indicator"></span>` + TABS.map((t) => `
-      <button role="tab" class="tab ${t.id === S.tab ? 'active' : ''}" data-tab="${t.id}" aria-selected="${t.id === S.tab}" title="${t.label}">
-        ${icon(t.icon)}<span class="tab-label">${t.label}</span>${S.counts[t.id] === undefined ? '' : '<span class="badge">' + S.counts[t.id] + '</span>'}
-      </button>`).join('');
-    placeIndicator(el);
+    if (!el.firstElementChild) {
+      el.innerHTML = `<span class="tab-indicator"></span>` + TABS.map((t) => `
+        <button role="tab" class="tab" data-tab="${t.id}" aria-selected="false" title="${t.label}">${icon(t.icon)}<span class="tab-label">${t.label}</span></button>`).join('');
+    }
+    for (const btn of el.querySelectorAll('.tab')) {
+      if (!(btn instanceof HTMLElement)) continue;
+      const on = btn.dataset.tab === S.tab;
+      btn.classList.toggle('active', on);
+      if (btn.getAttribute('aria-selected') !== String(on)) btn.setAttribute('aria-selected', String(on));
+      setBadge(btn, S.counts[btn.dataset.tab || '']);
+    }
+    if (el.dataset.active !== S.tab) {
+      el.dataset.active = S.tab;
+      placeIndicator();
+    }
   }
 
-  /** Moves the highlight under the active tab (tabs have different widths). */
-  function placeIndicator(el) {
-    const active = el.querySelector('.tab.active');
-    if (!(active instanceof HTMLElement)) return;
-    el.style.setProperty('--x', `${active.offsetLeft - 3}px`);
-    el.style.setProperty('--w', `${active.offsetWidth}px`);
+  function setBadge(btn, count) {
+    let badge = btn.querySelector('.badge');
+    if (count === undefined) { badge?.remove(); return; }
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'badge';
+      btn.append(badge);
+    }
+    const text = String(count);
+    if (badge.textContent !== text) badge.textContent = text;
+  }
+
+  /**
+   * Moves the highlight under the active tab (tabs have different widths). Measured in the next frame,
+   * after the class changes, so layout is read once per frame. The slide transition is enabled only
+   * after the first placement, so the indicator does not glide in from the left on start.
+   */
+  function placeIndicator() {
+    onFrame('indicator', () => {
+      const el = document.getElementById('tabs');
+      const active = el?.querySelector('.tab.active');
+      if (!el || !(active instanceof HTMLElement)) return;
+      el.style.setProperty('--x', `${active.offsetLeft - 3}px`);
+      el.style.setProperty('--w', `${active.offsetWidth}px`);
+      if (!el.classList.contains('ready')) requestAnimationFrame(() => el.classList.add('ready'));
+    });
   }
 
   function chips(list, active, kind) {
@@ -491,37 +632,36 @@
     return '<div class="chips">' + list.map(chip).join('') + '</div>';
   }
 
+  /**
+   * Filters of the visible tab. Morphed rather than rewritten, so the active chip fades over
+   * and an unchanged dropdown stays as it is during background refreshes.
+   */
   function renderToolbar() {
     const el = document.getElementById('filters');
     if (!el) return;
-    if (S.tab === 'prs') {
-      el.innerHTML = `<div class="select-row">${chips(PR_FILTERS, S.prFilter, 'prFilter')}
+    patchHtml(el, (TOOLBARS[S.tab] || pipelineToolbar)());
+  }
+
+  const prToolbar = () => `<div class="select-row">${chips(PR_FILTERS, S.prFilter, 'prFilter')}
         <button class="icon-btn accent" data-cmd="azureDevOps.pr.create" title="Create pull request">${icon('prPlus')}</button></div>`;
-    } else if (S.tab === 'sprint') {
-      renderSprintToolbar(el);
-    } else if (S.tab === 'wis') {
-      const q = S.queries;
-      const builtin = q ? q.builtin : [{ key: 'builtin:0', name: 'Assigned to me' }];
-      const option = (o) => `<option value="${esc(o.key)}" ${selectedIf(o.key === S.wiQuery)} title="${esc(o.path || o.name)}">${esc(o.name)}</option>`;
-      const options = builtin.map(option).join('');
-      const savedOpts = q && q.saved.length ? '<optgroup label="Saved queries">' + q.saved.map(option).join('') + '</optgroup>' : '';
-      el.innerHTML = `<div class="select-row">
+
+  const pipelineToolbar = () => `<div class="select-row">${chips(BUILD_FILTERS, S.buildFilter, 'buildFilter')}
+        <button class="icon-btn accent" data-cmd="azureDevOps.pipelines.run" title="Run pipeline">${icon('play')}</button></div>`;
+
+  function wiToolbar() {
+    const q = S.queries;
+    const builtin = q ? q.builtin : [{ key: 'builtin:0', name: 'Assigned to me' }];
+    const option = (o) => `<option value="${esc(o.key)}" ${selectedIf(o.key === S.wiQuery)} title="${esc(o.path || o.name)}">${esc(o.name)}</option>`;
+    const options = builtin.map(option).join('');
+    const savedOpts = q && q.saved.length ? '<optgroup label="Saved queries">' + q.saved.map(option).join('') + '</optgroup>' : '';
+    return `<div class="select-row">
           <label class="select">${icon('board')}<select id="wiQuery">${options}${savedOpts}</select></label>
           <button class="icon-btn" data-cmd="azureDevOps.wi.openById" title="Open by ID">${icon('hash')}</button>
           <button class="icon-btn accent" data-cmd="azureDevOps.wi.create" title="New work item">${icon('plus')}</button>
         </div>`;
-      document.getElementById('wiQuery')?.addEventListener('change', (e) => {
-        S.wiQuery = /** @type {HTMLSelectElement} */ (e.target).value;
-        persist();
-        load('wis');
-      });
-    } else {
-      el.innerHTML = `<div class="select-row">${chips(BUILD_FILTERS, S.buildFilter, 'buildFilter')}
-        <button class="icon-btn accent" data-cmd="azureDevOps.pipelines.run" title="Run pipeline">${icon('play')}</button></div>`;
-    }
   }
 
-  function renderSprintToolbar(el) {
+  function sprintToolbar() {
     const teams = S.teams || [];
     const teamKey = (t) => JSON.stringify([t.project || '', t.name]);
     const d = S.data.sprint;
@@ -531,33 +671,42 @@
     const teamLabel = (t) => (t.project ? t.project + ' / ' + t.name : t.name);
     const teamOption = (t) => `<option value="${esc(teamKey(t))}" ${selectedIf(teamKey(t) === S.sprintTeam)}>${esc(teamLabel(t))}</option>`;
     const itOption = (i) => `<option value="${esc(i.id)}" ${selectedIf(i.id === current)}>${esc(itLabel(i))}</option>`;
-    el.innerHTML = `<div class="select-row">
+    return `<div class="select-row">
         <label class="select">${icon('user')}<select id="sprintTeam" title="Team">${teams.map(teamOption).join('')}</select></label>
         <label class="select">${icon('calendar')}<select id="sprintIteration" title="Sprint">${its.map(itOption).join('')}</select></label>
       </div>${chips(SPRINT_GROUPS, S.sprintGroup, 'sprintGroup')}`;
-    document.getElementById('sprintTeam')?.addEventListener('change', (e) => {
-      S.sprintTeam = /** @type {HTMLSelectElement} */ (e.target).value; S.sprintIteration = null; persist(); S.data.sprint = null; load('sprint');
-    });
-    document.getElementById('sprintIteration')?.addEventListener('change', (e) => {
-      S.sprintIteration = /** @type {HTMLSelectElement} */ (e.target).value; persist(); S.data.sprint = null; load('sprint');
-    });
   }
+
+  const TOOLBARS = { prs: prToolbar, wis: wiToolbar, sprint: sprintToolbar, pipelines: pipelineToolbar };
+
+  /** Dropdowns of the toolbar (delegated, so morphing the toolbar keeps working listeners). */
+  const CHANGES = {
+    wiQuery: (value) => { S.wiQuery = value; persist(); load('wis'); },
+    sprintTeam: (value) => { S.sprintTeam = value; S.sprintIteration = null; persist(); S.data.sprint = null; load('sprint'); },
+    sprintIteration: (value) => { S.sprintIteration = value; persist(); S.data.sprint = null; load('sprint'); },
+  };
 
   function renderList() {
     const el = document.getElementById('list');
     if (!el) return;
+    patchList(el, listHtml(el));
+  }
+
+  function listHtml(el) {
     const tab = S.tab;
     const data = S.data[tab];
-    if (S.loading[tab] && !data) { el.innerHTML = skeleton(); return; }
-    if (S.errors[tab]) { el.innerHTML = errorState(S.errors[tab]); return; }
-    if (!data) { el.innerHTML = skeleton(); return; }
+    if (S.loading[tab] && !data) return skeleton();
+    if (S.errors[tab]) return errorState(S.errors[tab]);
+    if (!data) return skeleton();
     const progress = S.loading[tab] ? '<div class="progress"></div>' : '';
+    // Entrance animation only for freshly loaded data, not for background refreshes or filtering.
     el.classList.toggle('animate', !!S.animate);
     S.animate = false;
-    if (tab === 'sprint') { el.innerHTML = progress + sprintView(data); return; }
-    if (tab === 'pipelines' && S.buildFilter === 'folders') { el.innerHTML = progress + folderView(data); return; }
+    if (tab === 'sprint') return progress + sprintView(data);
+    if (tab === 'pipelines' && S.buildFilter === 'folders') return progress + folderView(data);
     const filtered = data.filter((item) => !S.search || haystack(tab, item).includes(S.search));
-    el.innerHTML = progress + (filtered.length ? filtered.map(cardRenderer(tab)).join('') : emptyState(tab));
+    const render = cardRenderer(tab);
+    return progress + (filtered.length ? filtered.map((item) => render(item)).join('') : emptyState(tab));
   }
 
   function cardRenderer(tab) {
@@ -631,7 +780,7 @@
     // Ready to merge: every required policy passed (incl. reviewer policies), no conflicts, not a draft.
     const ready = pr.checks?.state === 'ok' && !pr.isDraft && pr.mergeStatus !== 'conflicts';
     return `
-      <article class="card pr ${open ? 'open' : ''} ${ready ? 'ready' : ''}" data-toggle="${esc(key)}" tabindex="0">
+      <article class="card pr ${open ? 'open' : ''} ${ready ? 'ready' : ''}" data-key="${esc(key)}" data-toggle="${esc(key)}" tabindex="0">
         <div class="card-row">
           ${avatar(pr.author, 'lg')}
           <div class="card-body">
@@ -714,7 +863,7 @@
     const color = typeColor(w.type);
     const stateColor = w.stateColor || 'var(--muted)';
     return `
-      <article class="card wi" style="--type:${color}" data-cmd="azureDevOps.wi.open" data-args="${attr([w.id])}" tabindex="0">
+      <article class="card wi" style="--type:${color}" data-key="wi:${esc(w.id)}" data-cmd="azureDevOps.wi.open" data-args="${attr([w.id])}" tabindex="0">
         <div class="card-row">
           <div class="card-body">
             <div class="meta top"><span class="type-dot"></span><span class="type">${esc(w.type)}</span><span class="mono">#${w.id}</span>${projChip(w.project)}
@@ -836,7 +985,8 @@
     if (!d.iteration) return `<div class="empty">${icon('calendar')}<p>This team has no sprints yet.</p></div>`;
     const items = d.items.filter((i) => !S.search || haystack('wis', i).includes(S.search));
     const groups = sprintGroups(items);
-    const body = groups.map((g) => `<section class="group">${groupHead(g)}${g.items.map(wiCard).join('')}</section>`).join('');
+    const groupKey = (g) => (g.parentItem ? 'parent:' + g.parentItem.id : 'group:' + g.label);
+    const body = groups.map((g) => `<section class="group" data-key="${esc(groupKey(g))}">${groupHead(g)}${g.items.map((w) => wiCard(w)).join('')}</section>`).join('');
     return sprintHeader(d) + (body || emptyState('sprint'));
   }
 
@@ -849,7 +999,7 @@
     const who = waiting.length ? `<span class="sep"></span><span title="${esc(waiting.join(', '))}">${esc(waiting.slice(0, 2).join(', '))}${others}</span>` : '';
     const instructions = a.instructions ? '<div class="instructions">' + esc(a.instructions) + '</div>' : '';
     return `
-      <article class="card approval ${a.mine ? 'mine' : ''}" ${open} tabindex="0">
+      <article class="card approval ${a.mine ? 'mine' : ''}" data-key="approval:${esc(a.id)}" ${open} tabindex="0">
         <div class="card-row">
           <div class="build-status"><span class="status queued">${icon('hand')}</span></div>
           <div class="card-body">
@@ -866,12 +1016,12 @@
   }
 
   // ----- pipelines -----
-  function buildCard(b, compact = false) {
+  function buildCard(b) {
     const running = isRunning(b);
     let time = timeAgo(b.finishTime || b.queueTime) + ' · ' + duration(b.startTime, b.finishTime);
     if (running) time = b.startTime ? 'running ' + duration(b.startTime) : 'queued';
     return `
-      <article class="card build ${running ? 'is-running' : ''} r-${esc(b.result || b.status)}" data-cmd="azureDevOps.pipelines.openRun" data-args="${attr([b.id, b.project])}" title="Open run overview" tabindex="0">
+      <article class="card build ${running ? 'is-running' : ''} r-${esc(b.result || b.status)}" data-key="build:${esc(b.id)}" data-cmd="azureDevOps.pipelines.openRun" data-args="${attr([b.id, b.project])}" title="Open run overview" tabindex="0">
         <div class="card-row">
           <div class="build-status">${statusIcon(b.status, b.result)}</div>
           <div class="card-body">
@@ -966,7 +1116,7 @@
     }
     const status = l ? statusIcon(l.status, l.result) : `<span class="status muted">${icon('rocket')}</span>`;
     return `
-      <article class="card def ${open ? 'open' : ''}" data-toggle="${esc(key)}" tabindex="0">
+      <article class="card def ${open ? 'open' : ''}" data-key="${esc(key)}" data-toggle="${esc(key)}" tabindex="0">
         <div class="card-row">
           <div class="build-status">${status}</div>
           <div class="card-body">
@@ -990,9 +1140,7 @@
       return;
     }
     S.expanded.add(key);
-    const [kind, a, b] = key.split(':');
-    if (kind === 'pr') loadDetail(key, 'prFiles', { repoId: a, prId: Number(b) });
-    else if (kind === 'def') loadDetail(key, 'definitionBuilds', { id: Number(a), project: b || undefined });
+    loadDetail(key);
   }
 
   /** Clicks on elements with one of these data attributes, checked in this order. */
@@ -1062,6 +1210,11 @@
     hit?.[1](el, e, target);
   });
 
+  app.addEventListener('change', (e) => {
+    const t = e.target;
+    if (t instanceof HTMLSelectElement && Object.hasOwn(CHANGES, t.id)) CHANGES[t.id](t.value);
+  });
+
   app.addEventListener('toggle', (e) => {
     const t = e.target;
     if (t instanceof HTMLDetailsElement && t.classList.contains('loads')) S.loadsOpen = t.open;
@@ -1078,17 +1231,17 @@
   });
 
   function refreshAll() {
-    S.details.clear();
-    const reopen = [...S.expanded];
-    S.expanded.clear();
     rpc('context').then((ctx) => {
       const changed = !S.ctx || ctx.configured !== S.ctx.configured || ctx.project !== S.ctx.project || ctx.orgUrl !== S.ctx.orgUrl
         || (ctx.projects || []).join('\n') !== (S.ctx.projects || []).join('\n');
       S.ctx = ctx;
-      if (changed) { S.data = {}; S.counts = {}; S.queries = null; S.teams = null; S.picker = null; init(); return; }
-      for (const key of reopen) toggle(key);
+      if (changed) { S.expanded.clear(); S.data = {}; S.counts = {}; S.queries = null; S.teams = null; S.picker = null; init(); return; }
+      // Open cards stay open and keep showing their details until the reloaded ones arrive
+      // (no collapse and "Loading…" flash); cached details of closed cards are dropped.
+      for (const key of [...S.details.keys()]) if (!S.expanded.has(key)) S.details.delete(key);
+      for (const key of S.expanded) loadDetail(key);
       for (const t of TABS) if (t.id === S.tab || t.id !== 'sprint' || S.data.sprint) load(t.id, t.id !== S.tab);
-    });
+    }).catch(() => undefined);
   }
 
   /** Re-arms after every run so interval changes in the settings apply without a reload. */
@@ -1105,10 +1258,7 @@
     const items = S.data.pipelines || [];
     if (!items.some((i) => isRunning(i) || isRunning(i.latest))) return;
     load('pipelines', true);
-    for (const key of S.expanded) {
-      const [kind, id, project] = key.split(':');
-      if (kind === 'def') loadDetail(key, 'definitionBuilds', { id: Number(id), project: project || undefined }, true);
-    }
+    for (const key of S.expanded) if (key.startsWith('def:')) loadDetail(key, true);
   });
 
   // Background refresh (azureDevOps.refreshInterval, 0 = off): only the visible tab, only while the window has focus.
@@ -1119,21 +1269,15 @@
   function refreshVisible() {
     if (!S.ctx?.configured) return;
     load(S.tab, true);
-    for (const key of S.expanded) {
-      const [kind, a, b] = key.split(':');
-      if (kind === 'pr' && S.tab === 'prs') loadDetail(key, 'prFiles', { repoId: a, prId: Number(b) }, true);
-      else if (kind === 'def' && S.tab === 'pipelines') loadDetail(key, 'definitionBuilds', { id: Number(a), project: b || undefined }, true);
-    }
+    for (const key of S.expanded) if (detailRequest(key)?.[2] === S.tab) loadDetail(key, true);
   }
 
   every(() => 5, () => {
     if (S.focused && isStale(S.tab)) refreshVisible();
   });
 
-  window.addEventListener('resize', () => {
-    const tabs = document.getElementById('tabs');
-    if (tabs) placeIndicator(tabs);
-  });
+  // placeIndicator measures once per frame however many resize events arrive.
+  window.addEventListener('resize', placeIndicator);
 
   window.addEventListener('message', (e) => {
     const m = e.data;

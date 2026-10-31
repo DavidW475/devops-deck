@@ -4,13 +4,26 @@ type Handler = (m: unknown) => unknown;
 
 /** The webview of a fake panel: records `html` and posted messages, and lets a test send messages from the "page". */
 export class FakeWebview {
-  html = '';
   options: unknown;
+  /** How often the extension replaced the whole document. */
+  htmlWrites = 0;
+  private document = '';
   readonly cspSource = 'vscode-webview://fake';
   /** Every message the extension posted to the page. */
   readonly posted: any[] = [];
   private readonly handlers: Handler[] = [];
 
+  get html(): string {
+    return this.document;
+  }
+  set html(value: string) {
+    this.document = value;
+    this.htmlWrites++;
+  }
+  /** What the page shows: the HTML of the last in-place 'update' message (LivePanel), else the document. */
+  get content(): string {
+    return this.last('update')?.html ?? this.document;
+  }
   asWebviewUri(uri: { toString(): string }): { toString(): string } {
     return { toString: () => `vscode-webview://fake/${uri.toString()}` };
   }
@@ -104,4 +117,16 @@ export function cspNonce(html: string): string | undefined {
   }
   const end = html.indexOf("'", start + 7);
   return html.slice(start + 7, end);
+}
+
+/** The inline page script of a panel's HTML (the one under the CSP nonce). */
+export function inlineScript(html: string): string {
+  const n = cspNonce(html);
+  const open = `<script nonce="${n}">`;
+  const start = html.indexOf(open);
+  if (!n || start < 0) {
+    return '';
+  }
+  const from = start + open.length;
+  return html.slice(from, html.indexOf('</script>', from));
 }

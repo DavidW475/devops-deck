@@ -19,6 +19,7 @@ const BODY = `<div class="pv">
       <button class="btn small" data-mode="server" title="Let Azure DevOps expand the pipeline with this file's content">Azure DevOps</button>
     </div>
     <button class="btn small ghost" id="refresh" title="Expand again">Refresh</button>
+    <button class="btn small ghost" id="designer" title="Edit the template calls of this pipeline in a form">Designer</button>
   </div>
   <p class="pv-hint muted small" id="hint"></p>
   <div id="params"></div>
@@ -139,6 +140,9 @@ export class PipelinePreviewPanel {
         return;
       case 'open':
         await this.open(Number(m.source));
+        return;
+      case 'designer':
+        await vscode.commands.executeCommand('azureDevOps.yaml.openDesigner', this.doc.uri);
         return;
     }
   }

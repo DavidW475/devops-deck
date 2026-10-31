@@ -79,6 +79,13 @@ async function fakeFetch(url: string | URL, init?: RequestInit): Promise<Respons
     return json(repos[p]);
   }
   const id = /repositories\/([0-9a-f-]{36})\/items$/.exec(p)?.[1];
+  if (id && u.searchParams.get('recursionLevel') === 'Full') {
+    const paths = Object.keys(items).filter(k => k.startsWith(id)).map(k => k.slice(id.length));
+    return json({ value: [{ path: '/', isFolder: true }, ...paths.map(path => ({ path, gitObjectType: 'blob' })), { path: '/README.md', gitObjectType: 'blob' }] });
+  }
+  if (/repositories\/[0-9a-f-]{36}\/refs$/.test(p)) {
+    return json({ value: u.searchParams.get('filter') === 'tags/' ? [{ name: 'refs/tags/v2' }] : [{ name: 'refs/heads/main' }] });
+  }
   if (id && file) {
     const key = `${id}${file}`;
     return key in items ? json({ content: items[key] }) : json({ message: 'not found' }, 404);
@@ -129,6 +136,30 @@ afterEach(() => {
 });
 
 describe('TemplateResolver', () => {
+  it('lists the templates of a repository for the designer catalog', async () => {
+    const r = new TemplateResolver(client, connections);
+    const remote = { kind: 'remote' as const, project: 'Fabrikam Shop', repo: 'pipeline-templates', ref: 'refs/tags/v2' };
+    const catalog = await r.catalog(remote);
+    assert.deepEqual(catalog.entries.map(e => [e.path, e.kind, e.parameters.map(p => p.name)]), [['/stages/deploy.yml', 'stages', ['environment', 'runTests']]]);
+    assert.equal(catalog.truncated, false);
+    const list = requests.find(q => q.url.searchParams.get('recursionLevel') === 'Full')!;
+    assert.equal(list.url.searchParams.get('versionDescriptor.version'), 'v2');
+    const before = requests.length;
+    await r.catalog(remote);
+    assert.equal(requests.length, before, 'cached per repository and ref');
+    await r.catalog(remote, true);
+    assert.ok(requests.length > before, 'force reads again');
+
+    const local = await r.catalog({ kind: 'local', root: '/work/app' });
+    assert.deepEqual(local.entries.map(e => [e.path, e.kind]), [['/steps/build.yml', 'steps']], 'the pipeline itself declares no parameters');
+
+    assert.deepEqual(await r.refsOf({ alias: 'templates', type: 'git', name: 'pipeline-templates' }), { tags: ['refs/tags/v2'], branches: ['refs/heads/main'] });
+    assert.deepEqual(await r.refsOf({ alias: 'gh', type: 'github', name: 'contoso/tools' }), { tags: [], branches: [] });
+    connections.current = undefined;
+    await assert.rejects(r.refsOf({ alias: 't', type: 'git', name: 'pipeline-templates' }), /not configured/);
+    await assert.rejects(r.catalog({ kind: 'remote', project: 'Nope', repo: 'missing' }));
+  });
+
   it('finds the repository root of a local file and resolves relative templates locally', async () => {
     const r = new TemplateResolver(client, connections);
     const ctx = (await fileCtx())!;
