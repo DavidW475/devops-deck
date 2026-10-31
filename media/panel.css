@@ -604,7 +604,7 @@ textarea.pd-yaml[readonly] { opacity: .8; }
 
 /* ---------- reduced motion ---------- */
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; } /* NOSONAR: reduced motion must override every animation and transition, whatever their selector's specificity */
   /* Still show that something is loading, without movement. */
   body.updating::before { animation: none; transform: none; width: 100%; opacity: .6; }
   .run-skel::after { display: none; }

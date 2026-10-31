@@ -67,7 +67,7 @@ export interface RepoEntry {
   ref?: string;
 }
 
-const KINDS: TemplateKind[] = ['stages', 'jobs', 'steps', 'variables'];
+const KINDS = new Set<TemplateKind>(['stages', 'jobs', 'steps', 'variables']);
 const pad = (n: number) => ' '.repeat(Math.max(n, 0));
 const splitLines = (text: string) => text.split(/\r?\n/);
 const isOwn = (o: object, k: string) => Object.hasOwn(o, k);
@@ -274,7 +274,7 @@ export function toRangeEdits(text: string, edits: LineEdit[]): RangeEdit[] {
 /** Template kind from its top-level keys (the first of stages, jobs, steps, variables). */
 export function templateKind(text: string): TemplateKind | undefined {
   const top = scanYaml(text).filter(l => !l.blank && l.indent === 0 && !l.dash && l.key);
-  return top.map(l => l.key as TemplateKind).find(k => KINDS.includes(k));
+  return top.map(l => l.key as TemplateKind).find(k => KINDS.has(k));
 }
 
 /** Column of the parameters under `parameters:` at lines[at], or undefined when the block is empty. */

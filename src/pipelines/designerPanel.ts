@@ -96,7 +96,7 @@ export class PipelineDesignerPanel {
   private selection: Selection;
   private pending: Record<string, string> = {};
   /** last form tree per object parameter: keeps empty and duplicate keys visible that the YAML text can't hold */
-  private trees = new Map<string, TreeNode>();
+  private readonly trees = new Map<string, TreeNode>();
   private writeDefaults = false;
   private alias = '';
   /** chosen ref of the catalog repository: undefined = as declared, '' = default branch */
@@ -168,7 +168,7 @@ export class PipelineDesignerPanel {
   /** Selects the call whose mapping contains `line` (the nearest call above it, else the first one). */
   private selectLine(line: number): void {
     const refs = findTemplateRefs(this.doc.getText());
-    const hit = refs.find(r => r.line <= line && line <= r.end) ?? refs.filter(r => r.line <= line).at(-1) ?? refs[0];
+    const hit = refs.find(r => r.line <= line && line <= r.end) ?? refs.findLast(r => r.line <= line) ?? refs[0];
     this.select(hit ? { kind: 'call', line: hit.line, raw: hit.raw } : undefined);
   }
 
@@ -567,7 +567,7 @@ export class PipelineDesignerPanel {
 
   private loadRefs(repo: RepoChoice): void {
     const r = repo.resource;
-    if (!r || r.type !== 'git' || this.refs.has(repo.alias)) {
+    if (r?.type !== 'git' || this.refs.has(repo.alias)) {
       return;
     }
     this.refs.set(repo.alias, { loading: true, options: refOptions({ tags: [], branches: [] }, r.ref) });

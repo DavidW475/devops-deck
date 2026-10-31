@@ -190,8 +190,10 @@ function fromJson(x: unknown): Value {
     value = out;
   } else if (typeof x === 'string' || typeof x === 'boolean' || x === null) {
     value = x;
-  } else {
+  } else if (typeof x === 'number') {
     value = String(x);
+  } else {
+    value = null; // JSON has no other values
   }
   return value;
 }
