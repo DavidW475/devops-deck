@@ -4,7 +4,7 @@ import * as vscode from 'vscode';
 import { AdoClient } from '../client';
 import { WorkItem } from '../types';
 import { WorkItemPanel } from '../workItems/wiPanel';
-import { cspNonce, flush, lastPanel, panels } from './fakeWebview';
+import { cspNonce, flush, inlineScript, lastPanel, panels } from './fakeWebview';
 import { executed, messages, opened, reset } from './vscodeStub';
 
 const ORG = 'https://dev.azure.com/contoso';
@@ -163,7 +163,7 @@ describe('WorkItemPanel rendering', () => {
       getWorkItemTypes: async () => ['Bug'], listClassificationPaths: fail,
     });
     await web.send({ type: 'refresh' }); // the type and path lists are cached across panels
-    const html = web.html;
+    const html = web.content;
     assert.ok(html.includes('<option>Odd</option>'));
     assert.ok(html.includes('No comments yet.'));
     assert.ok(html.includes('No parent.'));
@@ -299,5 +299,55 @@ describe('WorkItemPanel messages', () => {
     WorkItemPanel.show(client, ext, 50, () => undefined);
     await flush();
     assert.equal(panels.length, 2);
+  });
+  it('updates the page in place instead of reloading it', async () => {
+    const { web } = await open(51);
+    assert.equal(web.htmlWrites, 2, 'loading page, then the work item');
+    assert.ok(web.html.includes('<body><div id="root">'));
+    const script = inlineScript(web.html);
+    for (const bound of ["getElementById('state')", "getElementById('tags')", "getElementById('title')", "querySelectorAll('[data-field]')"]) {
+      assert.ok(!script.includes(bound), `no listener bound directly: ${bound}`);
+    }
+
+    await web.send({ type: 'state', value: 'Resolved' });
+    assert.equal(web.htmlWrites, 2);
+    const update = web.last('update');
+    assert.equal(update.title, '#42 Checkout <b>fails</b> for gift cards');
+    assert.ok(update.html.includes('data-original="Checkout &lt;b&gt;fails&lt;/b&gt; for gift cards"'));
+    assert.ok(!update.html.includes('<script>alert(1)'));
+    assert.ok(!update.html.includes('bad()'));
+    assert.ok(update.html.includes('<details class="card" id="history">'));
+    assert.ok(update.html.includes('name="linker-assignee"'));
+  });
+
+  it('tells the page when an action fails or the re-render fails', async () => {
+    let loads = 0;
+    const { web } = await open(52, {
+      getWorkItem: async () => {
+        loads++;
+        if (loads > 1) {
+          throw new Error('TF26071: changed by someone else');
+        }
+        return MAIN;
+      },
+    });
+    await web.send({ type: 'field', name: 'Microsoft.VSTS.Scheduling.Effort', kind: 'number', value: 'lots' });
+    assert.equal(web.ofType('idle').length, 1);
+    await web.send({ type: 'refresh' });
+    assert.equal(web.ofType('idle').length, 2);
+    assert.equal(web.ofType('update').length, 0);
+    assert.ok(messages.some(m => m.includes('TF26071')));
+    await web.send({ type: 'openWi', id: 43 });
+    assert.equal(web.ofType('idle').length, 2, 'navigation does not mark the page busy');
+  });
+
+  it('posts nothing after the panel is closed', async () => {
+    const { web, panel } = await open(53);
+    panel.dispose();
+    const before = web.posted.length;
+    await web.send({ type: 'refresh' });
+    await web.send({ type: 'linkSearch', text: 'a', seq: 1 });
+    assert.equal(web.posted.length, before);
+    assert.equal(web.htmlWrites, 2);
   });
 });

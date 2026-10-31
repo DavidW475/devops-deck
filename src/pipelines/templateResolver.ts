@@ -10,6 +10,7 @@ import { AdoClient, AdoError } from '../client';
 import { Connection } from '../connection';
 import { isInside, localAdoRepos } from '../git';
 import { mapLimit } from '../util';
+import { templateKind, TemplateKind } from './templateEdits';
 import { findTemplateRefs, joinTemplatePath, parseRepositories, RepoResource, TemplatePath, TemplateRef } from './templateRefs';
 import { parsePipelineParameters, PipelineParameter, setOwn } from './yamlParameters';
 
@@ -42,6 +43,20 @@ export interface ResolvedTemplate {
   label: string;
 }
 
+/** A template file of a repository, for the designer's catalog. */
+export interface CatalogEntry {
+  /** repository-relative, starting with '/' */
+  path: string;
+  kind?: TemplateKind;
+  parameters: PipelineParameter[];
+}
+
+export interface Catalog {
+  entries: CatalogEntry[];
+  /** more YAML files than the catalog reads */
+  truncated: boolean;
+}
+
 export interface TemplateNode {
   ref: TemplateRef;
   label: string;
@@ -54,6 +69,9 @@ export interface TemplateNode {
 const MAX_FILES = 100;
 const MAX_DEPTH = 20;
 const CACHE_MS = 30_000;
+/** The catalog reads at most this many YAML files of a repository and keeps remote listings for 5 minutes. */
+const CATALOG_FILES = 300;
+const CATALOG_MS = 5 * 60_000;
 
 const isString = (v: unknown): v is string => typeof v === 'string';
 
@@ -73,6 +91,7 @@ export class TemplateResolver {
   private readonly texts = new Map<string, { at: number; text: Promise<string> }>();
   private readonly repoIds = new Map<string, Promise<string>>();
   private readonly roots = new Map<string, Promise<string>>();
+  private readonly catalogs = new Map<string, { at: number; value: Promise<Catalog> }>();
   private workspaceAliases?: Promise<Map<string, RepoResource>>;
 
   constructor(private readonly client: AdoClient, private readonly connections: { current?: Connection }) {}
@@ -176,17 +195,21 @@ export class TemplateResolver {
     return text;
   }
 
-  private async readRemote(o: Extract<Origin, { kind: 'remote' }>, file: string): Promise<string> {
-    const api = this.client.forProject(o.project);
-    const idKey = `${o.project}/${o.repo}`.toLowerCase();
-    let id = this.repoIds.get(idKey);
+  private repoId(project: string, repo: string): Promise<string> {
+    const key = `${project}/${repo}`.toLowerCase();
+    let id = this.repoIds.get(key);
     if (!id) {
-      id = api.getRepository(o.repo).then(r => r.id);
-      this.repoIds.set(idKey, id);
-      id.catch(() => this.repoIds.delete(idKey));
+      id = this.client.forProject(project).getRepository(repo).then(r => r.id);
+      this.repoIds.set(key, id);
+      id.catch(() => this.repoIds.delete(key));
     }
+    return id;
+  }
+
+  private async readRemote(o: Extract<Origin, { kind: 'remote' }>, file: string): Promise<string> {
+    const id = this.repoId(o.project, o.repo);
     try {
-      return await api.getFileTextAtRef(await id, file, o.ref);
+      return await this.client.forProject(o.project).getFileTextAtRef(await id, file, o.ref);
     } catch (e) {
       if (e instanceof AdoError && e.status === 404) {
         throw new Error(`${file.slice(1)} was not found in ${o.project}/${o.repo}${o.ref ? ' at ' + o.ref : ''}.`);
@@ -196,15 +219,70 @@ export class TemplateResolver {
   }
 
   /**
+   * Template files of a repository: YAML files that declare `parameters:`, with their parameters and kind. Remote
+   * listings are cached per repository and ref (`force` reads again); local clones are read every time.
+   */
+  catalog(origin: Origin, force = false): Promise<Catalog> {
+    const key = originKey(origin);
+    const hit = this.catalogs.get(key);
+    if (!force && hit && origin.kind === 'remote' && Date.now() - hit.at < CATALOG_MS) {
+      return hit.value;
+    }
+    const value = this.loadCatalog(origin);
+    this.catalogs.set(key, { at: Date.now(), value });
+    value.catch(() => this.catalogs.delete(key));
+    return value;
+  }
+
+  private async loadCatalog(origin: Origin): Promise<Catalog> {
+    const all = (await this.yamlFiles(origin)).sort((a, b) => a.localeCompare(b));
+    const files = all.slice(0, CATALOG_FILES);
+    const texts = await mapLimit(files, 6, file => this.read({ origin, path: file }).catch(() => ''));
+    const entries = files.flatMap((file, i) => {
+      const text = texts[i];
+      const declares = text.split(/\r?\n/).some(l => l.startsWith('parameters:'));
+      return declares ? [{ path: file, kind: templateKind(text), parameters: parsePipelineParameters(text) }] : [];
+    });
+    return { entries, truncated: all.length > files.length };
+  }
+
+  private async yamlFiles(origin: Origin): Promise<string[]> {
+    if (origin.kind === 'local') {
+      const found = await vscode.workspace.findFiles(new vscode.RelativePattern(origin.root, '**/*.{yml,yaml}'), '**/node_modules/**', 1000);
+      return found.map(f => toRepoPath(origin.root, f.fsPath));
+    }
+    const id = await this.repoId(origin.project, origin.repo);
+    const paths = await this.client.forProject(origin.project).listFilePaths(id, origin.ref);
+    return paths.filter(p => /\.ya?ml$/i.test(p));
+  }
+
+  /** Tags and branches of an Azure Repos repository resource (empty for GitHub and other external repositories). */
+  async refsOf(repo: RepoResource): Promise<{ tags: string[]; branches: string[] }> {
+    if (repo.type !== 'git') {
+      return { tags: [], branches: [] };
+    }
+    const { project, name } = this.splitName(repo);
+    if (!project) {
+      throw new Error('Azure DevOps is not configured yet.');
+    }
+    return this.client.forProject(project).listRefNames(await this.repoId(project, name));
+  }
+
+  /** `Project/repo` or `repo` (the current project) of a repository resource. */
+  private splitName(repo: RepoResource): { project: string; name: string } {
+    const slash = repo.name.indexOf('/');
+    return slash > 0
+      ? { project: repo.name.slice(0, slash), name: repo.name.slice(slash + 1) }
+      : { project: this.connections.current?.project ?? '', name: repo.name };
+  }
+
+  /**
    * Where a repository resource is read from. A local clone in the workspace wins when
    * `azureDevOps.yaml.preferLocalRepositories` is on (so unpushed template changes count); GitHub and other
    * external repositories can only be read from a local clone, because credentials only go to Azure DevOps.
    */
   originOf(repo: RepoResource): Origin {
-    const conn = this.connections.current;
-    const slash = repo.name.indexOf('/');
-    const project = slash > 0 ? repo.name.slice(0, slash) : conn?.project ?? '';
-    const name = slash > 0 ? repo.name.slice(slash + 1) : repo.name;
+    const { project, name } = this.splitName(repo);
     const isAzure = repo.type === 'git';
     const preferLocal = vscode.workspace.getConfiguration('azureDevOps').get<boolean>('yaml.preferLocalRepositories', true);
     const local = isAzure ? this.localClone(project, name) : workspaceFolderNamed(name.split('/').pop() ?? name);

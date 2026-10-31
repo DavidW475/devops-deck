@@ -70,6 +70,17 @@ const PR_PATH = `${P}git/repositories/web-shop/pullRequests/7`;
 
 const cases: Case[] = [
   {
+    name: 'listFilePaths lists blobs recursively at a tag', call: c => c.listFilePaths('repo-1', 'refs/tags/v2.1'),
+    reply: { value: [{ path: '/', isFolder: true }, { path: '/build', gitObjectType: 'tree' }, { path: '/build/dotnet.yml', gitObjectType: 'blob' }] },
+    path: `${P}git/repositories/repo-1/items`,
+    query: { scopePath: '/', recursionLevel: 'Full', 'versionDescriptor.version': 'v2.1', 'versionDescriptor.versionType': 'tag' }, result: ['/build/dotnet.yml'],
+  },
+  {
+    name: 'listRefNames reads tags and branches', call: c => c.listRefNames('repo-1'),
+    reply: { value: [{ name: 'refs/heads/main' }] }, path: `${P}git/repositories/repo-1/refs`, query: { filter: 'heads/', $top: '500' },
+    result: { tags: ['refs/heads/main'], branches: ['refs/heads/main'] },
+  },
+  {
     name: 'listProjects sorts the project names', call: c => c.listProjects(),
     reply: { value: [{ name: 'Zeta' }, { name: 'Alpha' }] }, path: `${O}projects`, query: { $top: '500' }, result: ['Alpha', 'Zeta'],
   },

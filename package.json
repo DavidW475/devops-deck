@@ -2,7 +2,7 @@
   "name": "devops-deck",
   "displayName": "DevOps Deck for Azure DevOps",
   "description": "Review and create pull requests, plan sprints, manage work items, watch pipelines with live logs, approve deployments and browse the wiki from inside VS Code.",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "publisher": "davidw475",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -361,6 +361,12 @@
         "title": "Show Pipeline Preview",
         "category": "DevOps Deck",
         "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "azureDevOps.yaml.openDesigner",
+        "title": "Open Pipeline Designer",
+        "category": "DevOps Deck",
+        "icon": "$(edit)"
       }
     ],
     "keybindings": [
@@ -467,6 +473,11 @@
           "command": "azureDevOps.yaml.showPreview",
           "when": "resourceLangId == yaml || resourceLangId == azure-pipelines || resourceScheme == ado-template",
           "group": "1_ado@6"
+        },
+        {
+          "command": "azureDevOps.yaml.openDesigner",
+          "when": "resourceScheme == file && (resourceLangId == yaml || resourceLangId == azure-pipelines)",
+          "group": "1_ado@7"
         }
       ],
       "editor/title": [
@@ -693,6 +704,10 @@
         {
           "command": "azureDevOps.yaml.showPreview",
           "when": "editorLangId == yaml || editorLangId == azure-pipelines"
+        },
+        {
+          "command": "azureDevOps.yaml.openDesigner",
+          "when": "resourceScheme == file && (editorLangId == yaml || editorLangId == azure-pipelines)"
         }
       ],
       "view/item/context": [
@@ -991,6 +1006,11 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Read templates of a repository resource (`template: file.yml@alias`) from a local clone in the workspace when there is one, so unpushed template changes count. Turn off to always read Azure Repos repositories from the server at the resource's `ref`."
+        },
+        "azureDevOps.yaml.designerCodeLens": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show \"Open in Designer\" above `template:` and `extends:` calls in pipeline YAML. The designer edits the parameters of a call in a form, inserts calls of templates from a template repository and validates the result with Azure DevOps."
         }
       }
     },

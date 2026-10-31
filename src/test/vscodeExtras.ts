@@ -32,8 +32,12 @@ export class Range {
 
 export class WorkspaceEdit {
   readonly inserts: { uri: unknown; at: Position; text: string }[] = [];
+  readonly replaces: { uri: unknown; range: Range; text: string }[] = [];
   insert(uri: unknown, at: Position, text: string): void {
     this.inserts.push({ uri, at, text });
+  }
+  replace(uri: unknown, range: Range, text: string): void {
+    this.replaces.push({ uri, range, text });
   }
 }
 
@@ -247,6 +251,9 @@ class Hover {
 class Location {
   constructor(readonly uri: unknown, readonly range: unknown) {}
 }
+class CodeLens {
+  constructor(readonly range: unknown, readonly command?: { title: string; command: string; arguments?: unknown[] }) {}
+}
 class RelativePattern {
   constructor(readonly base: string, readonly pattern: string) {}
 }
@@ -273,6 +280,7 @@ s.languages = {
   registerCompletionItemProvider: register('completion'),
   registerHoverProvider: register('hover'),
   registerDefinitionProvider: register('definition'),
+  registerCodeLensProvider: register('codeLens'),
 };
 s.Diagnostic ??= Diagnostic;
 s.DiagnosticSeverity ??= { Error: 0, Warning: 1, Information: 2, Hint: 3 };
@@ -282,6 +290,7 @@ s.SnippetString ??= SnippetString;
 s.Hover ??= Hover;
 s.Location ??= Location;
 s.RelativePattern ??= RelativePattern;
+s.CodeLens ??= CodeLens;
 s.ViewColumn.Beside ??= -2;
 const fileError = (p: string) => Object.assign(new Error(`not found: ${p}`), { code: 'FileNotFound' });
 s.workspace.fs = {

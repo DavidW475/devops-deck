@@ -21,6 +21,22 @@
     vscode.setState({ selected });
   }
 
+  /** HTML last written per part: a new model that leaves a part as it was does not touch its DOM. */
+  const written = new Map();
+
+  /** Writes `html` into the element `id` unless it shows the same already (`key` stands for what it shows); returns whether it wrote. */
+  function write(id, html, key = html) {
+    if (written.get(id) === key) return false;
+    written.set(id, key);
+    $(id).innerHTML = html;
+    return true;
+  }
+
+  function setText(id, text) {
+    const el = $(id);
+    if (el.textContent !== text) el.textContent = text;
+  }
+
   function sourceLink(i) {
     const s = state.model && typeof i === 'number' ? state.model.sources[i] : undefined;
     return s ? `<button class="pv-src" data-src="${i}" title="Open ${esc(s.label)} at line ${s.line}">${esc(s.label.split(' · ')[0])}:${s.line}</button>` : '';
@@ -30,9 +46,9 @@
 
   // ---------- header, parameters, messages ----------
   function renderHead(m) {
-    $('title').textContent = m.title || 'Pipeline';
-    $('info').textContent = m.info || '';
-    $('hint').textContent = HINT[m.mode] || '';
+    setText('title', m.title || 'Pipeline');
+    setText('info', m.info || '');
+    setText('hint', HINT[m.mode] || '');
     document.querySelectorAll('[data-mode]').forEach((b) => b.classList.toggle('active', /** @type {HTMLElement} */ (b).dataset.mode === m.mode));
   }
 
@@ -57,16 +73,29 @@
     return `<label for="p-${esc(p.name)}">${esc(p.displayName || p.name)}<span class="muted small">${esc(p.type)}${required}</span></label>${paramControl(p)}`;
   }
 
-  function renderParams(params) {
-    const el = $('params');
-    if (!params || !params.length) {
-      el.innerHTML = '';
-      return;
-    }
+  function paramsHtml(params) {
+    if (!params || !params.length) return '';
     const reset = params.some((p) => p.changed) ? '<button class="link" id="resetParams">Reset</button>' : '';
     const rows = params.map(paramRow).join('');
-    el.innerHTML = `<details class="card pv-params" open><summary>Runtime parameters <span class="count">${params.length}</span>${reset}</summary>
+    return `<details class="card pv-params" open><summary>Runtime parameters <span class="count">${params.length}</span>${reset}</summary>
       <div class="pv-grid">${rows}</div></details>`;
+  }
+
+  /** Rewrites the parameters only when they changed, keeping a collapsed list collapsed and the focused field focused. */
+  function renderParams(params) {
+    const el = $('params');
+    const collapsed = el.querySelector('details')?.open === false;
+    const active = /** @type {HTMLInputElement | null} */ (document.activeElement);
+    const focus = active && active.id && el.contains(active)
+      ? { id: active.id, value: active.value, start: active.selectionStart, end: active.selectionEnd } : undefined;
+    if (!write('params', paramsHtml(params))) return;
+    if (collapsed) el.querySelector('details')?.removeAttribute('open');
+    const again = focus && /** @type {HTMLInputElement | null} */ (document.getElementById(focus.id));
+    if (!again) return;
+    again.focus();
+    if (again.value === focus.value && typeof focus.start === 'number') {
+      try { again.setSelectionRange(focus.start, focus.end); } catch { /* no text selection in this kind of field */ }
+    }
   }
 
   function renderMessages(m) {
@@ -78,7 +107,7 @@
       const items = m.warnings.map((w) => '<li>' + esc(w) + '</li>').join('');
       parts.push(`<details class="pv-warn"${open}><summary>${plural(m.warnings.length, 'warning')}</summary><ul>${items}</ul></details>`);
     }
-    $('messages').innerHTML = parts.join('');
+    write('messages', parts.join(''));
   }
 
   // ---------- stage graph ----------
@@ -94,11 +123,15 @@
   function renderGraph() {
     const stages = state.model ? state.model.stages : [];
     const wrap = $('graphWrap');
+    const wasHidden = wrap.hidden;
     wrap.hidden = !stages.length;
     if (wrap.hidden) return;
     const count = Math.max(0, ...stages.map((s) => s.column)) + 1;
     const cols = Array.from({ length: count }, (_, i) => stages.filter((s) => s.column === i));
-    $('graph').innerHTML = '<svg class="edges" aria-hidden="true"></svg>' + cols.map((c) => '<div class="col">' + c.map(stageCard).join('') + '</div>').join('');
+    const html = '<svg class="edges" aria-hidden="true"></svg>' + cols.map((c) => '<div class="col">' + c.map(stageCard).join('') + '</div>').join('');
+    // The same cards in the same places: the edges drawn last time still fit (dependencies are part of the cards' columns).
+    const edges = JSON.stringify(stages.map((s) => s.dependsOn));
+    if (!write('graph', html, html + edges) && !wasHidden) return;
     requestAnimationFrame(() => drawEdges(stages));
   }
 
@@ -150,16 +183,16 @@
     const stages = state.model ? state.model.stages : [];
     const stage = stages.find((s) => s.id === selected) || stages[0];
     if (!stage) {
-      $('jobs').innerHTML = state.model ? '<p class="muted">The expanded pipeline has no stages, jobs or steps.</p>' : '';
+      write('jobs', state.model ? '<p class="muted">The expanded pipeline has no stages, jobs or steps.</p>' : '');
       return;
     }
     const meta = [chip('pool', stage.pool), chip('depends on', stage.dependsOn.join(', ') || 'none'), chip('condition', stage.condition)].join('');
     const c = state.model.counts;
-    $('jobs').innerHTML = `<div class="pv-stage-head"><h2>${esc(stage.name)}</h2><span class="spacer"></span>${sourceLink(stage.source)}</div>
+    write('jobs', `<div class="pv-stage-head"><h2>${esc(stage.name)}</h2><span class="spacer"></span>${sourceLink(stage.source)}</div>
       <div class="pv-meta">${meta}</div>
       ${stage.error ? `<div class="step-errors">${esc(stage.error)}</div>` : ''}
       ${stage.jobs.map(jobHtml).join('') || '<p class="muted">No jobs.</p>'}
-      <p class="muted small">${plural(c.stages, 'stage')} · ${plural(c.jobs, 'job')} · ${plural(c.steps, 'step')} in total</p>`;
+      <p class="muted small">${plural(c.stages, 'stage')} · ${plural(c.jobs, 'job')} · ${plural(c.steps, 'step')} in total</p>`);
   }
 
   function render(m) {
@@ -174,10 +207,10 @@
   window.addEventListener('message', (e) => {
     const m = e.data || {};
     if (m.type === 'busy') {
-      document.body.classList.add('pv-busy');
+      document.body.classList.add('pv-busy', 'updating');
       renderHead(m);
     } else if (m.type === 'model' || m.type === 'error') {
-      document.body.classList.remove('pv-busy');
+      document.body.classList.remove('pv-busy', 'updating');
       state = { mode: m.mode, model: m.type === 'model' ? m.model : undefined };
       render({ ...m, error: m.type === 'error' ? m.message : undefined });
     }
@@ -199,6 +232,8 @@
       renderJobs();
     } else if (t.id === 'refresh') {
       vscode.postMessage({ type: 'refresh' });
+    } else if (t.id === 'designer') {
+      vscode.postMessage({ type: 'designer' });
     } else if (t.id === 'resetParams') {
       e.preventDefault();
       vscode.postMessage({ type: 'resetParams' });
@@ -222,6 +257,14 @@
     }
   });
 
-  window.addEventListener('resize', () => state.model && drawEdges(state.model.stages));
+  // One edge layout per frame while the panel is resized.
+  let resizeFrame = 0;
+  window.addEventListener('resize', () => {
+    if (resizeFrame) return;
+    resizeFrame = requestAnimationFrame(() => {
+      resizeFrame = 0;
+      if (state.model) drawEdges(state.model.stages);
+    });
+  });
   vscode.postMessage({ type: 'ready' });
 })();

@@ -47,19 +47,34 @@
       </div></div>`;
   }
 
+  /** The filtered branches on screen and the scale of their ahead/behind bars. */
+  let view = { list: [], max: 1 };
+
+  function moreButton() {
+    const rest = view.list.length - shown;
+    return rest > 0 ? `<button class="btn ghost more" data-act="more">Show ${Math.min(PAGE, rest)} more of ${rest}</button>` : '';
+  }
+
   function render() {
     const q = filter.toLowerCase();
     const list = q ? state.branches.filter((b) => b.name.toLowerCase().includes(q) || (b.author || '').toLowerCase().includes(q)) : state.branches;
-    const max = Math.max(1, ...list.map((b) => Math.max(b.ahead, b.behind)));
+    view = { list, max: Math.max(1, ...list.map((b) => Math.max(b.ahead, b.behind))) };
     const count = state.branches.length;
     const base = state.base ? ' · compared with ' + state.base : '';
     $('subtitle').textContent = `${count} ${count === 1 ? 'branch' : 'branches'}${base}`;
-    const rest = list.length - shown;
-    const more = rest > 0 ? `<button class="btn ghost more" data-act="more">Show ${Math.min(PAGE, rest)} more of ${rest}</button>` : '';
     const emptyText = count ? 'No branch matches the filter.' : 'This repository has no branches yet.';
     const empty = list.length ? '' : `<p class="muted pad">${emptyText}</p>`;
-    $('list').innerHTML = list.slice(0, shown).map((b) => row(b, max)).join('') + more + empty;
+    $('list').innerHTML = list.slice(0, shown).map((b) => row(b, view.max)).join('') + moreButton() + empty;
     $('clone').hidden = state.cloned;
+  }
+
+  /** The next page goes below the rows already shown instead of rendering the whole list again. */
+  function showMore() {
+    const from = shown;
+    shown += PAGE;
+    const list = $('list');
+    list.querySelector('.more')?.remove();
+    list.insertAdjacentHTML('beforeend', view.list.slice(from, shown).map((b) => row(b, view.max)).join('') + moreButton());
   }
 
   $('repo').addEventListener('change', (e) => {
@@ -70,12 +85,18 @@
   let t = 0;
   $('filter').addEventListener('input', (e) => {
     clearTimeout(t);
-    t = setTimeout(() => { filter = /** @type {HTMLInputElement} */ (e.target).value.trim(); shown = PAGE; render(); }, 120);
+    t = setTimeout(() => {
+      const next = /** @type {HTMLInputElement} */ (e.target).value.trim();
+      if (next === filter) return; // only spaces were typed
+      filter = next;
+      shown = PAGE;
+      requestAnimationFrame(render);
+    }, 120);
   });
   document.addEventListener('click', (e) => {
     const el = /** @type {HTMLElement | null} */ (/** @type {HTMLElement} */ (e.target).closest('[data-act]'));
     if (!el) return;
-    if (el.dataset.act === 'more') { shown += PAGE; render(); return; }
+    if (el.dataset.act === 'more') { showMore(); return; }
     vscode.postMessage({ type: el.dataset.act, branch: el.dataset.branch, from: el.dataset.from });
   });
 

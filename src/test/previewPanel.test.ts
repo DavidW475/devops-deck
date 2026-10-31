@@ -71,6 +71,8 @@ describe('PipelinePreviewPanel', () => {
     await web.send({ type: 'open', source: 0 });
     assert.equal(String(openedDocs.at(-1)), 'file:///work/contoso-app/stages.yml');
     assert.equal(shownDocs.length, 1);
+    await web.send({ type: 'designer' });
+    assert.deepEqual(vscode.executed.at(-1), ['azureDevOps.yaml.openDesigner', doc.uri]);
     await web.send({ type: 'open', source: 5 });
     await web.send({ type: 'open', source: 'x' });
     assert.equal(shownDocs.length, 1);

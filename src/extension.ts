@@ -5,6 +5,7 @@ import { BuildLogTerminal, LOG_SCHEME, LogDocumentProvider, makeLogUri } from '.
 import { answerApproval } from './pipelines/approvals';
 import { RunPipelinePanel } from './pipelines/runPanel';
 import { RunViewPanel } from './pipelines/runView';
+import { DesignerCodeLens, DesignerHost, PipelineDesignerPanel } from './pipelines/designerPanel';
 import { PipelinePreviewPanel, PreviewMode } from './pipelines/previewPanel';
 import { YamlTemplateSupport } from './pipelines/yamlTemplates';
 import { PrCommentController } from './pullRequests/prComments';
@@ -38,6 +39,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const yamlTemplates = new YamlTemplateSupport(client, connections).register();
   PullRequestPanel.useStore(context.globalState);
   PipelinePreviewPanel.useStore(context.globalState);
+  const designerLens = new DesignerCodeLens();
+  const designerHost: DesignerHost = {
+    resolver: yamlTemplates.resolver,
+    expandOnServer: (doc, params, definitionId, text) => yamlTemplates.expandOnServer(doc, params, definitionId, text),
+    client,
+  };
   const refresh = () => {
     sidebar.refresh();
     prStatus.refresh();
@@ -63,6 +70,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     reviewed,
     prStatus,
     yamlTemplates,
+    designerLens,
+    vscode.languages.registerCodeLensProvider([{ language: 'yaml', scheme: 'file' }, { language: 'azure-pipelines', scheme: 'file' }], designerLens),
     vscode.languages.registerCodeActionsProvider({ scheme: 'file' }, new TodoCodeActions(), { providedCodeActionKinds: TodoCodeActions.kinds }),
     vscode.window.registerWebviewViewProvider('azureDevOps.dashboard', sidebar, { webviewOptions: { retainContextWhenHidden: true } }),
     vscode.workspace.registerTextDocumentContentProvider(PR_SCHEME, new PrContentProvider(client)),
@@ -74,6 +83,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       refresh();
     }),
     vscode.workspace.onDidChangeConfiguration(e => {
+      if (e.affectsConfiguration('azureDevOps.yaml.designerCodeLens')) {
+        designerLens.refresh();
+      }
       if (e.affectsConfiguration('azureDevOps')) {
         client.reset();
         void connections.resolve().then(refresh);
@@ -282,6 +294,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return;
     }
     PipelinePreviewPanel.show(yamlTemplates, context.extensionUri, doc, mode === 'local' || mode === 'server' ? mode : undefined);
+  });
+  command('azureDevOps.yaml.openDesigner', async (uri?: vscode.Uri, line?: number) => {
+    const editor = vscode.window.activeTextEditor;
+    const doc = uri instanceof vscode.Uri ? await vscode.workspace.openTextDocument(uri) : editor?.document;
+    if (!doc) {
+      void vscode.window.showInformationMessage('Open an Azure Pipelines YAML file first.');
+      return;
+    }
+    const cursor = editor?.document.uri.toString() === doc.uri.toString() ? editor.selection.active.line : undefined;
+    PipelineDesignerPanel.show(designerHost, context.extensionUri, doc, typeof line === 'number' && Number.isInteger(line) ? line : cursor);
   });
   command('azureDevOps.yaml.previewPipeline', (uri?: vscode.Uri) => yamlTemplates.previewPipeline(uri instanceof vscode.Uri ? uri : undefined));
 

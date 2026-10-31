@@ -66,7 +66,8 @@ export type CompletionContext =
   | { kind: 'value'; ref: TemplateRef; name: string }
   | { kind: 'parametersKey'; ref: TemplateRef };
 
-interface YLine {
+/** One scanned line: indentation, list dash, key and the text after the colon. */
+export interface YLine {
   n: number;
   blank: boolean;
   indent: number;
@@ -77,7 +78,7 @@ interface YLine {
   restCol: number;
 }
 
-const isExpression = (s: string) => s.includes('${{') || s.includes('$[') || s.includes('$(');
+export const isExpression = (s: string) => s.includes('${{') || s.includes('$[') || s.includes('$(');
 
 /** Reads a `template:` value: `path`, `path@alias`, quoted or not. Expressions can't be resolved locally. */
 export function parseTemplatePath(raw: string): TemplatePath | undefined {
@@ -139,7 +140,7 @@ function scanLine(raw: string, n: number): YLine {
 }
 
 /** Scans every line; contents of block scalars (`script: |`) count as blank so their text is never read as keys. */
-function scan(text: string): YLine[] {
+export function scanYaml(text: string): YLine[] {
   const lines = text.split(/\r?\n/).map((raw, n) => scanLine(raw, n));
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i];
@@ -153,7 +154,7 @@ function scan(text: string): YLine[] {
 }
 
 /** Nearest earlier line whose key sits left of `col` (the parent node). */
-function parentOf(lines: YLine[], i: number, col: number): YLine | undefined {
+export function parentOf(lines: YLine[], i: number, col: number): YLine | undefined {
   for (let j = i - 1; j >= 0; j--) {
     if (!lines[j].blank && lines[j].keyCol < col) {
       return lines[j];
@@ -258,7 +259,7 @@ function blockParams(lines: YLine[], p: YLine): { params: ParamEntry[]; dynamic:
 
 /** Every `template:` reference of the document with the parameters passed to it. */
 export function findTemplateRefs(text: string): TemplateRef[] {
-  const lines = scan(text);
+  const lines = scanYaml(text);
   const refs: TemplateRef[] = [];
   for (const l of lines) {
     if (l.blank || l.key !== 'template') {
@@ -291,7 +292,7 @@ export function findTemplateRefs(text: string): TemplateRef[] {
 
 /** What the user is typing at (line, col): a template path, a parameter name or value, or the `parameters` key. */
 export function completionContext(text: string, line: number, col: number): CompletionContext | undefined {
-  const lines = scan(text);
+  const lines = scanYaml(text);
   const refs = findTemplateRefs(text);
   const here = lines[line];
   if (!here) {
@@ -323,7 +324,8 @@ export function completionContext(text: string, line: number, col: number): Comp
 const isBoolean = (v: string) => /^(true|false)$/i.test(v);
 const isNumber = (v: string) => v.trim() !== '' && Number.isFinite(Number(v));
 
-function valueIssue(p: PipelineParameter, value: string): string | undefined {
+/** Why `value` does not fit the declared type or allowed values; undefined when it fits (or is empty / an expression). */
+export function valueIssue(p: PipelineParameter, value: string): string | undefined {
   if (!value || isExpression(value)) {
     return undefined;
   }

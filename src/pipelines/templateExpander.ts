@@ -287,8 +287,14 @@ export class TemplateExpander {
       chain = undefined;
       if (isObj(item) && typeof item.template === 'string') {
         out.push(...await this.include(item, f, key)); // NOSONAR: sequential on purpose, see expandMap
+        continue;
+      }
+      const value = await this.value(item, f); // NOSONAR: sequential on purpose, see expandMap
+      // `- ${{ parameters.stages }}` inserts the items of a list parameter (stepList, stageList, …) in place.
+      if (typeof item === 'string' && Array.isArray(value)) {
+        out.push(...value);
       } else {
-        out.push(await this.value(item, f)); // NOSONAR: sequential on purpose, see expandMap
+        out.push(value);
       }
     }
     return out;

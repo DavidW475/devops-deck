@@ -750,6 +750,21 @@ export class AdoClient {
     return r.content ?? '';
   }
 
+  /** Paths of every file of a repository at a `ref` (see `getFileTextAtRef`), through the Git Items API with full recursion. */
+  async listFilePaths(repoId: string, ref?: string): Promise<string[]> {
+    const r = await this.get<{ value: { path: string; isFolder?: boolean; gitObjectType?: string }[] }>('project', `git/repositories/${repoId}/items`, {
+      scopePath: '/', recursionLevel: 'Full', ...versionQuery(ref),
+    });
+    return r.value.filter(i => !i.isFolder && i.gitObjectType !== 'tree').map(i => i.path);
+  }
+
+  /** Full names of the tags (`refs/tags/…`) and branches (`refs/heads/…`) of a repository, at most 500 each. */
+  async listRefNames(repoId: string): Promise<{ tags: string[]; branches: string[] }> {
+    const [tags, branches] = await Promise.all(['tags/', 'heads/'].map(filter =>
+      this.get<{ value: { name: string }[] }>('project', `git/repositories/${repoId}/refs`, { filter, $top: 500 })));
+    return { tags: tags.value.map(r => r.name), branches: branches.value.map(r => r.name) };
+  }
+
   /** YAML pipelines whose file lives in an Azure Repos repository (with `process.yamlFilename`). */
   async listYamlDefinitions(repoId: string): Promise<T.BuildDefinition[]> {
     const r = await this.get<{ value: T.BuildDefinition[] }>('project', 'build/definitions', {

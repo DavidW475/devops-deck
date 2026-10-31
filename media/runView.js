@@ -77,6 +77,30 @@
   /** A duration that keeps ticking while `end` is not set. */
   const live = (start, end) => (start ? `<span data-live="${esc(start)}"${attrIf('data-end', end)}>${dur(start, end)}</span>` : '');
 
+  // ---------- DOM writes only for changed parts ----------
+  /** HTML last written per part, without the text of ticking durations (the 1 s ticker keeps those current). */
+  const written = new Map();
+  /** Ticking durations, found again after a part is rewritten. @type {HTMLElement[] | null} */
+  let liveEls = null;
+  const liveText = /(<span data-live="[^"<>]*">)[^<]*/g;
+
+  /**
+   * Writes `html` into `el` unless the part shows the same already, so a poll that changes nothing keeps hover, text
+   * selection, open menus and running animations. Returns whether it wrote. A part that is skipped still loses its
+   * busy buttons, as a rewrite would have done.
+   */
+  function write(key, el, html) {
+    const shape = html.replaceAll(liveText, '$1');
+    if (written.get(key) === shape) {
+      el.querySelectorAll('.busy').forEach((b) => b.classList.remove('busy'));
+      return false;
+    }
+    written.set(key, shape);
+    el.innerHTML = html;
+    liveEls = null;
+    return true;
+  }
+
   // ---------- state ----------
   const saved = vscode.getState() || {};
   /** @type {any} */
@@ -128,8 +152,9 @@
       ? `<button class="btn danger" data-act="cancel">${icon('stop')}Cancel</button>`
       : `<button class="btn" data-act="rerun" data-def="${r.definitionId}">${icon('rerun')}Run again</button>`;
     const head = $('head');
-    head.className = `rv-head rv-${runKind}`;
-    head.innerHTML = `
+    const headClass = `rv-head rv-${runKind}`;
+    if (head.className !== headClass) head.className = headClass;
+    write('head', head, `
       <div class="rv-title">${badge(runKind, 'big')}
         <div><h1>${esc(r.definitionName)} <span class="muted">#${esc(r.number)}</span></h1>
           <div class="rv-meta">
@@ -144,7 +169,7 @@
         <span class="artifacts-wrap"><button class="btn ghost" data-act="artifacts" title="Artifacts">${icon('box')}Artifacts</button><div id="artifacts" class="artifact-menu" hidden></div></span>
         <button class="btn ghost icon-only" data-act="refresh" title="Refresh">${icon('refresh')}</button>
         <button class="btn ghost icon-only" data-act="browser" title="Open in browser">${icon('external')}</button>
-      </div>`;
+      </div>`);
   }
 
   // ---------- stage graph ----------
@@ -185,18 +210,26 @@
     return col;
   }
 
+  /** Dependencies the edges were last drawn for. */
+  let drawnDeps = '';
+
   function renderGraph(stages) {
     const wrap = $('graphWrap');
+    const wasHidden = wrap.hidden;
     wrap.hidden = !stages.length || (stages.length === 1 && stages[0].id === '__jobs');
     if (wrap.hidden) return;
     const graph = $('graph');
-    const scroll = wrap.scrollLeft;
     const col = columns(stages);
     const count = Math.max(0, ...col.values()) + 1;
     const cols = Array.from({ length: count }, (_, i) => stages.filter((s) => col.get(s.id) === i));
     const completed = data.run.status === 'completed';
-    graph.innerHTML = `<svg class="edges" aria-hidden="true"></svg>` + cols.map((c) => `<div class="col">${c.map((s) => stageCard(s, completed)).join('')}</div>`).join('');
-    wrap.scrollLeft = scroll;
+    const html = `<svg class="edges" aria-hidden="true"></svg>` + cols.map((c) => `<div class="col">${c.map((s) => stageCard(s, completed)).join('')}</div>`).join('');
+    const scroll = wrap.scrollLeft;
+    const wrote = write('graph', graph, html);
+    if (wrote) wrap.scrollLeft = scroll;
+    const depsKey = JSON.stringify(deps);
+    if (!wrote && !wasHidden && depsKey === drawnDeps) return;
+    drawnDeps = depsKey;
     requestAnimationFrame(() => drawEdges(stages));
   }
 
@@ -269,8 +302,7 @@
   }
 
   function renderJobs(stage) {
-    const el = $('jobs');
-    el.innerHTML = stage ? `<h2>${esc(stage.name)}</h2>${jobsOf(stage).map((j) => jobHtml(j, stage)).join('') || '<p class="muted">No jobs in this stage yet.</p>'}` : '';
+    write('jobs', $('jobs'), stage ? `<h2>${esc(stage.name)}</h2>${jobsOf(stage).map((j) => jobHtml(j, stage)).join('') || '<p class="muted">No jobs in this stage yet.</p>'}` : '');
   }
 
   // ---------- log viewer ----------
@@ -428,7 +460,8 @@
     renderGraph(stages);
     const empty = $('empty');
     empty.hidden = !!stages.length;
-    empty.textContent = data.run.status === 'completed' ? 'No stages or jobs were recorded for this run.' : 'Waiting for an agent to pick up the run…';
+    const emptyText = data.run.status === 'completed' ? 'No stages or jobs were recorded for this run.' : 'Waiting for an agent to pick up the run…';
+    if (empty.textContent !== emptyText) empty.textContent = emptyText;
     renderJobs(stage);
     autoLog(stage);
     markActiveStep();
@@ -488,10 +521,22 @@
     if (runId && /** @type {HTMLDetailsElement} */ (t).open && !testResults.has(runId)) vscode.postMessage({ type: 'tests', runId });
   }, true);
 
-  // Tick running durations every second between polls.
-  setInterval(() => document.querySelectorAll('[data-live]:not([data-end])').forEach((el) => { el.textContent = dur(/** @type {HTMLElement} */ (el).dataset.live); }), 1000);
+  /** Ticks running durations between polls; looks them up again only after a part was rewritten. */
+  function tick() {
+    if (document.hidden) return;
+    liveEls ??= /** @type {HTMLElement[]} */ ([...document.querySelectorAll('[data-live]:not([data-end])')]);
+    for (const el of liveEls) {
+      const text = dur(el.dataset.live);
+      if (el.textContent !== text) el.textContent = text;
+    }
+  }
+  setInterval(tick, 1000);
+  document.addEventListener('visibilitychange', tick);
   let resizeTimer = 0;
-  window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => data && drawEdges(stagesOf(data.stages)), 100); });
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => requestAnimationFrame(() => data && drawEdges(stagesOf(data.stages))), 100);
+  });
 
   /** New lines of the open log: appended in place, or a full render for the first batch or while filtering. */
   function onLog(m) {
@@ -528,7 +573,7 @@
     testResults: (m) => { testResults.set(m.runId, m); renderTests(); },
     artifacts: onArtifacts,
     error: (m) => {
-      if (!data) $('head').innerHTML = `<div class="run-alert">${esc(m.message)}</div>`;
+      if (!data) write('head', $('head'), `<div class="run-alert">${esc(m.message)}</div>`);
       document.querySelectorAll('.busy').forEach((b) => b.classList.remove('busy'));
     },
   };
