@@ -181,6 +181,24 @@ describe('task form', () => {
     assert.equal(df.rows.find(r => r.name === 'target')?.error, 'A value is required.');
   });
 
+  it('marks optional inputs without a default as clearable (the segmented control offers "not set" for them only)', () => {
+    const t = task('ContosoPick', 1, {
+      inputs: [
+        tin('flavor', { type: 'picklist', options: [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }] }),
+        tin('level', { type: 'picklist', options: [{ value: 'x', label: 'X' }], default: 'x' }),
+        tin('must', { type: 'picklist', options: [{ value: 'y', label: 'Y' }], required: true }),
+      ],
+    });
+    const text = 'steps:\n- task: ContosoPick@1\n  inputs:\n    flavor: a\n';
+    const st = findTaskSteps(text)[0];
+    const f = buildTaskForm(text, t, st, asTemplateRef(st, t), {});
+    assert.deepEqual(f.rows.map(r => [r.name, r.clearable ?? false]), [['flavor', true], ['level', false], ['must', false]]);
+    // Choosing "not set" sends an empty value: the line leaves the file.
+    const cleared = buildTaskForm(text, t, st, asTemplateRef(st, t), { flavor: '' });
+    const out = applyLineEdits(text, planTaskStep({ step: st, info: t, form: cleared, text, pending: { flavor: '' }, opts: { writeDefaults: false } })).text;
+    assert.ok(!out.includes('flavor'), out);
+  });
+
   it('reads the text of a block scalar for the rules, not its header', () => {
     const t = task('ContosoRule', 1, { inputs: [tin('script', { type: 'multiline' }), tin('extra', { visibleRule: 'script = echo hi' })] });
     const text = 'steps:\n- task: ContosoRule@1\n  inputs:\n    script: |\n      echo hi\n';

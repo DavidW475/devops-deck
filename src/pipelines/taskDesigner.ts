@@ -237,7 +237,7 @@ function taskRow(view: ParamView, input: TaskInput, hidden: boolean, p: Pipeline
   const control = simple && isExpression(view.value) ? 'text' : view.control;
   return {
     ...view, control, error, default: view.default === '' ? undefined : view.default, typeLabel: input.type, help: plainHelp(input.help ?? ''),
-    group: input.group || undefined, hidden: hidden || undefined,
+    group: input.group || undefined, hidden: hidden || undefined, clearable: p.unsetWhenBlank ? true : undefined,
   };
 }
 

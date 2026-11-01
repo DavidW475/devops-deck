@@ -40,6 +40,8 @@ export interface ParamView {
   group?: string;
   /** task inputs: the rule hides it, but the file sets it */
   hidden?: boolean;
+  /** task inputs: optional without a default, so a value can be taken back (unset) */
+  clearable?: boolean;
 }
 
 export interface StructureItem {

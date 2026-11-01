@@ -177,8 +177,11 @@
       const options = unset + other + p.values.map((v) => `<option${v === p.value ? ' selected' : ''}>${esc(v)}</option>`).join('');
       return `<select class="pd-select" id="p-${esc(p.name)}" data-param="${esc(p.name)}"${disabled}>${options}</select>`;
     }
+    // An optional input without a default can go back to "not set" (the line leaves the file).
+    const clear = p.clearable && p.value !== ''
+      ? `<button class="pd-opt pd-unset" data-param="${esc(p.name)}" data-val="" title="Remove the value from the file"${disabled}>(not set)</button>` : '';
     return '<div class="pd-seg" role="group">' + p.values.map((v) =>
-      `<button class="pd-opt${v === p.value ? ' on' : ''}" data-param="${esc(p.name)}" data-val="${esc(v)}" aria-pressed="${v === p.value}"${disabled}>${esc(v)}</button>`).join('') + '</div>';
+      `<button class="pd-opt${v === p.value ? ' on' : ''}" data-param="${esc(p.name)}" data-val="${esc(v)}" aria-pressed="${v === p.value}"${disabled}>${esc(v)}</button>`).join('') + clear + '</div>';
   }
 
   function control(p) {
