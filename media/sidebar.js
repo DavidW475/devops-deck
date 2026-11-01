@@ -649,8 +649,9 @@
       const el = document.getElementById('tabs');
       const active = el?.querySelector('.tab.active');
       if (!el || !(active instanceof HTMLElement)) return;
-      el.style.setProperty('--x', `${active.offsetLeft - 3}px`);
-      el.style.setProperty('--w', `${active.offsetWidth}px`);
+      // Unitless: the indicator is one pixel wide and scaled, so sliding and resizing never trigger layout.
+      el.style.setProperty('--x', String(active.offsetLeft));
+      el.style.setProperty('--w', String(active.offsetWidth));
       if (!el.classList.contains('ready')) requestAnimationFrame(() => el.classList.add('ready'));
     });
   }
@@ -947,7 +948,7 @@
               <span class="state" style="--state:${esc(stateColor)}"><span class="state-dot"></span>${esc(w.state)}</span>
               ${wiExtras(w)}
               <span class="grow"></span>
-              ${w.assignedTo ? avatar(w.assignedTo, 'sm') : '<span class="avatar sm empty" title="Unassigned">?</span>'}
+              ${w.assignedTo ? avatar(w.assignedTo, 'sm') : '<span class="avatar sm none" title="Unassigned">?</span>'}
             </div>
             ${w.tags.length ? '<div class="tags">' + w.tags.slice(0, 4).map((t) => '<span class="tag">' + esc(t) + '</span>').join('') + '</div>' : ''}
           </div>
