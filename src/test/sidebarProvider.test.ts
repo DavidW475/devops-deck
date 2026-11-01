@@ -67,6 +67,7 @@ function fakeClient(calls: Calls, opts: { iterations?: TeamIteration[]; failing?
         return [pr(1, project, '2026-10-01T08:00:00Z'), pr(2, project, '2026-10-03T08:00:00Z'), pr(3, project, '2026-10-02T08:00:00Z')];
       },
       getPolicyEvaluations: async (_projectId: string, prId: number) => {
+        record('getPolicyEvaluations', [prId]);
         if (prId === 2) {
           throw new Error('no access');
         }
@@ -276,6 +277,19 @@ describe('SidebarProvider', () => {
     await rpc('prs', { filter: 'mine' });
     await rpc('prs', { filter: 'all' });
     assert.deepEqual(calls.listPullRequests.slice(1).map(c => c[1]), [{ creatorId: 'me' }, {}]);
+  });
+
+  it('asks for the checks of a PR once in a burst, again when forced or refreshed', async () => {
+    const { rpc, provider } = resolve();
+    await rpc('prs', { filter: 'review' });
+    assert.equal(calls.getPolicyEvaluations.length, 2);
+    await rpc('prs', { filter: 'mine' });
+    assert.equal(calls.getPolicyEvaluations.length, 2);
+    await rpc('prs', { filter: 'mine', force: true });
+    assert.equal(calls.getPolicyEvaluations.length, 4);
+    provider.refresh();
+    await rpc('prs', { filter: 'mine' });
+    assert.equal(calls.getPolicyEvaluations.length, 6);
   });
 
   it('lists PR files with reviewed marks and stores reviews', async () => {
