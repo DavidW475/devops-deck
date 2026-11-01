@@ -16,6 +16,7 @@ function memento() {
 
 const secrets = new Map<string, string>();
 const requests: string[] = [];
+let taskReply: unknown[] | undefined;
 const context = {
   subscriptions: [] as { dispose(): unknown }[],
   secrets: {
@@ -36,6 +37,9 @@ async function fakeFetch(url: string | URL, init?: RequestInit): Promise<Respons
   requests.push(u);
   if (u.includes('/_apis/projects')) {
     return json({ value: [{ name: 'Fabrikam Shop' }, { name: 'Contoso Web' }] });
+  }
+  if (u.includes('/_apis/distributedtask/tasks') && taskReply) {
+    return json({ value: taskReply });
   }
   if (u.includes('/_apis/build/definitions/5?')) {
     return json({ id: 5, name: 'Contoso CI' });
@@ -93,6 +97,17 @@ describe('activate', () => {
     await run('azureDevOps.setPat');
     assert.equal(secrets.get('azureDevOps.pat'), 'new-pat');
     assert.equal(vscode.settings['azureDevOps.authMethod'], 'pat');
+  });
+
+  it('refreshes the task catalog and reports the outcome', async () => {
+    taskReply = undefined;
+    await run('azureDevOps.yaml.refreshTaskCatalog');
+    assert.match(vscode.messages.at(-1)!, /Could not read the tasks of the organization.*Agent Pools \(Read\)/);
+    taskReply = [{ id: 'g1', name: 'ContosoDeploy', friendlyName: 'Contoso deploy', version: { major: 1, minor: 0, patch: 0 } }];
+    w.showInformationMessage = async (m: string) => { vscode.messages.push(m); return undefined; };
+    await run('azureDevOps.yaml.refreshTaskCatalog');
+    assert.equal(vscode.messages.at(-1), 'Task catalog refreshed: 1 task.');
+    taskReply = undefined;
   });
 
   it('runs the pipeline YAML commands for the active editor', async () => {

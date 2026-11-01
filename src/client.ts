@@ -220,6 +220,15 @@ export class AdoClient {
     return r.value.map(p => p.name).sort((a, b) => a.localeCompare(b));
   }
 
+  /**
+   * The task definitions of the organization. The route `distributedtask/tasks` is not part of the public REST reference
+   * (it exists in Microsoft's generated client), so the response shape is unverified; callers must validate it.
+   */
+  async listTaskDefinitions(): Promise<T.TaskDefinition[]> {
+    const r = await this.get<{ value?: T.TaskDefinition[] }>('org', 'distributedtask/tasks');
+    return Array.isArray(r?.value) ? r.value : [];
+  }
+
   // ---------- pull requests ----------
 
   async listPullRequests(criteria: { creatorId?: string; reviewerId?: string }): Promise<T.PullRequest[]> {

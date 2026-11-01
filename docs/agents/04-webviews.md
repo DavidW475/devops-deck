@@ -1,6 +1,6 @@
 # Webviews
 
-Two kinds: the sidebar dashboard (`SidebarProvider` + `media/sidebar.js`) and editor panels (see [architecture.md](architecture.md#editor-panels)). Webviews run with `enableScripts: true` and `localResourceRoots` limited to `media/`.
+Two kinds: the sidebar dashboard (`SidebarProvider` + `media/sidebar.js`) and editor panels (see [01-architecture.md](01-architecture.md#editor-panels)). Webviews run with `enableScripts: true` and `localResourceRoots` limited to `media/`.
 
 ## CSP and nonce
 

@@ -43,10 +43,10 @@ export class PreviewError extends Error {
   }
 }
 
-const SELECTOR: vscode.DocumentSelector = [{ language: 'yaml' }, { language: 'azure-pipelines' }, { scheme: TEMPLATE_SCHEME }];
+export const SELECTOR: vscode.DocumentSelector = [{ language: 'yaml' }, { language: 'azure-pipelines' }, { scheme: TEMPLATE_SCHEME }];
 const DEBOUNCE_MS = 600;
 
-const isPipelineDoc = (d: vscode.TextDocument) =>
+export const isPipelineDoc = (d: vscode.TextDocument) =>
   d.uri.scheme === TEMPLATE_SCHEME || ((d.languageId === 'yaml' || d.languageId === 'azure-pipelines') && d.uri.scheme === 'file');
 
 /** Line of `- name: <name>` (or a legacy `<name>:` key) in a template, for go to definition. */

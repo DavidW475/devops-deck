@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Task support in pipeline YAML: completion of `- task:` names (deprecated and retiring ones last), majors, `inputs:`, input names (required first, hidden inputs left out) and values; hover with description, version, deprecation or retirement, newer major, input type, visibility condition and help; checks for tasks that are not installed, missing required inputs, unknown inputs, values outside the allowed ones, deprecated and retired tasks (Microsoft retires many built-in tasks on 2026-11-24) and newer major versions; quick fixes add an input, raise the version or refresh the catalog. The tasks come from the organization (cached 24 hours, refreshed in the background). New command *Refresh Task Catalog* and settings `azureDevOps.yaml.taskSupport`, `.taskDiagnostics` and `.taskVersionHints`
+
+- Pipeline designer for task steps: *Open in Designer* above `- task:` lines, task steps in the structure strip, and a form with the version, display name and inputs in groups. Inputs show and hide with the task's `visibleRule` as values change (a hidden input that the file sets stays, marked), multi-line inputs such as `inlineScript` are text areas that keep the block scalar header, and help texts are plain text. Changes are written as line edits like for templates; changing the version edits only the `task:` line. Steps with expression-built inputs are read-only
+- Pipeline designer task catalog: a *Templates* / *Tasks* switch lists the tasks of the organization by category with version chips and a collapsible *Deprecated* list, with loading, error (naming the Agent Pools scope) and offline states, the age of the list and a reload button. A picked task opens a new-step form with a choice of the `steps:` list and a preview; *Insert into pipeline* writes the step
+
+### Changed
+
+- Personal access tokens need the scope **Agent Pools** (Read) for the task catalog; without it, only the task help is missing
+
 ## 1.1.0
 
 ### Added

@@ -1,8 +1,9 @@
 import * as assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
-  catalogItems, excerpt, fullPreview, paramViews, refLabel, refOptions, structure, targetPathIn, templatePathFor, topLevelBlock, unknownParams,
+  catalogItems, excerpt, fullPreview, itemAt, paramViews, refLabel, refOptions, structure, targetPathIn, templatePathFor, topLevelBlock, unknownParams,
 } from '../pipelines/designerModel';
+import { findTaskSteps } from '../pipelines/taskRefs';
 import { findTemplateRefs } from '../pipelines/templateRefs';
 
 const TEXT = [
@@ -169,5 +170,64 @@ describe('designer model', () => {
     const items = catalogItems([{ path: '/a.yml', parameters: [] }, { path: '/build/B.yml', kind: 'steps', parameters: [{ name: 'x', type: 'string' }] }],
       new Set(['/build/b.yml']), '/a.yml');
     assert.deepEqual(items.map(i => [i.folder, i.file, i.params, i.used, i.selected]), [['', 'a.yml', 0, false, true], ['build', 'B.yml', 1, true, false]]);
+  });
+});
+
+describe('designer model: task steps', () => {
+  const TASKS = [
+    'stages:', '- stage: Build', '  jobs:', '  - job: A', '    steps:', '    - task: DotNet@2', '    - template: steps/lint.yml',
+    '    - task: Npm@1', '- stage: Deploy', '  jobs:', '  - job: B', '    steps:', '    - task: ${{ parameters.t }}',
+  ].join('\n');
+
+  it('lists task steps with template calls in document order, marks the selected one and the new item', () => {
+    const refs = findTemplateRefs(TASKS);
+    const steps = findTaskSteps(TASKS);
+    const groups = structure(TASKS, refs, undefined, undefined, { steps, selected: 1 });
+    assert.deepEqual(groups.map(g => [g.name, g.items.map(i => [i.label, i.kind, i.index, i.selected])]), [
+      ['Build', [['DotNet@2', 'task', 0, false], ['lint.yml', 'template', 0, false], ['Npm@1', 'task', 1, true]]],
+      ['Deploy', [['${{ parameters.t }}', 'task', 2, false]]],
+    ]);
+    assert.equal(groups[0].items[0].title, 'Task step, line 6');
+    const added = structure(TASKS, refs, 0, { label: 'AzureCLI@3', stage: 'Deploy', kind: 'task' }, { steps });
+    assert.deepEqual(added[1].items.at(-1), { label: 'AzureCLI@3', title: 'New (not inserted yet)', kind: 'task', index: undefined, isNew: true, selected: true });
+    assert.equal(added[0].items[1].selected, true);
+    assert.equal(structure('stages:\n- stage: S\n', [], undefined, { label: 'x.yml' }).find(g => g.name === 'Pipeline')?.items[0].kind, 'template');
+    assert.deepEqual(structure('steps:\n- task: \n', [], undefined, undefined, { steps: findTaskSteps('steps:\n- task: \n') })[0].items[0].label, '(no task)');
+  });
+
+  it('picks what a line belongs to: a step or call starting there, one containing it, the nearest above, the first', () => {
+    const refs = findTemplateRefs(TASKS);
+    const steps = findTaskSteps(TASKS);
+    const calls = refs.map(r => ({ line: r.line, last: r.end }));
+    const spans = steps.map(t => ({ line: t.line, last: t.end - 1 }));
+    assert.deepEqual(itemAt(calls, spans, 5), { kind: 'task', index: 0 });
+    assert.deepEqual(itemAt(calls, spans, 6), { kind: 'call', index: 0 });
+    assert.deepEqual(itemAt(calls, spans, 8), { kind: 'task', index: 1 }, 'a line below the last item of a list belongs to the one above');
+    assert.deepEqual(itemAt(calls, spans, 0), { kind: 'task', index: 0 }, 'before everything: the first');
+    assert.equal(itemAt([], [], 3), undefined);
+    const nested = 'steps:\n- template: a.yml\n  parameters:\n    list:\n    - task: X@1\n';
+    const n = itemAt(findTemplateRefs(nested).map(r => ({ line: r.line, last: r.end })), findTaskSteps(nested).map(t => ({ line: t.line, last: t.end - 1 })), 3);
+    assert.deepEqual(n, { kind: 'call', index: 0 }, 'inside a call: the call');
+    assert.deepEqual(itemAt(findTemplateRefs(nested).map(r => ({ line: r.line, last: r.end })), findTaskSteps(nested).map(t => ({ line: t.line, last: t.end - 1 })), 4), { kind: 'task', index: 0 });
+  });
+
+  it('builds multi-line rows from a block scalar, inline text, pending values and defaults', () => {
+    const text = '- task: A@1\n  inputs:\n    script: |-\n      echo a\n      echo b\n    inline: echo x\n    nested:\n      - a\n    cond: 1\n';
+    const step = findTaskSteps(text)[0];
+    const ref = { ...findTemplateRefs('x: 1')[0], ...{ kind: 'template' as const, line: 0, keyCol: 2, raw: 'A@1', valueStart: 0, valueEnd: 0, target: { path: 'A@1' }, params: step.inputs, dynamicParams: false, end: 8 } };
+    const declared = [
+      { name: 'script', type: 'multiline', default: '' }, { name: 'inline', type: 'multiline', default: '' }, { name: 'nested', type: 'multiline', default: '' },
+      { name: 'fresh', type: 'multiline' }, { name: 'withDefault', type: 'multiline', default: 'echo d' },
+    ];
+    const rows = paramViews(text, declared, ref as any, { script: 'echo a\necho b\n', inline: 'echo y', fresh: '   ' });
+    assert.deepEqual(rows.map(r => [r.control, r.value, r.unsaved, r.readOnly, r.error]), [
+      ['multiline', 'echo a\necho b\n', false, undefined, undefined],
+      ['multiline', 'echo y', true, undefined, undefined],
+      ['multiline', '', false, 'Nested value: edit it in the text.', undefined],
+      ['multiline', '   ', true, undefined, 'Required: the template has no default.'],
+      ['multiline', 'echo d', false, undefined, undefined],
+    ]);
+    const ro = paramViews(text, declared.slice(0, 1), ref as any, { script: 'x' }, 'nope');
+    assert.deepEqual([ro[0].value, ro[0].readOnly], ['echo a\necho b', 'nope']);
   });
 });

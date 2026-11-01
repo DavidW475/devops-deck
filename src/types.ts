@@ -326,3 +326,36 @@ export interface WikiPage {
   subPages?: WikiPage[];
   content?: string;
 }
+
+/**
+ * A task definition of `GET {org}/_apis/distributedtask/tasks`. The route is not in the public REST reference (it exists in
+ * Microsoft's generated client), and the response was not verified against a real organization: treat every field as untrusted
+ * and optional.
+ */
+export interface TaskDefinition {
+  id?: string;
+  name?: string;
+  friendlyName?: string;
+  description?: string;
+  category?: string;
+  helpMarkDown?: string;
+  helpUrl?: string;
+  contributionIdentifier?: string;
+  deprecated?: boolean;
+  preview?: boolean;
+  version?: { major?: number; minor?: number; patch?: number; isTest?: boolean };
+  groups?: { name?: string; displayName?: string; isExpanded?: boolean; visibleRule?: string }[];
+  inputs?: {
+    name?: string;
+    label?: string;
+    type?: string;
+    required?: boolean;
+    defaultValue?: string;
+    helpMarkDown?: string;
+    visibleRule?: string;
+    groupName?: string;
+    aliases?: string[];
+    options?: Record<string, string>;
+    properties?: Record<string, string>;
+  }[];
+}

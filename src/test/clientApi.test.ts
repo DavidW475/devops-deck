@@ -81,6 +81,12 @@ const cases: Case[] = [
     result: { tags: ['refs/heads/main'], branches: ['refs/heads/main'] },
   },
   {
+    name: 'listTaskDefinitions reads the org-wide task list', call: c => c.listTaskDefinitions(),
+    reply: { value: [{ id: GUID, name: 'ContosoDeploy' }] }, path: `${O}distributedtask/tasks`, query: { 'api-version': '7.1' },
+    result: [{ id: GUID, name: 'ContosoDeploy' }],
+  },
+  { name: 'listTaskDefinitions tolerates a missing value', call: c => c.listTaskDefinitions(), reply: {}, path: `${O}distributedtask/tasks`, result: [] },
+  {
     name: 'listProjects sorts the project names', call: c => c.listProjects(),
     reply: { value: [{ name: 'Zeta' }, { name: 'Alpha' }] }, path: `${O}projects`, query: { $top: '500' }, result: ['Alpha', 'Zeta'],
   },

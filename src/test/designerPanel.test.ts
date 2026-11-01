@@ -8,6 +8,8 @@ import { PreviewError } from '../pipelines/yamlTemplates';
 import { joinTemplatePath } from '../pipelines/templateRefs';
 import { templateKind } from '../pipelines/templateEdits';
 import { parsePipelineParameters } from '../pipelines/yamlParameters';
+import { buildIndex } from '../pipelines/taskCatalog';
+import { CatalogSnapshot, TaskInfo, TaskInput } from '../pipelines/taskModel';
 
 const ext = vscode.Uri.file('/ext') as any;
 const ROOT = '/work/contoso-app';
@@ -543,5 +545,422 @@ describe('DesignerCodeLens', () => {
     lens.refresh();
     assert.equal(fired, 1);
     lens.dispose();
+  });
+});
+
+// ---------- task steps ----------
+
+const NOW = Date.now();
+const tin = (name: string, over: Partial<TaskInput> = {}): TaskInput => ({
+  name, yamlName: over.aliases?.[0] ?? name, aliases: [], label: name, required: false, type: 'string', options: [], editable: false, multi: false, ...over,
+});
+const ttask = (name: string, major: number, over: Partial<TaskInfo> = {}): TaskInfo => ({
+  id: `guid-${name}`, name, title: name, description: 'Deploys things', category: 'Deploy', major, version: `${major}.1.0`, deprecated: false, preview: false,
+  groups: [{ name: 'advanced', label: 'Advanced' }], inputs: [], ...over,
+});
+const SCRIPT_KINDS = [{ value: 'inlineScript', label: 'Inline' }, { value: 'scriptPath', label: 'Path' }];
+const DEPLOY2 = ttask('ContosoDeploy', 2, {
+  title: 'Contoso Deploy', helpUrl: 'https://learn.contoso.example/deploy',
+  inputs: [
+    tin('connectionName', { aliases: ['connection'], required: true, help: 'The [service connection](command:evil) to use.' }),
+    tin('mode', { type: 'picklist', options: [{ value: 'fast', label: 'Fast' }, { value: 'safe', label: 'Safe' }], default: 'fast' }),
+    tin('scriptLocation', { type: 'radio', options: SCRIPT_KINDS, default: 'inlineScript' }),
+    tin('inlineScript', { type: 'multiline', required: true, visibleRule: 'scriptLocation = inlineScript' }),
+    tin('scriptPath', { type: 'filepath', required: true, visibleRule: 'scriptLocation = scriptPath' }),
+    tin('verbose', { type: 'boolean', default: 'false', group: 'advanced' }),
+    tin('retries', { type: 'int', default: '3', group: 'advanced' }),
+  ],
+});
+const DEPLOY1 = ttask('ContosoDeploy', 1, { title: 'Contoso Deploy', inputs: [tin('connectionName', { aliases: ['connection'], required: true })] });
+const LEGACY = ttask('ContosoLegacy', 1, { deprecated: true, title: 'Contoso Legacy' });
+const EVIL = ttask('FabrikamBuild', 1, { title: '<img src=x onerror=alert(1)>', category: 'Build', inputs: [tin('target', { help: '<b>bold</b> ![x](http://evil.example/a.png)' })] });
+const INDEX = buildIndex([DEPLOY2, DEPLOY1, LEGACY, EVIL]);
+
+const TASK_PIPELINE = [
+  'stages:',
+  '- stage: Deploy',
+  '  jobs:',
+  '  - job: Web',
+  '    steps:',
+  '    - task: ContosoDeploy@2',
+  '      displayName: Deploy web',
+  '      inputs:',
+  '        connectionName: Fabrikam-Prod',
+  '        scriptLocation: inlineScript',
+  '        inlineScript: |-',
+  '          echo one',
+  '          echo two',
+  '        retries: 5 # keep',
+  '    - script: echo done',
+  '  - job: Expr',
+  '    steps:',
+  '    - task: ContosoDeploy@2',
+  '      inputs: ${{ parameters.inputs }}',
+].join('\n');
+
+function fakeTasks(snap: CatalogSnapshot) {
+  const emitter = new vscode.EventEmitter<void>();
+  const t = {
+    snap, ensured: 0, refreshed: 0, emitter,
+    onDidChange: emitter.event,
+    snapshot: () => t.snap,
+    ensure: async () => { t.ensured++; return t.snap; },
+    refresh: async () => { t.refreshed++; await new Promise(r => setTimeout(r, 15)); return t.snap; },
+  };
+  return t;
+}
+
+function taskHost(snap: CatalogSnapshot = { status: 'ready', index: INDEX, fetchedAt: NOW - 2 * 3600_000 }) {
+  const tasks = fakeTasks(snap);
+  return Object.assign(fakeHost(), { tasks, orgUrl: () => 'https://dev.azure.com/contoso' });
+}
+
+async function openTasks(line = 5, text = TASK_PIPELINE, host = taskHost()) {
+  doc = mutableDoc(`${ROOT}/azure-pipelines-${++docNo}.yml`, text);
+  return { ...(await open(line, host)), host };
+}
+
+describe('PipelineDesignerPanel: task steps', () => {
+  it('lists task steps in the structure and shows the form of the step under the cursor', async () => {
+    const { state, host } = await openTasks();
+    const s = state();
+    assert.deepEqual(s.structure.map((g: any) => [g.name, g.items.map((i: any) => [i.label, i.kind, i.index, i.selected])]), [
+      ['Deploy', [['ContosoDeploy@2', 'task', 0, true], ['ContosoDeploy@2', 'task', 1, false]]],
+    ]);
+    assert.equal(s.call.title, 'ContosoDeploy · line 6');
+    assert.equal(s.call.status, 'Contoso Deploy · Deploy · installed 2.1.0');
+    assert.equal(host.tasks.ensured, 1, 'the catalog is read once a task is selected');
+    assert.deepEqual(s.call.params.map((p: any) => [p.name, p.control, p.inFile, p.group ?? null]), [
+      ['connection', 'text', true, null], ['mode', 'enum', false, null], ['scriptLocation', 'enum', true, null], ['inlineScript', 'multiline', true, null],
+      ['verbose', 'boolean', false, 'advanced'], ['retries', 'number', true, 'advanced'],
+    ]);
+    assert.equal(param(s, 'inlineScript').value, 'echo one\necho two');
+    assert.equal(param(s, 'connection').help, 'The service connection to use.', 'help is plain text');
+    assert.equal(param(s, 'retries').value, '5');
+    assert.deepEqual(s.call.task.groups, [{ name: 'advanced', label: 'Advanced', count: 2 }]);
+    assert.deepEqual(s.call.task.summary.majors.map((m: any) => m.major), [2, 1]);
+    assert.equal(s.call.task.summary.helpUrl, 'https://learn.contoso.example/deploy');
+    assert.equal(s.call.task.displayName.value, 'Deploy web');
+    assert.equal(s.call.task.displayName.placeholder, 'Contoso Deploy');
+    assert.deepEqual(s.call.unknown, []);
+    assert.equal(s.call.applyLabel, 'Update in pipeline');
+    assert.equal(s.preview.added + s.preview.changed + s.preview.removed, 0);
+    assert.equal(s.catalogMode, 'templates');
+    assert.equal(s.tasks.state, 'ready');
+    assert.deepEqual(s.tasks.items, [], 'the list is only sent in Tasks mode');
+  });
+
+  it('recomputes the visible inputs on each change and keeps hidden inputs that the file sets', async () => {
+    const { web, state } = await openTasks();
+    await web.send({ type: 'value', name: 'scriptLocation', value: 'scriptPath' });
+    let s = state();
+    assert.deepEqual(s.call.params.map((p: any) => p.name), ['connection', 'mode', 'scriptLocation', 'inlineScript', 'scriptPath', 'verbose', 'retries']);
+    assert.equal(param(s, 'inlineScript').hidden, true);
+    assert.equal(param(s, 'inlineScript').value, 'echo one\necho two', 'the file value stays');
+    assert.equal(param(s, 'scriptPath').error, 'A value is required.');
+    assert.equal(param(s, 'scriptPath').hidden, undefined);
+    assert.match(s.call.blocking, /scriptPath/);
+    await web.send({ type: 'apply' });
+    assert.equal(applied.length, 0, 'a missing required input blocks the update');
+    await web.send({ type: 'value', name: 'scriptPath', value: 'deploy/run.sh' });
+    await web.send({ type: 'apply' });
+    assert.equal(applied.length, 1);
+    const lines = doc.text.split('\n');
+    assert.equal(lines[9], '        scriptLocation: scriptPath');
+    assert.deepEqual(lines.slice(10, 15), ['        inlineScript: |-', '          echo one', '          echo two', '        retries: 5 # keep', '        scriptPath: deploy/run.sh']);
+  });
+
+  it('writes values as line edits: keeps aliases, comments and the block header', async () => {
+    const { web, state } = await openTasks();
+    await web.send({ type: 'value', name: 'connection', value: 'Contoso Prod' });
+    await web.send({ type: 'value', name: 'inlineScript', value: 'echo three\n\necho four' });
+    await web.send({ type: 'value', name: 'retries', value: '7' });
+    await web.send({ type: 'value', name: 'verbose', value: 'true' });
+    const s = state();
+    assert.equal(param(s, 'inlineScript').unsaved, true);
+    assert.deepEqual([s.preview.added, s.preview.changed, s.preview.removed], [2, 5, 0]);
+    await web.send({ type: 'apply' });
+    assert.deepEqual(doc.text.split('\n').slice(5, 17), [
+      '    - task: ContosoDeploy@2',
+      '      displayName: Deploy web',
+      '      inputs:',
+      '        connectionName: Contoso Prod',
+      '        scriptLocation: inlineScript',
+      '        inlineScript: |-',
+      '          echo three',
+      '',
+      '          echo four',
+      '        retries: 7 # keep',
+      '        verbose: true',
+      '    - script: echo done',
+    ]);
+    assert.match(state().notices[0].title, /Updated the step ContosoDeploy@2/);
+    assert.equal(state().call.title, 'ContosoDeploy · line 6', 'the step stays selected');
+    assert.equal(param(state(), 'retries').unsaved, false);
+  });
+
+  it('drops values equal to the default unless Write defaults is on', async () => {
+    const { web, state } = await openTasks();
+    await web.send({ type: 'value', name: 'retries', value: '3' });
+    assert.deepEqual([state().preview.added, state().preview.changed, state().preview.removed], [0, 0, 1]);
+    await web.send({ type: 'writeDefaults', on: true });
+    assert.deepEqual([state().preview.added, state().preview.changed, state().preview.removed], [2, 1, 0], 'mode and verbose are written too');
+    await web.send({ type: 'apply' });
+    assert.equal(doc.text.split('\n')[13], '        retries: 3 # keep');
+  });
+
+  it('changes the version on the task line only and lists inputs the new version does not know', async () => {
+    const { web, state } = await openTasks();
+    await web.send({ type: 'taskVersion', major: 1 });
+    let s = state();
+    assert.deepEqual(s.call.params.map((p: any) => p.name), ['connection']);
+    assert.deepEqual(s.call.unknown, ['scriptLocation', 'inlineScript', 'retries']);
+    assert.deepEqual([s.preview.added, s.preview.changed, s.preview.removed], [0, 1, 0]);
+    assert.equal(s.call.task.label, 'ContosoDeploy@1');
+    await web.send({ type: 'apply' });
+    assert.equal(doc.text.split('\n')[5], '    - task: ContosoDeploy@1');
+    assert.equal(doc.text.split('\n')[13], '        retries: 5 # keep', 'inputs stay');
+    s = state();
+    assert.equal(s.call.task.summary.major, 1);
+    await web.send({ type: 'taskVersion', major: 2 });
+    await web.send({ type: 'taskVersion', major: 1 });
+    assert.equal(state().preview.changed, 0, 'back to the file version');
+  });
+
+  it('sets, changes and removes the display name', async () => {
+    const { web, state } = await openTasks();
+    await web.send({ type: 'taskField', name: 'displayName', value: 'Deploy: the web app' });
+    assert.equal(state().call.task.displayName.unsaved, true);
+    await web.send({ type: 'apply' });
+    assert.equal(doc.text.split('\n')[6], "      displayName: 'Deploy: the web app'");
+    await web.send({ type: 'taskField', name: 'displayName', value: '' });
+    assert.deepEqual([state().preview.added, state().preview.changed, state().preview.removed], [0, 0, 1]);
+    await web.send({ type: 'apply' });
+    assert.equal(doc.text.split('\n')[6], '      inputs:');
+
+    await web.send({ type: 'taskField', name: 'displayName', value: 'Fresh' });
+    await web.send({ type: 'apply' });
+    assert.equal(doc.text.split('\n')[6], '      displayName: Fresh');
+  });
+
+  it('shows a read-only message when the inputs are built with expressions, and reset discards changes', async () => {
+    const { web, state } = await openTasks(17);
+    let s = state();
+    assert.equal(s.call.readOnly, 'The inputs are built with expressions (${{ }}): edit them in the text.');
+    assert.equal(s.call.line, 17);
+    assert.equal(s.call.params.length, 0);
+    assert.equal(s.call.task.hasForm, false);
+    await web.send({ type: 'apply' });
+    assert.equal(applied.length, 0);
+    await web.send({ type: 'open', line: 17 });
+    assert.equal(shownDocs.length, 1, 'the jump opens the document');
+
+    await web.send({ type: 'selectTask', index: 0 });
+    await web.send({ type: 'value', name: 'retries', value: '9' });
+    await web.send({ type: 'taskField', name: 'displayName', value: 'x' });
+    await web.send({ type: 'taskVersion', major: 1 });
+    await web.send({ type: 'reset' });
+    s = state();
+    assert.equal(param(s, 'retries').value, '5');
+    assert.equal(s.call.task.displayName.value, 'Deploy web');
+    assert.equal(s.call.task.summary.major, 2);
+    assert.equal(s.preview.changed, 0);
+  });
+
+  it('says why a step has no form: unknown task, unknown major, expression name, no catalog data', async () => {
+    const text = 'steps:\n- task: Gone@1\n- task: ContosoDeploy@9\n- task: ${{ parameters.t }}\n- task: ContosoDeploy@2\n  inputs: { connection: x }\n';
+    const { web, state } = await openTasks(1, text);
+    assert.equal(state().call.error, 'This task is not in the task list of contoso. Edit it in the text.');
+    await web.send({ type: 'selectTask', index: 1 });
+    assert.equal(state().call.error, 'Version @9 is not in the task list of contoso. Edit it in the text.');
+    await web.send({ type: 'selectTask', index: 2 });
+    assert.equal(state().call.readOnly, 'The task name is an expression: it is only known when the pipeline runs.');
+    await web.send({ type: 'selectTask', index: 3 });
+    assert.match(state().call.readOnly, /one flow mapping/);
+    assert.equal(state().call.blocking, state().call.readOnly);
+
+    const loading = taskHost({ status: 'loading' });
+    const o = await openTasks(1, text, loading);
+    assert.equal(o.state().call.error, 'The form appears when the task list is there.');
+    const failed = taskHost({ status: 'error', error: 'HTTP 401' });
+    const f = await openTasks(1, text, failed);
+    assert.match(f.state().call.error, /could not be read/);
+  });
+
+  it('inserts a picked task with a chosen target list, as new lines', async () => {
+    const { web, state, host } = await openTasks(0);
+    await web.send({ type: 'catalogMode', mode: 'tasks' });
+    assert.equal(state().catalogMode, 'tasks');
+    assert.equal(host.tasks.ensured, 1);
+    assert.deepEqual(state().tasks.items.map((i: any) => [i.name, i.versions.map((v: any) => v.major), i.versions.map((v: any) => v.deprecated)]), [
+      ['FabrikamBuild', [1], [false]], ['ContosoDeploy', [2, 1], [false, false]], ['ContosoLegacy', [1], [true]],
+    ]);
+    await web.send({ type: 'pickTask', id: 'guid-ContosoDeploy', major: 2 });
+    let s = state();
+    assert.equal(s.call.isNew, true);
+    assert.equal(s.call.title, 'New: ContosoDeploy@2');
+    assert.equal(s.call.applyLabel, 'Insert into pipeline');
+    assert.deepEqual(s.call.points, ['Stage Deploy › Job Web › steps', 'Stage Deploy › Job Expr › steps']);
+    assert.equal(s.call.point, 1, 'the last list is the default');
+    assert.deepEqual(s.structure[0].items.filter((i: any) => i.isNew).map((i: any) => [i.label, i.kind]), [['ContosoDeploy@2', 'task']]);
+    assert.match(s.call.blocking, /connection/);
+    await web.send({ type: 'target', index: 0 });
+    await web.send({ type: 'pickTask', id: 'guid-ContosoDeploy', major: 1 });
+    assert.equal(state().call.point, 0, 'picking another major keeps the target');
+    await web.send({ type: 'pickTask', id: 'guid-ContosoDeploy', major: 2 });
+    await web.send({ type: 'taskField', name: 'displayName', value: 'Roll out' });
+    await web.send({ type: 'value', name: 'connection', value: 'Fabrikam-Prod' });
+    await web.send({ type: 'value', name: 'inlineScript', value: 'echo hi\necho there' });
+    s = state();
+    assert.deepEqual([s.preview.added, s.preview.changed, s.preview.removed], [7, 0, 0]);
+    assert.ok(s.preview.lines.some((l: any) => l.mark === '+' && l.text === '    - task: ContosoDeploy@2'));
+    await web.send({ type: 'apply' });
+    assert.deepEqual(doc.text.split('\n').slice(14, 24), [
+      '    - script: echo done',
+      '    - task: ContosoDeploy@2',
+      '      displayName: Roll out',
+      '      inputs:',
+      '        connection: Fabrikam-Prod',
+      '        inlineScript: |',
+      '          echo hi',
+      '          echo there',
+      '  - job: Expr',
+      '    steps:',
+    ]);
+    s = state();
+    assert.match(s.notices[0].title, /Inserted the step ContosoDeploy@2/);
+    assert.equal(s.call.isNew, false);
+    assert.equal(s.call.title, 'ContosoDeploy · line 16', 'the inserted step is selected');
+  });
+
+  it('ignores ids, indexes and values that are not in the catalog or the document, without rendering', async () => {
+    const { web, host, state } = await openTasks();
+    await web.send({ type: 'catalogMode', mode: 'tasks' });
+    const posted = web.posted.length;
+    const ensured = host.tasks.ensured;
+    const bad: any[] = [
+      { type: 'pickTask', id: 'nope', major: 2 }, { type: 'pickTask', id: 'guid-ContosoDeploy', major: 7 }, { type: 'pickTask', id: 5, major: 2 },
+      { type: 'pickTask', id: 'guid-ContosoDeploy', major: '2' }, { type: 'pickTask', id: 'guid-ContosoDeploy' }, { type: 'pickTask' },
+      { type: 'selectTask', index: 99 }, { type: 'selectTask', index: -1 }, { type: 'selectTask', index: '0' }, { type: 'selectTask' },
+      { type: 'taskVersion', major: 9 }, { type: 'taskVersion', major: '1' }, { type: 'taskVersion', major: 1.5 },
+      { type: 'taskField', name: 'inputs', value: 'x' }, { type: 'taskField', name: 'displayName', value: 5 }, { type: 'taskField' },
+      { type: 'catalogMode', mode: 'bogus' }, { type: 'catalogMode', mode: 'tasks' }, { type: 'catalogMode' },
+    ];
+    for (const m of bad) {
+      await web.send(m);
+    }
+    assert.equal(web.posted.length, posted, 'nothing changed, nothing was rendered');
+    assert.equal(host.tasks.ensured, ensured);
+    assert.equal(state().call.title, 'ContosoDeploy · line 6');
+    assert.equal(host.tasks.refreshed, 0);
+    await web.send({ type: 'pickTask', id: 'guid-ContosoDeploy', major: 2 });
+    const picked = web.posted.length;
+    await web.send({ type: 'taskVersion', major: 1 });
+    await web.send({ type: 'select', index: 0 });
+    assert.equal(web.posted.length, picked, 'taskVersion needs a selected step, select needs a template call');
+  });
+
+  it('shows the catalog states: loading, error, stale and ready, and reloads on request', async () => {
+    const host = taskHost({ status: 'loading' });
+    const { web, state } = await openTasks(0, TASK_PIPELINE, host);
+    await web.send({ type: 'catalogMode', mode: 'tasks' });
+    assert.deepEqual([state().tasks.state, state().tasks.org, state().tasks.items.length], ['loading', 'contoso', 0]);
+    host.tasks.snap = { status: 'error', error: 'HTTP 401: sign in <b>again</b>' };
+    await web.send({ type: 'reloadTasks' });
+    assert.equal(host.tasks.refreshed, 1);
+    assert.equal(state().tasks.state, 'error');
+    assert.equal(state().tasks.error, 'HTTP 401: sign in <b>again</b>', 'server text is data; the page escapes it');
+    host.tasks.snap = { status: 'stale', index: INDEX, fetchedAt: NOW - 6 * 24 * 3600_000, error: 'offline' };
+    await web.send({ type: 'reloadTasks' });
+    assert.deepEqual([state().tasks.state, state().tasks.age, state().tasks.items.length], ['stale', '6 days ago', 3]);
+    host.tasks.snap = { status: 'ready', index: INDEX, fetchedAt: NOW };
+    await web.send({ type: 'reloadTasks' });
+    assert.deepEqual([state().tasks.state, state().tasks.age, state().tasks.refreshing], ['ready', 'just now', false]);
+    const refreshing = web.posted.filter((m: any) => m.type === 'state' && m.tasks?.refreshing);
+    assert.ok(refreshing.length >= 1, 'the page shows "updating" while the reload runs');
+    await web.send({ type: 'catalogMode', mode: 'templates' });
+    assert.deepEqual(state().tasks.items, []);
+  });
+
+  it('renders again when the catalog changes and reads it without a task selected only in Tasks mode', async () => {
+    const host = taskHost({ status: 'empty' });
+    const { web, state } = await open(12, host);
+    assert.equal(host.tasks.ensured, 0, 'a template call does not read the task catalog');
+    host.tasks.snap = { status: 'ready', index: INDEX, fetchedAt: NOW };
+    host.tasks.emitter.fire();
+    await new Promise(r => setTimeout(r, 350));
+    assert.equal(state().tasks.state, 'ready');
+    assert.equal(web.last('state').catalogMode, 'templates');
+    const empty = taskHost({ status: 'empty' });
+    delete (empty as any).orgUrl;
+    doc = mutableDoc(`${ROOT}/azure-pipelines-${++docNo}.yml`, PIPELINE);
+    const o = await open(12, empty);
+    assert.equal(o.state().tasks.state, 'error', 'no organization: not a spinner');
+  });
+
+  it('has no task features without a catalog or with taskSupport off', async () => {
+    let o = await openTasks(5, TASK_PIPELINE, fakeHost() as any);
+    assert.equal(o.state().tasks, undefined);
+    assert.equal(o.state().catalogMode, 'templates');
+    assert.deepEqual(o.state().structure.flatMap((g: any) => g.items), [], 'task steps are not listed');
+    assert.equal(o.state().call, undefined);
+
+    vscode.settings['azureDevOps.yaml.taskSupport'] = false;
+    const host = taskHost();
+    o = await openTasks(5, TASK_PIPELINE, host);
+    assert.equal(o.state().tasks, undefined);
+    assert.equal(host.tasks.ensured, 0);
+    await o.web.send({ type: 'catalogMode', mode: 'tasks' });
+    await o.web.send({ type: 'selectTask', index: 0 });
+    await o.web.send({ type: 'pickTask', id: 'guid-ContosoDeploy', major: 2 });
+    assert.equal(o.state().catalogMode, 'templates');
+    assert.equal(o.state().call, undefined);
+    await o.web.send({ type: 'reloadTasks' });
+    assert.equal(host.tasks.refreshed, 0);
+  });
+
+  it('selects a task step from the CodeLens line and reacts to a setting change', async () => {
+    const { web, state } = await openTasks(17);
+    assert.equal(state().call.line, 17);
+    await vscode.workspace.getConfiguration('azureDevOps').update('yaml.taskSupport', false);
+    await new Promise(r => setTimeout(r, 350));
+    assert.equal(web.last('state').tasks, undefined);
+  });
+
+  it('keeps inputs hidden by a rule that the file sets, with a flag, and never removes them', async () => {
+    const text = TASK_PIPELINE.replace('scriptLocation: inlineScript', 'scriptLocation: scriptPath');
+    const { web, state } = await openTasks(5, text);
+    const s = state();
+    assert.equal(param(s, 'inlineScript').hidden, true);
+    assert.equal(param(s, 'scriptPath').error, 'A value is required.');
+    await web.send({ type: 'value', name: 'connection', value: 'x' });
+    await web.send({ type: 'value', name: 'scriptPath', value: 'a.sh' });
+    await web.send({ type: 'apply' });
+    assert.match(doc.text, /inlineScript: \|-/, 'the hidden input stays in the file');
+  });
+
+  it('handles CRLF documents and a last line without a line break', async () => {
+    const text = 'steps:\r\n- task: ContosoDeploy@2\r\n  inputs:\r\n    connectionName: Fabrikam-Prod\r\n    scriptLocation: inlineScript\r\n    inlineScript: echo hi';
+    const { web, state } = await openTasks(1, text);
+    assert.equal(param(state(), 'inlineScript').value, 'echo hi');
+    await web.send({ type: 'value', name: 'inlineScript', value: 'echo a\necho b' });
+    await web.send({ type: 'value', name: 'retries', value: '9' });
+    await web.send({ type: 'apply' });
+    assert.equal(doc.text, ['steps:', '- task: ContosoDeploy@2', '  inputs:', '    connectionName: Fabrikam-Prod', '    scriptLocation: inlineScript',
+      '    inlineScript: |', '      echo a', '      echo b', '    retries: 9'].join('\r\n'), 'CRLF stays, the last line has no break');
+  });
+});
+
+describe('DesignerCodeLens: task steps', () => {
+  it('adds "Open in Designer" above `- task:` lines unless task support or the lens is off', () => {
+    const lens = new DesignerCodeLens();
+    const d = mutableDoc(`${ROOT}/tasks.yml`, TASK_PIPELINE);
+    const lines = (lens.provideCodeLenses(d as any) as any[]).map(l => [l.range.start.line, l.command.arguments[1]]);
+    assert.deepEqual(lines, [[5, 5], [17, 17]]);
+    vscode.settings['azureDevOps.yaml.taskSupport'] = false;
+    assert.deepEqual(lens.provideCodeLenses(d as any), []);
+    vscode.settings['azureDevOps.yaml.taskSupport'] = true;
+    vscode.settings['azureDevOps.yaml.designerCodeLens'] = false;
+    assert.deepEqual(lens.provideCodeLenses(d as any), []);
   });
 });

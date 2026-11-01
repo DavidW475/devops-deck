@@ -233,6 +233,8 @@ export function setFile(fsPath: string, text: string): void {
 
 class Diagnostic {
   source?: string;
+  code?: unknown;
+  tags?: number[];
   constructor(readonly range: unknown, readonly message: string, readonly severity: number) {}
 }
 class CompletionItem {
@@ -274,7 +276,7 @@ const register = (kind: string) => (_selector: unknown, provider: unknown) => {
 };
 
 s.languages = {
-  registerCodeActionsProvider: () => noop,
+  registerCodeActionsProvider: register('codeAction'),
   setTextDocumentLanguage: async (d: unknown) => d,
   createDiagnosticCollection,
   registerCompletionItemProvider: register('completion'),
@@ -285,7 +287,8 @@ s.languages = {
 s.Diagnostic ??= Diagnostic;
 s.DiagnosticSeverity ??= { Error: 0, Warning: 1, Information: 2, Hint: 3 };
 s.CompletionItem ??= CompletionItem;
-s.CompletionItemKind ??= { File: 16, Module: 8, Property: 9, EnumMember: 19, Snippet: 14 };
+s.CompletionItemKind ??= { Text: 0, File: 16, Module: 8, Property: 9, Constant: 20, EnumMember: 19, Snippet: 14 };
+s.DiagnosticTag ??= { Unnecessary: 1, Deprecated: 2 };
 s.SnippetString ??= SnippetString;
 s.Hover ??= Hover;
 s.Location ??= Location;

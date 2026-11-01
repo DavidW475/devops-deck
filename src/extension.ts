@@ -7,6 +7,8 @@ import { RunPipelinePanel } from './pipelines/runPanel';
 import { RunViewPanel } from './pipelines/runView';
 import { DesignerCodeLens, DesignerHost, PipelineDesignerPanel } from './pipelines/designerPanel';
 import { PipelinePreviewPanel, PreviewMode } from './pipelines/previewPanel';
+import { TaskCatalog } from './pipelines/taskCatalog';
+import { YamlTaskSupport } from './pipelines/yamlTasks';
 import { YamlTemplateSupport } from './pipelines/yamlTemplates';
 import { PrCommentController } from './pullRequests/prComments';
 import { CreatePullRequestPanel } from './pullRequests/createPrPanel';
@@ -18,7 +20,7 @@ import { ReviewedFiles } from './pullRequests/reviewed';
 import { ReposPanel } from './repos/reposPanel';
 import { SidebarProvider } from './sidebar/sidebarProvider';
 import { openWiki, WIKI_SCHEME, WikiFileSystem } from './wiki/wiki';
-import { guarded } from './util';
+import { guarded, plural } from './util';
 import {
   assignWorkItemToMe, changeWorkItemState, commentOnWorkItem, createBranchForWorkItem, createWorkItem, createWorkItemFromCode, TodoCodeActions,
 } from './workItems/wiCommands';
@@ -37,6 +39,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const prStatus = new PrStatusBar(client, connections);
   const logDocs = new LogDocumentProvider(client);
   const yamlTemplates = new YamlTemplateSupport(client, connections).register();
+  const taskCatalog = new TaskCatalog(client, connections, context.globalStorageUri);
+  const yamlTasks = new YamlTaskSupport(taskCatalog, connections).register();
   PullRequestPanel.useStore(context.globalState);
   PipelinePreviewPanel.useStore(context.globalState);
   const designerLens = new DesignerCodeLens();
@@ -44,6 +48,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     resolver: yamlTemplates.resolver,
     expandOnServer: (doc, params, definitionId, text) => yamlTemplates.expandOnServer(doc, params, definitionId, text),
     client,
+    tasks: taskCatalog,
+    orgUrl: () => connections.current?.orgUrl,
   };
   const refresh = () => {
     sidebar.refresh();
@@ -70,6 +76,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     reviewed,
     prStatus,
     yamlTemplates,
+    taskCatalog,
+    yamlTasks,
     designerLens,
     vscode.languages.registerCodeLensProvider([{ language: 'yaml', scheme: 'file' }, { language: 'azure-pipelines', scheme: 'file' }], designerLens),
     vscode.languages.registerCodeActionsProvider({ scheme: 'file' }, new TodoCodeActions(), { providedCodeActionKinds: TodoCodeActions.kinds }),
@@ -80,10 +88,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.workspace.registerTextDocumentContentProvider(LOG_SCHEME, logDocs),
     connections.onDidChange(() => {
       client.reset();
+      taskCatalog.reset();
       refresh();
     }),
     vscode.workspace.onDidChangeConfiguration(e => {
-      if (e.affectsConfiguration('azureDevOps.yaml.designerCodeLens')) {
+      if (e.affectsConfiguration('azureDevOps.yaml.designerCodeLens') || e.affectsConfiguration('azureDevOps.yaml.taskSupport')) {
         designerLens.refresh();
       }
       if (e.affectsConfiguration('azureDevOps')) {
@@ -94,6 +103,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.authentication.onDidChangeSessions(e => {
       if (e.provider.id === 'microsoft') {
         client.reset();
+        taskCatalog.reset();
         refresh();
       }
     }),
@@ -107,12 +117,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   command('azureDevOps.signIn', async () => {
     await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'microsoft', vscode.ConfigurationTarget.Global);
     await client.signIn();
+    taskCatalog.reset();
     refresh();
   });
   command('azureDevOps.setPat', async () => {
     const pat = await vscode.window.showInputBox({
       title: 'Azure DevOps Personal Access Token',
-      prompt: 'Scopes: Code (Read & Write), Work Items (Read & Write), Build (Read & Execute), Wiki (Read & Write), Project and Team (Read), Identity (Read), Test Management (Read)',
+      prompt: 'Scopes: Code (Read & Write), Work Items (Read & Write), Build (Read & Execute), Wiki (Read & Write), Project and Team (Read), Identity (Read), Test Management (Read), Agent Pools (Read, for the task catalog)',
       password: true,
       ignoreFocusOut: true,
     });
@@ -122,6 +133,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     await context.secrets.store(PAT_SECRET_KEY, pat.trim());
     await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'pat', vscode.ConfigurationTarget.Global);
     client.reset();
+    taskCatalog.reset();
     refresh();
   });
   command('azureDevOps.configure', async () => {
@@ -304,6 +316,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     const cursor = editor?.document.uri.toString() === doc.uri.toString() ? editor.selection.active.line : undefined;
     PipelineDesignerPanel.show(designerHost, context.extensionUri, doc, typeof line === 'number' && Number.isInteger(line) ? line : cursor);
+  });
+  command('azureDevOps.yaml.refreshTaskCatalog', async () => {
+    const snap = await taskCatalog.refresh();
+    if (snap.status === 'ready' && snap.index) {
+      void vscode.window.showInformationMessage(`Task catalog refreshed: ${plural(snap.index.all().length, 'task')}.`);
+    } else if (snap.status === 'empty') {
+      void vscode.window.showInformationMessage('Configure an Azure DevOps organization first.');
+    } else {
+      const why = snap.error ? ` (${snap.error})` : '';
+      void vscode.window.showWarningMessage(`Could not read the tasks of the organization${why}. Sign in again, or give the PAT the scope Agent Pools (Read).`);
+    }
   });
   command('azureDevOps.yaml.previewPipeline', (uri?: vscode.Uri) => yamlTemplates.previewPipeline(uri instanceof vscode.Uri ? uri : undefined));
 

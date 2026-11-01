@@ -367,6 +367,12 @@
         "title": "Open Pipeline Designer",
         "category": "DevOps Deck",
         "icon": "$(edit)"
+      },
+      {
+        "command": "azureDevOps.yaml.refreshTaskCatalog",
+        "title": "Refresh Task Catalog",
+        "category": "DevOps Deck",
+        "icon": "$(refresh)"
       }
     ],
     "keybindings": [
@@ -708,6 +714,10 @@
         {
           "command": "azureDevOps.yaml.openDesigner",
           "when": "resourceScheme == file && (editorLangId == yaml || editorLangId == azure-pipelines)"
+        },
+        {
+          "command": "azureDevOps.yaml.refreshTaskCatalog",
+          "when": "editorLangId == yaml || editorLangId == azure-pipelines"
         }
       ],
       "view/item/context": [
@@ -1007,10 +1017,25 @@
           "default": true,
           "markdownDescription": "Read templates of a repository resource (`template: file.yml@alias`) from a local clone in the workspace when there is one, so unpushed template changes count. Turn off to always read Azure Repos repositories from the server at the resource's `ref`."
         },
+        "azureDevOps.yaml.taskSupport": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Help for `- task:` steps in pipeline YAML: completion of task names, versions, inputs and values, hovers, checks and quick fixes, from the tasks installed in your organization. Needs the PAT scope *Agent Pools (Read)* when you sign in with a token. Turn off to disable all of it."
+        },
+        "azureDevOps.yaml.taskDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Mark problems of `- task:` steps: tasks that are not installed, missing required inputs (respecting which inputs are visible), unknown inputs, values outside the allowed ones, and deprecated or retired tasks."
+        },
+        "azureDevOps.yaml.taskVersionHints": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show an information hint when a newer major version of a task is installed in your organization, with a quick fix that raises the version."
+        },
         "azureDevOps.yaml.designerCodeLens": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Show \"Open in Designer\" above `template:` and `extends:` calls in pipeline YAML. The designer edits the parameters of a call in a form, inserts calls of templates from a template repository and validates the result with Azure DevOps."
+          "markdownDescription": "Show \"Open in Designer\" above `template:` and `extends:` calls and `- task:` steps in pipeline YAML (task steps need `azureDevOps.yaml.taskSupport`). The designer edits the parameters of a call or the inputs of a task step in a form, inserts calls of templates from a template repository and steps of tasks from the task catalog, and validates the result with Azure DevOps."
         }
       }
     },

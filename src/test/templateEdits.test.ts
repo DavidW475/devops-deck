@@ -1,9 +1,12 @@
 import * as assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
-  applyLineEdits, callReadOnlyReason, controlOf, findInsertionPoints, formatValue, indentUnit, isBranchRef, locationOf, newCallLines,
-  normalizeEdits, planCallEdits, planRepositoryEdits, sameValue, stageNames, templateKind, toRangeEdits, yamlScalar,
+  applyLineEdits, callReadOnlyReason, controlOf, findInsertionPoints, formatValue, indentUnit, isBranchRef, locationOf, newCallLines, newTaskLines,
+  normalizeEdits, planCallEdits, planDisplayName, planRepositoryEdits, planTaskVersion, sameValue, scalarValue, stageNames, templateKind,
+  toRangeEdits, trimNewlines, yamlScalar,
 } from '../pipelines/templateEdits';
+import { TaskInfo, TaskInput } from '../pipelines/taskModel';
+import { asTemplateRef, findTaskSteps, toParameter } from '../pipelines/taskRefs';
 import { findTemplateRefs } from '../pipelines/templateRefs';
 import { PipelineParameter } from '../pipelines/yamlParameters';
 
@@ -414,5 +417,243 @@ describe('edit plumbing', () => {
     assert.deepEqual(toRangeEdits('a', [{ line: 0, deleteCount: 1, insert: ['x'] }]), [{ startLine: 0, startChar: 0, endLine: 0, endChar: 1, text: 'x' }]);
     assert.deepEqual(toRangeEdits('a\r\nb\r\n', [{ line: 1, deleteCount: 0, insert: ['x'] }]), [{ startLine: 1, startChar: 0, endLine: 1, endChar: 0, text: 'x\r\n' }]);
     assert.equal(applyLineEdits('a\r\nb', [{ line: 1, deleteCount: 0, insert: ['x'] }]).text, 'a\r\nx\r\nb');
+  });
+});
+
+// ---------- task steps: the same edit functions with blockKey 'inputs' ----------
+
+const tin = (name: string, over: Partial<TaskInput> = {}): TaskInput => ({
+  name, yamlName: over.aliases?.[0] ?? name, aliases: [], label: name, required: false, type: 'string', options: [], editable: false, multi: false, ...over,
+});
+const TASK: TaskInfo = {
+  id: 'guid-1', name: 'ContosoDeploy', title: 'Contoso Deploy', description: '', category: 'Deploy', major: 2, version: '2.0.1', deprecated: false, preview: false,
+  groups: [],
+  inputs: [
+    tin('connectionName', { aliases: ['connection'], required: true }),
+    tin('mode', { type: 'picklist', options: [{ value: 'fast', label: 'Fast' }, { value: 'safe', label: 'Safe' }], default: 'fast' }),
+    tin('script', { type: 'multiline', default: '' }),
+    tin('retries', { type: 'int', default: '3' }),
+    tin('verbose', { type: 'boolean', default: 'false' }),
+    tin('notes'),
+  ],
+};
+const DECLARED_TASK = TASK.inputs.map(i => toParameter(i));
+
+const STEP = [
+  'steps:',
+  '- task: ContosoDeploy@2   # deploy',
+  '  displayName: Deploy',
+  '  inputs:',
+  '    connectionName: Fabrikam-Prod',
+  '    script: |-',
+  '      echo one',
+  '      echo two',
+  '    retries: 5 # keep',
+  '- script: echo done',
+].join('\n');
+
+function planTask(text: string, pending: Record<string, string>, opts = { writeDefaults: false }, index = 0) {
+  const step = findTaskSteps(text)[index];
+  const plan = planCallEdits(text, asTemplateRef(step, TASK), DECLARED_TASK, pending, opts, 'inputs');
+  return { plan, ...applyLineEdits(text, plan.edits) };
+}
+
+describe('task steps: toParameter', () => {
+  it('maps input types to parameter types, enums and required', () => {
+    const [conn, mode, script, retries, verbose, notes] = DECLARED_TASK;
+    assert.deepEqual(conn, { name: 'connection', displayName: 'connectionName', type: 'string', default: undefined, values: undefined });
+    assert.deepEqual([mode.values, mode.default, controlOf(mode)], [['fast', 'safe'], 'fast', 'enum']);
+    assert.deepEqual([script.type, controlOf(script), script.default], ['multiline', 'multiline', '']);
+    assert.deepEqual([retries.type, controlOf(retries)], ['number', 'number']);
+    assert.deepEqual([verbose.type, controlOf(verbose)], ['boolean', 'boolean']);
+    assert.equal(notes.default, '', 'optional inputs default to empty');
+    const editable = toParameter(tin('region', { type: 'picklist', options: [{ value: 'a', label: 'A' }], editable: true }));
+    const multi = toParameter(tin('tags', { type: 'picklist', options: [{ value: 'a', label: 'A' }], multi: true }));
+    const dynamic = toParameter(tin('pool', { type: 'picklist' }));
+    assert.deepEqual([editable.values, multi.values, dynamic.values], [undefined, undefined, undefined]);
+    assert.equal(toParameter(tin('required', { required: true, default: 'x' })).default, 'x');
+  });
+});
+
+describe('task steps: planCallEdits with blockKey inputs', () => {
+  it('replaces a value under the alias spelling of the file and keeps comments', () => {
+    const { plan, text } = planTask(STEP, { connection: 'Contoso Prod', retries: '7' });
+    assert.equal(plan.readOnly, undefined);
+    assert.deepEqual(text.split('\n').slice(3, 9), [
+      '  inputs:', '    connectionName: Contoso Prod', '    script: |-', '      echo one', '      echo two', '    retries: 7 # keep',
+    ]);
+    assert.equal(text.split('\n')[1], '- task: ContosoDeploy@2   # deploy');
+  });
+
+  it('adds new inputs under inputs: with the yamlName and drops values equal to the default', () => {
+    const added = planTask(STEP, { mode: 'safe', verbose: 'true', notes: 'a: b', retries: '3' });
+    assert.deepEqual(added.text.split('\n').slice(4, 12), [
+      '    connectionName: Fabrikam-Prod', '    script: |-', '      echo one', '      echo two', '    mode: safe', '    verbose: true', "    notes: 'a: b'", '- script: echo done',
+    ]);
+    assert.ok(!added.text.includes('retries'), 'a value equal to the default removes its line');
+    const same = planTask(STEP, { mode: 'fast', verbose: 'FALSE' });
+    assert.deepEqual(same.plan.edits, []);
+    const defaults = planTask(STEP, {}, { writeDefaults: true });
+    assert.deepEqual(defaults.text.split('\n').slice(8, 13), ['    retries: 5 # keep', '    mode: fast', '    verbose: false', "    notes: ''", '- script: echo done']);
+  });
+
+  it('creates inputs: below a step without one, with the file indentation, and drops it when it is emptied', () => {
+    const bare = 'jobs:\n- job: A\n  steps:\n  - task: ContosoDeploy@2\n    displayName: x\n  - script: echo\n';
+    const created = planTask(bare, { connection: 'Fabrikam-Prod', mode: 'safe' });
+    assert.deepEqual(created.text.split('\n').slice(3, 9), ['  - task: ContosoDeploy@2', '    displayName: x', '    inputs:', '      connection: Fabrikam-Prod', '      mode: safe', '  - script: echo']);
+    const only = '- task: ContosoDeploy@2\n  inputs:\n    retries: 5\n- script: echo';
+    const emptied = planTask(only, { retries: '3' });
+    assert.equal(emptied.text, '- task: ContosoDeploy@2\n- script: echo', 'the key goes with its last input');
+    const flowless = planTask('- task: ContosoDeploy@2', { mode: 'safe' });
+    assert.equal(flowless.text, '- task: ContosoDeploy@2\n  inputs:\n    mode: safe', 'a step on the last line');
+  });
+
+  it('never touches inputs under ${{ if }} and reads expressions as read-only', () => {
+    const cond = '- task: ContosoDeploy@2\n  inputs:\n    retries: 5\n    ${{ if eq(parameters.x, 1) }}:\n      mode: safe\n';
+    const r = planTask(cond, { mode: 'fast', retries: '6' });
+    assert.deepEqual(r.text.split('\n').slice(2, 5), ['    retries: 6', "    ${{ if eq(parameters.x, 1) }}:", '      mode: safe']);
+    const expr = planTask('- task: ContosoDeploy@2\n  inputs: ${{ parameters.i }}\n', { mode: 'safe' });
+    assert.equal(expr.plan.readOnly, 'The inputs are built with expressions (${{ }}): edit them in the text.');
+    assert.deepEqual(expr.plan.edits, []);
+    const each = planTask('- task: ContosoDeploy@2\n  inputs:\n    ${{ each p in parameters.list }}:\n      x: 1\n', {});
+    assert.match(each.plan.readOnly!, /built with expressions/);
+    const flow = planTask('- task: ContosoDeploy@2\n  inputs: { mode: safe }\n', {});
+    assert.equal(flow.plan.readOnly, 'The inputs are written as one flow mapping ({ … }): edit them in the text.');
+  });
+
+  it('keeps the template messages and an expression as the task name', () => {
+    const tpl = findTemplateRefs('steps:\n- template: a.yml\n  parameters: ${{ parameters.p }}\n')[0];
+    assert.equal(callReadOnlyReason('steps:\n- template: a.yml\n  parameters: ${{ parameters.p }}\n', tpl), 'The parameters are built with expressions (${{ }}): edit them in the text.');
+    const step = findTaskSteps('steps:\n- task: ${{ parameters.t }}\n')[0];
+    assert.equal(callReadOnlyReason('steps:\n- task: ${{ parameters.t }}\n', asTemplateRef(step), 'inputs'), 'The task name is an expression: it is only known when the pipeline runs.');
+  });
+
+  it('is a CRLF-safe line edit, also on the last line without a line break', () => {
+    const crlf = STEP.replaceAll('\n', '\r\n');
+    const { plan } = planTask(crlf, { connection: 'x' });
+    const ranges = toRangeEdits(crlf, plan.edits);
+    assert.deepEqual(ranges, [{ startLine: 4, startChar: 0, endLine: 5, endChar: 0, text: '    connectionName: x\r\n' }]);
+    const tail = '- task: ContosoDeploy@2\n  inputs:\n    retries: 5';
+    const t = planTask(tail, { retries: '6', mode: 'safe' });
+    assert.equal(t.text, '- task: ContosoDeploy@2\n  inputs:\n    retries: 6\n    mode: safe');
+    assert.deepEqual(toRangeEdits(tail, t.plan.edits), [{ startLine: 1, startChar: 9, endLine: 2, endChar: 14, text: '\n    retries: 6\n    mode: safe' }]);
+  });
+});
+
+describe('multi-line inputs', () => {
+  it('reads the text of a block scalar and its header', () => {
+    const entry = findTaskSteps(STEP)[0].inputs.find(e => e.name === 'script')!;
+    assert.deepEqual(scalarValue(STEP, entry), { header: '|-', text: 'echo one\necho two', end: 7, childCol: 6 });
+    const inline = findTaskSteps('- task: A@1\n  inputs:\n    script: echo hi # c\n')[0].inputs[0];
+    assert.deepEqual(scalarValue('- task: A@1\n  inputs:\n    script: echo hi # c\n', inline), { text: 'echo hi', end: 2 });
+    const nested = '- task: A@1\n  inputs:\n    script:\n      - a\n';
+    assert.equal(scalarValue(nested, findTaskSteps(nested)[0].inputs[0]), undefined);
+    const empty = '- task: A@1\n  inputs:\n    script:\n    x: 1\n';
+    assert.equal(scalarValue(empty, findTaskSteps(empty)[0].inputs[0])?.text, '');
+    assert.equal(scalarValue('', { name: 'x', line: 4, start: 0, end: 1, value: '', conditional: false }), undefined);
+    assert.equal(trimNewlines('a\n\r\n'), 'a');
+  });
+
+  it('replaces the block and keeps the header', () => {
+    const r = planTask(STEP, { script: 'echo three\n  indented\n\nlast' });
+    assert.deepEqual(r.text.split('\n').slice(5, 11), ['    script: |-', '      echo three', '        indented', '', '      last', '    retries: 5 # keep']);
+    assert.deepEqual(r.marks.get(5), '~');
+    assert.equal(r.marks.get(9), '+');
+  });
+
+  it('keeps a folded header and one-line text inside the block', () => {
+    const folded = STEP.replace('script: |-', 'script: >');
+    assert.deepEqual(planTask(folded, { script: 'one line' }).text.split('\n').slice(5, 8), ['    script: >', '      one line', '    retries: 5 # keep']);
+  });
+
+  it('leaves the block alone when the text is the same, whatever the line breaks at its end', () => {
+    assert.deepEqual(planTask(STEP, { script: 'echo one\r\necho two\n\n' }).plan.edits, []);
+    const withInputs = STEP.replace('    retries: 5 # keep', '    mode: fast\n    verbose: false\n    notes: x\n    retries: 5 # keep');
+    assert.deepEqual(planTask(withInputs, { script: 'echo one\necho two' }, { writeDefaults: true }).plan.edits, []);
+  });
+
+  it('turns a one-line value into a block when the text has several lines, and back to one line when it has one', () => {
+    const inline = '- task: ContosoDeploy@2\n  inputs:\n    script: echo hi # c\n';
+    assert.deepEqual(planTask(inline, { script: 'a\nb' }).text.split('\n'), ['- task: ContosoDeploy@2', '  inputs:', '    script: | # c', '      a', '      b', '']);
+    assert.equal(planTask(inline, { script: 'echo: yo' }).text, "- task: ContosoDeploy@2\n  inputs:\n    script: 'echo: yo' # c\n");
+  });
+
+  it('removes the block when the text equals the default, adds new ones, and handles a first line that starts with spaces', () => {
+    const withDefault = [...DECLARED_TASK.slice(0, 2), { ...DECLARED_TASK[2], default: 'echo one\necho two' }, ...DECLARED_TASK.slice(3)];
+    const text = STEP;
+    const step = findTaskSteps(text)[0];
+    const plan = planCallEdits(text, asTemplateRef(step, TASK), withDefault, { script: 'echo one\necho two\n' }, { writeDefaults: false }, 'inputs');
+    assert.deepEqual(applyLineEdits(text, plan.edits).text.split('\n').slice(4, 7), ['    connectionName: Fabrikam-Prod', '    retries: 5 # keep', '- script: echo done']);
+    const added = planTask('- task: ContosoDeploy@2\n  inputs:\n    retries: 5', { script: '  indented first\nsecond' });
+    assert.deepEqual(added.text.split('\n').slice(3), ['    script: |2', '        indented first', '      second']);
+    const single = planTask('- task: ContosoDeploy@2\n  inputs:\n    retries: 5', { script: 'echo hi' });
+    assert.deepEqual(single.text.split('\n').slice(3), ['    script: echo hi']);
+    const defaults = planCallEdits('- task: ContosoDeploy@2', asTemplateRef(findTaskSteps('- task: ContosoDeploy@2')[0], TASK),
+      [{ ...DECLARED_TASK[2], default: 'a\nb' }], {}, { writeDefaults: true }, 'inputs');
+    assert.deepEqual(applyLineEdits('- task: ContosoDeploy@2', defaults.edits).text.split('\n'), ['- task: ContosoDeploy@2', '  inputs:', '    script: |', '      a', '      b']);
+  });
+
+  it('does not touch a nested collection or a conditional multi-line input', () => {
+    const nested = '- task: ContosoDeploy@2\n  inputs:\n    script:\n      - a\n';
+    assert.deepEqual(planTask(nested, { script: 'x' }).plan.edits, []);
+  });
+
+  it('formats and compares multi-line values', () => {
+    const p = DECLARED_TASK[2];
+    assert.equal(formatValue(p, 'echo'), 'echo');
+    assert.equal(sameValue(p, 'a\nb\n', 'a\r\nb'), true);
+    assert.equal(sameValue(p, 'a', 'b'), false);
+  });
+});
+
+describe('newTaskLines', () => {
+  it('writes the step with display name and inputs that differ from the default', () => {
+    const lines = newTaskLines('ContosoDeploy@2', DECLARED_TASK, { connection: 'Fabrikam-Prod', mode: 'safe', retries: '3', script: 'echo a\necho b' }, 4, 2, { writeDefaults: false }, 'Roll out');
+    assert.deepEqual(lines, [
+      '    - task: ContosoDeploy@2', '      displayName: Roll out', '      inputs:', '        connection: Fabrikam-Prod', '        mode: safe',
+      '        script: |', '          echo a', '          echo b',
+    ]);
+  });
+
+  it('writes required inputs without a value as empty strings, defaults only on request, and nothing without inputs', () => {
+    assert.deepEqual(newTaskLines('ContosoDeploy@2', DECLARED_TASK, {}, 0, 2, { writeDefaults: false }), ['- task: ContosoDeploy@2', '  inputs:', "    connection: ''"]);
+    assert.deepEqual(newTaskLines('ContosoDeploy@2', DECLARED_TASK, { connection: 'x' }, 2, 4, { writeDefaults: true }, '  '), [
+      '  - task: ContosoDeploy@2', '    inputs:', '        connection: x', '        mode: fast', "        script: ''", '        retries: 3', '        verbose: false', "        notes: ''",
+    ]);
+    assert.deepEqual(newTaskLines('Gone@1', [], {}, 0, 2, { writeDefaults: false }), ['- task: Gone@1']);
+  });
+
+  it('quotes values that need it', () => {
+    assert.deepEqual(newTaskLines('A@1', DECLARED_TASK, { connection: 'a: b', notes: '$(x) # y' }, 0, 2, { writeDefaults: false }), [
+      '- task: A@1', '  inputs:', "    connection: 'a: b'", "    notes: '$(x) # y'",
+    ]);
+  });
+});
+
+describe('planTaskVersion and planDisplayName', () => {
+  it('changes only the task line and keeps quotes and comments', () => {
+    const text = "steps:\n- task: 'ContosoDeploy@1'   # old\n  inputs:\n    a: b";
+    const step = findTaskSteps(text)[0];
+    const edits = planTaskVersion(text, step, 3);
+    assert.deepEqual(edits, [{ line: 1, deleteCount: 1, insert: ["- task: 'ContosoDeploy@3'   # old"] }]);
+    assert.deepEqual(planTaskVersion(text, step, 1), []);
+    assert.deepEqual(planTaskVersion('- task: GoTool@0.3.1', findTaskSteps('- task: GoTool@0.3.1')[0], 0)[0].insert, ['- task: GoTool@0']);
+    assert.deepEqual(planTaskVersion('- task: ${{ parameters.t }}', findTaskSteps('- task: ${{ parameters.t }}')[0], 2), []);
+  });
+
+  it('sets, changes and removes the display name next to the task', () => {
+    const text = '- task: A@1 # c\n  displayName: Old # note\n  inputs:\n    a: b';
+    const step = findTaskSteps(text)[0];
+    assert.deepEqual(planDisplayName(text, step, 'New: name'), [{ line: 1, deleteCount: 1, insert: ["  displayName: 'New: name' # note"] }]);
+    assert.deepEqual(planDisplayName(text, step, ' Old '), []);
+    assert.deepEqual(planDisplayName(text, step, ''), [{ line: 1, deleteCount: 1, insert: [] }]);
+    const bare = '    - task: A@1\n      inputs:\n        a: b';
+    assert.deepEqual(planDisplayName(bare, findTaskSteps(bare)[0], 'Deploy'), [{ line: 1, deleteCount: 0, insert: ['      displayName: Deploy'] }]);
+    assert.deepEqual(planDisplayName(bare, findTaskSteps(bare)[0], '  '), []);
+  });
+
+  it('finds the insertion points of steps lists for task steps', () => {
+    const points = findInsertionPoints('stages:\n- stage: Deploy\n  jobs:\n  - job: Web\n    steps:\n    - task: A@1\n      inputs:\n        a: b\n    - script: x\n', 'steps');
+    assert.deepEqual(points.map(p => [p.label, p.line, p.indent, p.stage]), [['Stage Deploy › Job Web › steps', 9, 4, 'Deploy']]);
   });
 });

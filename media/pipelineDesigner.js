@@ -1,15 +1,25 @@
 // @ts-check
-/* Pipeline designer: template catalog, structure strip, parameter form, YAML preview and validation. The extension
-   sends the whole state; this page renders it and posts the user's actions. Plain DOM; every text is escaped. */
+/* Pipeline designer: template and task catalog, structure strip, parameter and task input form, YAML preview and
+   validation. The extension sends the whole state; this page renders it and posts the user's actions. Plain DOM; every
+   text is escaped. */
 (function () {
   /* global vscode */
   const app = /** @type {HTMLElement} */ (document.getElementById('app'));
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
   const post = (type, extra) => vscode.postMessage(Object.assign({ type }, extra || {}));
+  const ICONS = {
+    chevron: '<path d="m9 18 6-6-6-6"/>',
+    warn: '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+    error: '<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>',
+    loader: '<path d="M21 12a9 9 0 1 1-6.219-8.56"/>',
+  };
+  const icon = (name, cls) => `<svg class="i ${cls || ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`;
 
   const saved = vscode.getState() || {};
   let view = saved.view === 'yaml' ? 'yaml' : 'designer';
   let filter = typeof saved.filter === 'string' ? saved.filter : '';
+  /** Open and closed groups of task inputs and the deprecated task list (explicit choices only). @type {Record<string, boolean>} */
+  const openState = saved.open && typeof saved.open === 'object' ? Object.assign(Object.create(null), saved.open) : Object.create(null);
   /** Form or YAML per object parameter. @type {Record<string, string>} */
   const modes = saved.modes && typeof saved.modes === 'object' ? Object.assign(Object.create(null), saved.modes) : Object.create(null);
   /** @type {any} */
@@ -20,7 +30,7 @@
   let focusNext;
 
   function remember() {
-    vscode.setState({ view, filter, modes: Object.assign({}, modes) });
+    vscode.setState({ view, filter, modes: Object.assign({}, modes), open: Object.assign({}, openState) });
   }
 
   function debounce(key, ms, fn) {
@@ -64,31 +74,96 @@
     }).join('') + more;
   }
 
+  const modeSwitch = (s) => '<div class="seg" role="group" aria-label="Catalog">' + [['templates', 'Templates'], ['tasks', 'Tasks']].map(([m, label]) =>
+    `<button aria-pressed="${s.catalogMode === m}" data-catalog-mode="${m}">${label}</button>`).join('') + '</div>';
+
   /** The catalog without its file list (the part `tree`) and without the filter text (set after each render). */
   function renderCatalog(s) {
+    if (s.catalogMode === 'tasks' && s.tasks) return renderTaskCatalog(s);
     const repos = s.repos.map((r) => `<option value="${esc(r.alias)}"${r.alias === s.repo.alias ? ' selected' : ''}>${esc(r.label)}</option>`).join('');
+    const head = s.tasks ? modeSwitch(s) : '<h2>Templates</h2>';
     return `<aside class="pd-catalog card" data-sec="catalog">
-      <div class="pd-row"><h2>Templates</h2><span class="spacer"></span><button class="link" id="addRepo" title="Declare another repository of the project as a template repository">Add repository…</button></div>
+      <div class="pd-row pd-mode-row">${head}<span class="spacer"></span><button class="link" id="addRepo" title="Declare another repository of the project as a template repository">Add repository…</button></div>
       <label class="pd-label" for="repo">Repository</label><select id="repo" class="pd-select">${repos}</select>
       <div class="muted small pd-source">${esc(s.repo.source)}</div>
       ${refSelect(s.repo)}
-      <div class="pd-row pd-filter"><input id="filter" type="text" placeholder="Filter templates"><button class="btn small ghost" id="reloadCatalog" title="Read the template list again">↻</button></div>
+      <div class="pd-row pd-filter"><input id="filter" type="text" placeholder="Filter templates" aria-label="Filter templates"><button class="btn small ghost" id="reloadCatalog" title="Read the template list again">↻</button></div>
       ${slot('tree')}
     </aside>`;
   }
 
-  const treeHtml = (catalog) => `<div class="pd-tree" data-sec="tree">${catalogTree(catalog)}</div>`;
+  const stateBox = (cls, iconName, html) => `<div class="pd-state ${cls} small">${icon(iconName, iconName === 'loader' ? 'spin' : '')}${html}</div>`;
+
+  /** The catalog in Tasks mode: loading, error (no data), or the list with an offline note and a footer with the age. */
+  function renderTaskCatalog(s) {
+    const t = s.tasks;
+    const org = esc(t.org || 'your organization');
+    const reload = t.state === 'loading' ? '' : '<button class="btn small ghost" id="reloadTasks" title="Read the task list again" aria-label="Read the task list again">↻</button>';
+    const top = `<div class="pd-row pd-mode-row">${modeSwitch(s)}<span class="spacer"></span>${reload}</div>`;
+    let body;
+    if (t.state === 'loading') {
+      body = stateBox('muted', 'loader', `<p>Reading the tasks of ${org} …</p>`);
+    } else if (t.state === 'error') {
+      const detail = t.error ? `<p class="muted">${esc(t.error)}</p>` : '';
+      body = stateBox('bad', 'error', `<div><p><strong>Could not read tasks.</strong></p><p>Sign in again, or give the PAT Agent Pools (Read).</p>${detail}</div>`);
+    } else {
+      const stale = t.state === 'stale' ? stateBox('warn', 'warn', `<p>Offline: tasks from ${esc(t.age)}.</p>`) : '';
+      const foot = `${org} · ${t.refreshing ? 'updating …' : 'updated ' + esc(t.age)}`;
+      body = `${stale}<div class="pd-row pd-filter"><input id="filter" type="text" placeholder="Filter tasks" aria-label="Filter tasks"></div>${slot('tree')}<div class="muted small pd-foot">${foot}</div>`;
+    }
+    return `<aside class="pd-catalog card" data-sec="catalog">${top}${body}</aside>`;
+  }
+
+  const taskRow = (i, on) => {
+    const active = i.versions.filter((v) => !v.deprecated);
+    const chips = active.map((v) => `<button class="pd-ver${on === v.major ? ' on' : ''}" data-pick-task="${esc(i.id)}" data-major="${v.major}" title="${esc(i.name)}@${v.major}, version ${esc(v.version)}" aria-label="${esc(i.name)}@${v.major}">@${v.major}</button>`).join('');
+    const sel = on === undefined ? '' : ' selected';
+    return `<div class="pd-task-row${sel}"><button class="pd-file" data-pick-task="${esc(i.id)}" data-major="${active[0].major}" title="${esc(i.description)}"><span class="pd-file-name">${esc(i.title)}</span></button>${chips}</div>`;
+  };
+
+  function deprecatedRows(rows, picked) {
+    const isOpen = openState.deprecated === true;
+    const list = isOpen ? rows.map(({ i, v }) => {
+      const when = badge(v.retires ? 'retires ' + v.retires : 'deprecated', 'warn');
+      const sel = picked && picked.name === i.name && picked.major === v.major ? ' selected' : '';
+      return `<button class="pd-file dep${sel}" data-pick-task="${esc(i.id)}" data-major="${v.major}" title="${esc(i.name)}@${v.major}"><span class="pd-file-name">${esc(i.title)} @${v.major}</span>${when}</button>`;
+    }).join('') : '';
+    return `<button class="pd-group" data-toggle="deprecated" aria-expanded="${isOpen}">${icon('chevron')}Deprecated (${rows.length})</button>${list}`;
+  }
+
+  /** The task list: categories with version chips, then the collapsible deprecated list. */
+  function taskTree(s) {
+    const t = s.tasks;
+    if (t.state === 'loading' || t.state === 'error') return '';
+    const q = filter.trim().toLowerCase();
+    const items = t.items.filter((i) => !q || `${i.name} ${i.title} ${i.category}`.toLowerCase().includes(q));
+    const picked = s.call && s.call.isNew && s.call.task && s.call.task.summary ? s.call.task.summary : undefined;
+    const withActive = items.filter((i) => i.versions.some((v) => !v.deprecated));
+    const dep = items.flatMap((i) => i.versions.filter((v) => v.deprecated).map((v) => ({ i, v })));
+    if (!withActive.length && !dep.length) return '<p class="muted small">No task matches the filter.</p>';
+    const categories = [...new Set(withActive.map((i) => i.category))].sort((a, b) => a.localeCompare(b));
+    const groups = categories.map((c) => {
+      const rows = withActive.filter((i) => i.category === c).map((i) => taskRow(i, picked && picked.name === i.name ? picked.major : undefined)).join('');
+      return `<div class="pd-folder"><div class="pd-folder-name">${esc(c)}</div>${rows}</div>`;
+    }).join('');
+    return groups + (dep.length ? deprecatedRows(dep, picked) : '');
+  }
+
+  const treeHtml = (s) => `<div class="pd-tree" data-sec="tree">${s.catalogMode === 'tasks' && s.tasks ? taskTree(s) : catalogTree(s.catalog)}</div>`;
 
   // ---------- structure strip ----------
-  function renderStructure(groups) {
+  function renderStructure(s) {
+    const groups = s.structure;
     if (!groups.length) return slot('structure');
+    const none = s.tasks ? 'no calls or steps' : 'no template calls';
     const cards = groups.map((g) => {
       const items = g.items.map((i) => {
         const cls = ['pd-call', i.selected ? 'selected' : '', i.isNew ? 'new' : ''].join(' ');
-        const attr = i.index === undefined ? '' : ` data-select="${i.index}"`;
+        const selectAttr = i.kind === 'task' ? 'data-select-task' : 'data-select';
+        const attr = i.index === undefined ? '' : ` ${selectAttr}="${i.index}"`;
         const tag = i.isNew ? badge('new', 'ok') : '';
         return `<button class="${cls}"${attr} title="${esc(i.title)}">${esc(i.label)}${tag}</button>`;
-      }).join('') || '<span class="muted small">no template calls</span>';
+      }).join('') || `<span class="muted small">${none}</span>`;
       return `<div class="pd-stage"><div class="pd-stage-name">${esc(g.name)}</div>${items}</div>`;
     }).join('<span class="pd-arrow" aria-hidden="true">→</span>');
     return `<div class="pd-structure" data-sec="structure">${cards}</div>`;
@@ -97,7 +172,9 @@
   // ---------- parameter form ----------
   function enumControl(p, disabled) {
     if (p.values.length > 6) {
-      const options = p.values.map((v) => `<option${v === p.value ? ' selected' : ''}>${esc(v)}</option>`).join('');
+      const unset = p.value === '' ? '<option value="" selected>(not set)</option>' : '';
+      const other = p.value !== '' && !p.values.includes(p.value) ? `<option selected>${esc(p.value)}</option>` : '';
+      const options = unset + other + p.values.map((v) => `<option${v === p.value ? ' selected' : ''}>${esc(v)}</option>`).join('');
       return `<select class="pd-select" id="p-${esc(p.name)}" data-param="${esc(p.name)}"${disabled}>${options}</select>`;
     }
     return '<div class="pd-seg" role="group">' + p.values.map((v) =>
@@ -112,9 +189,18 @@
       return `<button class="pd-switch${on ? ' on' : ''}" role="switch" aria-checked="${on}" data-param="${esc(p.name)}" data-val="${on ? 'false' : 'true'}"${disabled}><span></span></button><span class="mono small">${on}</span>`;
     }
     if (p.control === 'raw') return structuredControl(p, disabled);
+    if (p.control === 'multiline') return multilineArea(p);
     const kind = p.control === 'number' ? ' inputmode="decimal"' : '';
     const placeholder = p.default === undefined ? 'value' : p.default;
     return `<input type="text" class="mono${p.error ? ' invalid' : ''}" id="p-${esc(p.name)}" data-param="${esc(p.name)}" data-text="1" value="${esc(p.value)}" placeholder="${esc(placeholder)}"${kind}${disabled}>`;
+  }
+
+  /** A multi-line task input (`inlineScript`): the text of the block, without its header and indentation. */
+  function multilineArea(p) {
+    const rows = Math.min(Math.max(String(p.value).split('\n').length + 1, 3), 12);
+    const placeholder = p.default === undefined || p.default === '' ? 'value' : p.default;
+    const ro = p.readOnly ? ' readonly' : '';
+    return `<textarea class="mono pd-yaml${p.error ? ' invalid' : ''}" id="p-${esc(p.name)}" data-param="${esc(p.name)}" data-text="1" rows="${rows}" spellcheck="false" placeholder="${esc(placeholder)}"${ro}>${esc(p.value)}</textarea>`;
   }
 
   // ---------- object and list parameters ----------
@@ -208,17 +294,20 @@
   }
 
   function paramRow(p, key) {
-    const badges = [badge(p.control === 'enum' ? p.type + ' · values' : p.type), p.required ? badge('required', 'bad') : '',
-      p.unsaved ? badge('unsaved', 'info') : ''].join('');
+    const kind = p.typeLabel || (p.control === 'enum' ? p.type + ' · values' : p.type);
+    const badges = [badge(kind), p.required ? badge('required', 'bad') : '',
+      p.unsaved ? badge('unsaved', 'info') : '', p.hidden ? badge('hidden by rule', 'warn') : ''].join('');
     const def = p.default === undefined ? 'no default' : 'default: ' + p.default;
-    const help = (p.label === p.name ? '' : esc(p.label) + ' · ') + esc(def.length > 80 ? def.slice(0, 77) + '…' : def);
+    const extra = p.help ? ' · ' + esc(p.help) : '';
+    const help = (p.label === p.name ? '' : esc(p.label) + ' · ') + esc(def.length > 80 ? def.slice(0, 77) + '…' : def) + extra;
+    const hidden = p.hidden ? '<div class="pd-warn small">The rule hides this input, but the file sets it. It stays until you remove it.</div>' : '';
     const open = p.line === undefined ? '' : `<button class="link" data-open="${p.line}">line ${p.line + 1}</button>`;
     const error = p.error ? `<div class="pd-err small">${esc(p.error)}</div>` : '';
     const ro = p.readOnly ? `<div class="muted small">${esc(p.readOnly)}</div>` : '';
     return `<div class="pd-param${p.readOnly ? ' ro' : ''}" data-sec="${key}">
       <div class="pd-param-head"><span class="mono pd-param-name">${esc(p.name)}</span>${badges}<span class="spacer"></span>${open}</div>
-      <div class="pd-param-control">${control(p)}</div>${error}${ro}
-      <div class="muted small">${help}</div></div>`;
+      <div class="pd-param-control">${control(p)}</div>${error}${ro}${hidden}
+      <div class="muted small pd-help">${help}</div></div>`;
   }
 
   function targetPicker(call) {
@@ -227,9 +316,71 @@
     return `<label class="pd-label" for="target">Insert into</label><select id="target" class="pd-select">${options}</select>`;
   }
 
+  const actionsPart = (s, call, resetLabel, resetTitle) => ['form-actions', `<div class="pd-actions" data-sec="form-actions">
+        <button class="btn primary" id="apply"${call.blocking ? ' disabled' : ''} title="${esc(call.blocking || '')}">${esc(call.applyLabel)}</button>
+        <button class="btn" id="validate">Validate</button>
+        <button class="btn ghost" id="reset" title="${esc(resetTitle)}">${resetLabel}</button>
+        <span class="spacer"></span>
+        <label class="pd-check"><input type="checkbox" id="writeDefaults"${s.writeDefaults ? ' checked' : ''}> Write defaults</label>
+      </div>`];
+
+  // ---------- task step form ----------
+  /** The version of the step's task, with the note about retirement, deprecation or a newer major. */
+  function versionPart(call) {
+    const sum = call.task.summary;
+    if (!sum) return '';
+    const warn = !!sum.note && sum.note.level === 'warn';
+    const cls = warn ? 'pd-warn' : 'muted';
+    const mark = warn ? '' : 'ⓘ ';
+    const text = sum.note ? esc(sum.note.text) : '';
+    if (call.isNew) return sum.note ? `<div class="${cls} small">${text}</div>` : '';
+    const note = sum.note ? `<span class="${cls} small pd-ver-note">${mark}${text}</span>` : '';
+    const label = (m) => '@' + m.major + (m.deprecated ? ' (deprecated)' : '');
+    const options = sum.majors.map((m) => `<option value="${m.major}"${m.major === sum.major ? ' selected' : ''}>${label(m)}</option>`).join('');
+    return `<label class="pd-label" for="taskVersion">Version</label><div class="pd-row"><select id="taskVersion" class="pd-select pd-version mono">${options}</select>${note}</div>`;
+  }
+
+  /** Open or closed: the user's choice, else open when the group holds an input that is set, wrong or changed. */
+  const groupOpen = (g, rows) => (Object.hasOwn(openState, 'group:' + g.name) ? openState['group:' + g.name] : rows.some((p) => p.inFile || p.error || p.unsaved));
+
+  function taskFormParts(s) {
+    const call = s.call;
+    const t = call.task;
+    const problem = call.error || call.readOnly;
+    const linkText = problem ? 'line ' + (call.line + 1) : 'Edit in text';
+    const link = call.line === undefined ? '' : `<button class="link" data-open="${call.line}">${linkText}</button>`;
+    const dirty = !call.isNew && (s.preview.added || s.preview.changed || s.preview.removed) ? badge('unsaved', 'info') : '';
+    const title = `<div class="pd-row"><h2 class="pd-call-title" title="${esc(call.title)}">${esc(call.title)}</h2>${dirty}<span class="spacer"></span>${link}</div>`;
+    if (problem || !t.hasForm) {
+      return [['form', `<section class="pd-form card" data-sec="form">${title}<p class="${call.error ? 'pd-err' : 'pd-warn'} small">${esc(problem || '')}</p></section>`]];
+    }
+    const target = targetPicker(call);
+    const unknown = call.unknown.length ? `<div class="pd-warn small">Unknown inputs in the file: ${esc(call.unknown.join(', '))}</div>` : '';
+    const indexed = call.params.map((p, i) => ({ p, key: 'param:' + i }));
+    const main = indexed.filter((x) => !x.p.group);
+    const groups = t.groups.map((g, n) => {
+      const rows = indexed.filter((x) => x.p.group === g.name);
+      const isOpen = groupOpen(g, rows.map((x) => x.p));
+      const head = `<button class="pd-adv-sum" data-toggle="group" data-group="${esc(g.name)}" aria-expanded="${isOpen}">${icon('chevron')}${esc(g.label)} (${g.count})</button>`;
+      return { key: 'group:' + n, rows, html: `<div class="pd-adv" data-sec="group:${n}">${head}${isOpen ? rows.map((x) => slot(x.key)).join('') : ''}</div>`, isOpen };
+    });
+    const body = main.map((x) => slot(x.key)).join('') + groups.map((g) => slot(g.key)).join('');
+    const name = t.displayName;
+    return [
+      ['form', `<section class="pd-form card" data-sec="form">${slot('form-top')}${slot('task-name')}<div class="pd-params">${body}</div>${slot('form-actions')}</section>`],
+      ['form-top', `<div data-sec="form-top">${title}<div class="muted small">${esc(call.status)}</div>${target}${versionPart(call)}${unknown}</div>`],
+      ['task-name', `<div data-sec="task-name"><label class="pd-label" for="displayName">Display name${name.unsaved ? ' ' + badge('unsaved', 'info') : ''}</label><input type="text" id="displayName" data-field="displayName" value="${esc(name.value)}" placeholder="${esc(name.placeholder)}" aria-label="Display name"></div>`],
+      ...main.map((x) => [x.key, paramRow(x.p, x.key)]),
+      ...groups.map((g) => [g.key, g.html]),
+      ...groups.flatMap((g) => (g.isOpen ? g.rows.map((x) => [x.key, paramRow(x.p, x.key)]) : [])),
+      actionsPart(s, call, 'Reset', 'Discard the changes of the form'),
+    ];
+  }
+
   /** The form as parts: the frame, its head, one part per parameter and the actions, so typing changes only one row. */
   function formParts(s) {
     const call = s.call;
+    if (call && call.task) return taskFormParts(s);
     if (!call) {
       const text = s.empty ? 'This pipeline has no template calls yet. Pick a template on the left to insert one.' : 'Select a template call above or pick a template on the left.';
       return [['form', `<section class="pd-form card" data-sec="form"><p class="muted">${text}</p></section>`]];
@@ -242,7 +393,6 @@
     const open = call.line === undefined ? '' : `<button class="link" data-open="${call.line}">Edit in text</button>`;
     const keys = call.params.map((_, i) => 'param:' + i);
     const params = keys.map(slot).join('') || (problem ? '' : '<p class="muted small">This template declares no parameters.</p>');
-    const disabled = call.blocking ? ' disabled' : '';
     return [
       ['form', `<section class="pd-form card" data-sec="form">${slot('form-top')}<div class="pd-params">${params}</div>${slot('form-actions')}</section>`],
       ['form-top', `<div data-sec="form-top">
@@ -250,13 +400,7 @@
       <div class="muted small">${esc(call.status)}</div>
       ${targetPicker(call)}${note}${unknown}</div>`],
       ...call.params.map((p, i) => [keys[i], paramRow(p, keys[i])]),
-      ['form-actions', `<div class="pd-actions" data-sec="form-actions">
-        <button class="btn primary" id="apply"${disabled} title="${esc(call.blocking || '')}">${esc(call.applyLabel)}</button>
-        <button class="btn" id="validate">Validate</button>
-        <button class="btn ghost" id="reset">Reset to defaults</button>
-        <span class="spacer"></span>
-        <label class="pd-check"><input type="checkbox" id="writeDefaults"${s.writeDefaults ? ' checked' : ''}> Write defaults</label>
-      </div>`],
+      actionsPart(s, call, 'Reset to defaults', 'Every parameter back to its default'),
     ];
   }
 
@@ -328,7 +472,7 @@
   function parts(s) {
     const list = [['head', headHtml(s)]];
     if (view !== 'yaml') {
-      list.push(['catalog', renderCatalog(s)], ['tree', treeHtml(s.catalog)], ['structure', renderStructure(s.structure)], ...formParts(s));
+      list.push(['catalog', renderCatalog(s)], ['tree', treeHtml(s)], ['structure', renderStructure(s)], ...formParts(s));
     }
     list.push(['preview', renderPreview(s)], ['summary', `<span class="small" data-sec="summary">${changeSummary(s.preview)}</span>`],
       ['notices', `<footer class="pd-notices" data-sec="notices">${renderNotices(s)}</footer>`]);
@@ -570,6 +714,14 @@
     render();
   }
 
+  /** Opens or closes the deprecated task list or a group of task inputs (a choice kept in the page's state). */
+  function toggleOpen(el) {
+    const key = el.dataset.toggle === 'group' ? 'group:' + el.dataset.group : 'deprecated';
+    openState[key] = el.getAttribute('aria-expanded') !== 'true';
+    remember();
+    render();
+  }
+
   /** @type {Record<string, (el: HTMLElement) => void>} */
   const clicks = {
     'data-view': (el) => { view = el.dataset.view === 'yaml' ? 'yaml' : 'designer'; remember(); render(); },
@@ -578,11 +730,15 @@
     'data-tree-del': removeRow,
     'data-tree-bool': toggleBool,
     'data-pick': (el) => post('pick', { path: el.dataset.pick }),
+    'data-pick-task': (el) => post('pickTask', { id: el.dataset.pickTask, major: Number(el.dataset.major) }),
+    'data-select-task': (el) => post('selectTask', { index: Number(el.dataset.selectTask) }),
+    'data-catalog-mode': (el) => post('catalogMode', { mode: el.dataset.catalogMode }),
+    'data-toggle': toggleOpen,
     'data-select': (el) => post('select', { index: Number(el.dataset.select) }),
     'data-open': (el) => post('open', { line: Number(el.dataset.open) }),
     'data-val': (el) => post('value', { name: el.dataset.param, value: el.dataset.val }),
   };
-  const buttons = { apply: 'apply', validate: 'validate', reset: 'reset', addRepo: 'addRepo', reloadCatalog: 'reloadCatalog' };
+  const buttons = { apply: 'apply', validate: 'validate', reset: 'reset', addRepo: 'addRepo', reloadCatalog: 'reloadCatalog', reloadTasks: 'reloadTasks' };
 
   document.addEventListener('click', (e) => {
     const t = /** @type {HTMLElement} */ (e.target);
@@ -606,10 +762,12 @@
       // One list update after a short pause in typing, not one per key.
       debounce('filter', 100, () => {
         remember();
-        if (state && view !== 'yaml') patch('tree', treeHtml(state.catalog));
+        if (state && view !== 'yaml') patch('tree', treeHtml(state));
       });
     } else if (t.dataset.tree && t.dataset.part) {
       typeInTree(t);
+    } else if (t.dataset.field) {
+      debounce('field:' + t.dataset.field, 250, () => post('taskField', { name: t.dataset.field, value: t.value }));
     } else if (t.dataset.text) {
       debounce('text:' + t.dataset.param, 250, () => post('value', { name: t.dataset.param, value: t.value }));
     } else if (t.dataset.yaml) {
@@ -622,6 +780,7 @@
     if (t.id === 'repo') post('repo', { alias: t.value });
     else if (t.id === 'ref') post('ref', { ref: t.value });
     else if (t.id === 'target') post('target', { index: Number(t.value) });
+    else if (t.id === 'taskVersion') post('taskVersion', { major: Number(t.value) });
     else if (t.id === 'writeDefaults') post('writeDefaults', { on: t.checked });
     else if (t.dataset.treeKind) changeKind(t);
     else if (t.dataset.param && t.tagName === 'SELECT') post('value', { name: t.dataset.param, value: t.value });

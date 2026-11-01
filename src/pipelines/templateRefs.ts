@@ -187,7 +187,7 @@ function siblingsBefore(lines: YLine[], i: number): YLine[] {
 }
 
 /** Lines of the mapping that contains the key at lines[i]: sibling keys (same column) and nested content. */
-function mappingOf(lines: YLine[], i: number): { siblings: YLine[]; end: number } {
+export function mappingOf(lines: YLine[], i: number): { siblings: YLine[]; end: number } {
   const k = lines[i].keyCol;
   const siblings = siblingsBefore(lines, i);
   let end = i;
@@ -203,7 +203,7 @@ function mappingOf(lines: YLine[], i: number): { siblings: YLine[]; end: number 
   return { siblings, end };
 }
 
-function flowParams(l: YLine): ParamEntry[] {
+export function flowParams(l: YLine): ParamEntry[] {
   const out: ParamEntry[] = [];
   let from = 0;
   for (const part of splitFlow(l.rest.slice(1, -1))) {
@@ -246,7 +246,7 @@ function addParamLine(s: ParamScan, l: YLine & { key: string }): void {
 }
 
 /** Parameters passed in the block under `parameters:`; keys under `${{ if }}` / `${{ each }}` are taken one level deeper. */
-function blockParams(lines: YLine[], p: YLine): { params: ParamEntry[]; dynamic: boolean } {
+export function blockParams(lines: YLine[], p: YLine): { params: ParamEntry[]; dynamic: boolean } {
   const s: ParamScan = { params: [], dynamic: false, childCol: -1, conditionalCol: -1 };
   for (let j = p.n + 1; j < lines.length && (lines[j].blank || lines[j].indent > p.keyCol); j++) {
     const l = lines[j];
@@ -405,7 +405,7 @@ export function parameterSnippet(p: PipelineParameter, stop: number): string {
   return `${p.name}: \${${stop}${def ? ':' + def : ''}}`;
 }
 
-function snippetEscape(s: string): string {
+export function snippetEscape(s: string): string {
   return s.replace(/[$}\\]/g, c => '\\' + c);
 }
 

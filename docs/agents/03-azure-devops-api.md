@@ -20,7 +20,7 @@ All REST traffic goes through `AdoClient`. Do not call `fetch` elsewhere.
 - Setting `azureDevOps.authMethod`: `microsoft` (default) or `pat`.
 - Microsoft: `vscode.authentication.getSession('microsoft', ['499b84ac-1321-427f-aa17-267ca6975798/.default', optional 'VSCODE_TENANT:<azureDevOps.tenantId>'])`, sent as `Bearer`. Requests never prompt; only `signIn()` is interactive.
 - PAT: stored in secret storage under `azureDevOps.pat` (`PAT_SECRET_KEY`), sent as `Basic base64(':' + pat)`.
-- PAT scopes (setPat prompt in `extension.ts` and README): Code (Read & Write), Work Items (Read & Write), Build (Read & Execute), Wiki (Read & Write), Project and Team (Read), Identity (Read), Test Management (Read). A new endpoint that needs another scope must update both places.
+- PAT scopes (setPat prompt in `extension.ts` and README): Code (Read & Write), Work Items (Read & Write), Build (Read & Execute), Wiki (Read & Write), Project and Team (Read), Identity (Read), Test Management (Read), Agent Pools (Read, task catalog). A new endpoint that needs another scope must update both places.
 - `getMe()` uses `<org>/_apis/connectionData`, cached on the root client.
 
 ## API versions
@@ -65,6 +65,15 @@ Default `7.1`. These calls pass a preview version explicitly:
 ## Files at a ref
 
 `getFileTextAtRef(repoId, path, ref?)` maps a repository resource `ref` to a version descriptor: `refs/tags/x` → tag, a 40-character SHA → commit, `refs/heads/x` or a plain name → branch, none → the repository's default branch. `listYamlDefinitions(repoId)` lists the YAML pipelines of a repository (`includeAllProperties` for `process.yamlFilename`). For the designer's catalog, `listFilePaths(repoId, ref?)` lists every file at the same kind of ref (Git Items API, `scopePath=/`, `recursionLevel=Full`; folders dropped) and `listRefNames(repoId)` reads tags and branches (`git/repositories/{id}/refs` with `filter=tags/` and `filter=heads/`, 500 each).
+
+## Task catalog (undocumented route)
+
+`listTaskDefinitions()` reads `GET <org>/_apis/distributedtask/tasks` (api-version 7.1). The route is **not in the REST reference** (Learn has no page for it); it is known from the generated Microsoft client (`getTaskDefinitions`) and from `OPTIONS _apis`. It is the only source with `visibleRule`, `helpMarkDown` and input defaults, so the YAML task support (`taskCatalog.ts`) depends on it. Pitfalls:
+
+- Scope: the PAT needs **Agent Pools (Read)** (`vso.agentpools`); inferred, not verified. A missing scope probably arrives as 401 and cannot be told apart from an expired token (`isAuthError`), so the background never prompts for a sign-in and never shows an error: the catalog snapshot carries `status: 'error'` and `error`, and `YamlTaskSupport` stays quiet (no task completion, no "not installed" marks; retirement checks need no catalog and keep working).
+- Fallback: the response is reduced to `TaskInfo` and cached per organization in `globalStorageUri`; failures keep the old data (`stale`/`error` status). If the route disappears, task help degrades to nothing rather than wrong warnings. A planned fallback is `distributedtask/yamlschema` (documented, but without `visibleRule`, help and defaults).
+- Not verified against a real organization: whether every major version is returned, `deprecationMessage` / `removalDate`, response size.
+- Server text (titles, help, options) is untrusted: hovers use `mdEscape`, `MarkdownString` is neither trusted nor HTML, `helpUrl` is only linked for `https:` and never fetched.
 
 ## Code search is intentionally not supported
 
