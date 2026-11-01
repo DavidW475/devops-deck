@@ -1,21 +1,11 @@
 # Changelog
 
-## Unreleased
-
-### Added
-
-- My Day: a tab with a ranked list of what needs you now (approvals waiting for you, your failed runs, pull requests to review, assigned work items), the reason for each rank and quick actions. Items can be snoozed, marked done until they change or hidden, and restored. A badge on the view shows the count. New commands *Defer* and *Restore* for items and *Vote on Pull Request*, and the setting `azureDevOps.myDay.importantBranches`
-
-### Changed
-
-- Sidebar: long lists render in pages of 40 cards (the next page loads while scrolling), icons share one sprite, and the layout follows the VS Code theme more closely (flatter cards, underline tabs, high contrast borders). Pull request checks are reused for 15 seconds instead of being requested again on every list load.
-
 ## 1.2.0
 
 ### Added
 
+- My Day: a tab with a ranked list of what needs you now (approvals waiting for you, your failed runs, pull requests to review, assigned work items), the reason for each rank and quick actions. Items can be snoozed, marked done until they change or hidden, and restored. A badge on the view shows the count. New commands *Defer* and *Restore* for items and *Vote on Pull Request*, and the setting `azureDevOps.myDay.importantBranches`
 - Task support in pipeline YAML: completion of `- task:` names (deprecated and retiring ones last), majors, `inputs:`, input names (required first, hidden inputs left out) and values; hover with description, version, deprecation or retirement, newer major, input type, visibility condition and help; checks for tasks that are not installed, missing required inputs, unknown inputs, values outside the allowed ones, deprecated and retired tasks (Microsoft retires many built-in tasks on 2026-11-24) and newer major versions; quick fixes add an input, raise the version or refresh the catalog. The tasks come from the organization (cached 24 hours, refreshed in the background). New command *Refresh Task Catalog* and settings `azureDevOps.yaml.taskSupport`, `.taskDiagnostics` and `.taskVersionHints`
-
 - Pipeline designer for task steps: *Open in Designer* above `- task:` lines, task steps in the structure strip, and a form with the version, display name and inputs in groups. Inputs show and hide with the task's `visibleRule` as values change (a hidden input that the file sets stays, marked), multi-line inputs such as `inlineScript` are text areas that keep the block scalar header, and help texts are plain text. Changes are written as line edits like for templates; changing the version edits only the `task:` line. Steps with expression-built inputs are read-only
 - Pipeline designer task catalog: a *Templates* / *Tasks* switch lists the tasks of the organization by category with version chips and a collapsible *Deprecated* list, with loading, error (naming the Agent Pools scope) and offline states, the age of the list and a reload button. A picked task opens a new-step form with a choice of the `steps:` list and a preview; *Insert into pipeline* writes the step
 - Trace a line to its pull request and work items: the command *Trace Line to Pull Request* (editor context menu), a *Pull Request & Work Items* link in the blame hover of VS Code, and opt-in annotations in the status bar and after the cursor line. Settings `azureDevOps.blame.annotations`, `.ignoreWhitespace` and `.detectCopies`. Runs `git blame` locally (not in untrusted workspaces)
@@ -23,6 +13,7 @@
 ### Changed
 
 - Personal access tokens need the scope **Agent Pools** (Read) for the task catalog; without it, only the task help is missing
+- Sidebar: long lists render in pages of 40 cards (the next page loads while scrolling), icons share one sprite, and the layout follows the VS Code theme more closely (flatter cards, underline tabs, high contrast borders). Pull request checks are reused for 15 seconds instead of being requested again on every list load
 
 ## 1.1.0
 
