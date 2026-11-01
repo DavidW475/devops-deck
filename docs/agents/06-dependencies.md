@@ -31,6 +31,8 @@ These rules apply to npm packages, GitHub Actions, the devcontainer image and an
 
 Current dev dependencies (`package.json`): `@types/node`, `@types/vscode`, `@vscode/vsce`, `typescript`.
 
+`overrides` in `package.json` forces `minimatch` to `^11.0.3`: `@vscode/vsce` 4.1.0 asks for `^10.2.6`, which falls under GHSA-g3hv-75wg-m249 (fixed in 11.0.1). `vsce` only calls the named `minimatch()` export, and `vsce ls` lists the same files with it. Remove the override once `@vscode/vsce` depends on a fixed version.
+
 ## 5. Keep it clean
 
 - `package-lock.json` is committed and `npm ci` must work.

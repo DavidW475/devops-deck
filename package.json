@@ -1115,9 +1115,12 @@
     "test:coverage": "npm run compile && node -e \"require('fs').mkdirSync('coverage',{recursive:true})\" && node --test --enable-source-maps --experimental-test-coverage --test-coverage-exclude=\"out/test/**\" --require ./out/test/setup.js --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov --test-reporter-destination=coverage/lcov.info \"out/test/**/*.test.js\""
   },
   "devDependencies": {
-    "@types/node": "^26.6.5",
+    "@types/node": "^26.6.6",
     "@types/vscode": "^1.140.0",
-    "@vscode/vsce": "^4.0.0",
+    "@vscode/vsce": "^4.1.0",
     "typescript": "^7.0.2"
+  },
+  "overrides": {
+    "minimatch": "^11.0.3"
   }
 }
