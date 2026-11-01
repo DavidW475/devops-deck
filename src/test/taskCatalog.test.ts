@@ -2,7 +2,7 @@ import * as assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, it, mock } from 'node:test';
 import { AdoClient } from '../client';
-import { buildIndex, cacheFileName, keepHighest, MAX_AGE_MS, TaskCatalog, toTaskInfo, UNKNOWN_TASK_INTERVAL_MS } from '../pipelines/taskCatalog';
+import { buildIndex, cacheFileName, keepHighest, FAILURE_BACKOFF_MS, MAX_AGE_MS, TaskCatalog, toTaskInfo, UNKNOWN_TASK_INTERVAL_MS } from '../pipelines/taskCatalog';
 import { TaskInfo } from '../pipelines/taskModel';
 import * as T from '../types';
 import * as vscode from './vscodeStub';
@@ -242,6 +242,67 @@ describe('TaskCatalog', () => {
     assert.equal((await c.refresh()).status, 'ready');
     assert.equal(c.snapshot().error, undefined);
     assert.equal(requests, 2);
+  });
+
+  it('does not loop on a failing client: ensure() backs off, an explicit refresh still tries', async () => {
+    answer = async () => { throw new Error('forbidden'); };
+    const c = newCatalog();
+    // The editor revalidates on every change event, as the YAML support does.
+    c.onDidChange(() => { void c.ensure(); });
+    await c.ensure();
+    for (let i = 0; i < 20; i++) { await flush(); }
+    assert.equal(requests, 1);
+    mock.timers.tick(FAILURE_BACKOFF_MS - 1);
+    await c.ensure();
+    assert.equal(requests, 1);
+    assert.equal((await c.refresh()).status, 'error');
+    assert.equal(requests, 2);
+    // The second failure doubles the wait.
+    mock.timers.tick(FAILURE_BACKOFF_MS);
+    await c.ensure();
+    await flush();
+    assert.equal(requests, 2);
+    mock.timers.tick(FAILURE_BACKOFF_MS);
+    await c.ensure();
+    await flush();
+    assert.equal(requests, 3);
+  });
+
+  it('does not loop on old data with a failing refresh, and success clears the backoff', async () => {
+    files.set(fileOf(ORG), cacheText({ fetchedAt: Date.now() - MAX_AGE_MS - 1 }));
+    answer = async () => { throw new Error('boom'); };
+    const c = newCatalog();
+    c.onDidChange(() => { void c.ensure(); });
+    await c.ensure();
+    for (let i = 0; i < 20; i++) { await flush(); }
+    assert.equal(requests, 1);
+    assert.equal(c.snapshot().status, 'stale');
+    mock.timers.tick(FAILURE_BACKOFF_MS);
+    answer = async () => [def()];
+    await c.ensure();
+    await flush();
+    assert.equal(requests, 2);
+    assert.equal(c.snapshot().status, 'ready');
+  });
+
+  it('an old refresh does not clear the in-flight request of a newer one after reset', async () => {
+    const releases: (() => void)[] = [];
+    answer = () => new Promise(res => { releases.push(() => res([def()])); });
+    const c = newCatalog();
+    const first = c.refresh();
+    await flush();
+    c.reset();
+    const second = c.refresh();
+    await flush();
+    releases[0]();
+    await first;
+    // The newer request is still running: a third caller must join it, not start another.
+    const third = c.refresh();
+    await flush();
+    assert.equal(requests, 2);
+    releases[1]();
+    await Promise.all([second, third]);
+    assert.equal(c.snapshot().status, 'ready');
   });
 
   it('uses a generic message for a thrown non-error', async () => {

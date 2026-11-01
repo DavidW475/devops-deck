@@ -16,6 +16,9 @@ const SCHEMA = 1;
 export const MAX_AGE_MS = 24 * 60 * 60 * 1000;
 /** An unknown task starts a refresh at most this often. */
 export const UNKNOWN_TASK_INTERVAL_MS = 10 * 60 * 1000;
+/** After a failed refresh, automatic refreshes wait this long (doubling per failure, up to the maximum). */
+export const FAILURE_BACKOFF_MS = 30 * 1000;
+export const MAX_FAILURE_BACKOFF_MS = 10 * 60 * 1000;
 
 interface CacheFile {
   schema: number;
@@ -257,6 +260,9 @@ export class TaskCatalog implements vscode.Disposable {
   private loading?: Promise<void>;
   private inflight?: Promise<CatalogSnapshot>;
   private lastUnknown?: number;
+  /** Consecutive failed refreshes and the time before which automatic refreshes are skipped. */
+  private failures = 0;
+  private retryAfter = 0;
 
   constructor(private readonly client: AdoClient, private readonly connections: { current?: Connection },
     private readonly storageUri: vscode.Uri | undefined) {}
@@ -275,24 +281,38 @@ export class TaskCatalog implements vscode.Disposable {
     this.ensured = true;
     await this.load();
     if (!this.data) {
-      return this.refresh();
+      return this.autoRefresh();
     }
     if (Date.now() - this.data.fetchedAt > MAX_AGE_MS) {
-      void this.refresh();
+      void this.autoRefresh();
     }
     return this.snapshot();
   }
 
-  /** Forced refresh; callers share one request. Resolves with the snapshot, also when the request failed (see `error`). */
+  /** Explicit refresh (the user asked): always tries now, callers share one request. Resolves with the snapshot, also when the request failed (see `error`). */
   refresh(): Promise<CatalogSnapshot> {
     this.sync();
     if (!this.orgUrl) {
       return Promise.resolve(this.snapshot());
     }
-    this.inflight ??= this.doRefresh(this.orgUrl, this.generation).finally(() => {
-      this.inflight = undefined;
+    if (this.inflight) {
+      return this.inflight;
+    }
+    const run: Promise<CatalogSnapshot> = this.doRefresh(this.orgUrl, this.generation).finally(() => {
+      if (this.inflight === run) {
+        this.inflight = undefined;
+      }
     });
-    return this.inflight;
+    this.inflight = run;
+    return run;
+  }
+
+  /** Refresh started by the editor itself: skipped while a failed refresh is backing off, so a broken connection does not loop. */
+  private autoRefresh(): Promise<CatalogSnapshot> {
+    if (Date.now() < this.retryAfter) {
+      return Promise.resolve(this.snapshot());
+    }
+    return this.refresh();
   }
 
   /** A document uses a task the catalog doesn't know: it may be new, so reload, but at most every 10 minutes. */
@@ -306,7 +326,7 @@ export class TaskCatalog implements vscode.Disposable {
       return;
     }
     this.lastUnknown = now;
-    void this.refresh();
+    void this.autoRefresh();
   }
 
   /** The connection changed: forget the memory. Files stay, they belong to their organization. */
@@ -321,6 +341,8 @@ export class TaskCatalog implements vscode.Disposable {
     this.loading = undefined;
     this.inflight = undefined;
     this.lastUnknown = undefined;
+    this.failures = 0;
+    this.retryAfter = 0;
     if (changed) {
       this.emitter.fire();
     }
@@ -362,8 +384,8 @@ export class TaskCatalog implements vscode.Disposable {
   }
 
   private setData(tasks: TaskInfo[], fetchedAt: number): void {
-    const kept = keepHighest(tasks);
-    this.data = { tasks: kept, index: buildIndex(kept), fetchedAt };
+    const index = buildIndex(tasks);
+    this.data = { tasks: index.all(), index, fetchedAt };
     this.status = 'ready';
     this.error = undefined;
   }
@@ -384,10 +406,14 @@ export class TaskCatalog implements vscode.Disposable {
       if (generation !== this.generation) {
         return this.snapshot();
       }
+      this.failures = 0;
+      this.retryAfter = 0;
       this.setData(tasks, Date.now());
       await this.writeFile(orgUrl);
     } catch (e) {
       if (generation === this.generation) {
+        this.failures++;
+        this.retryAfter = Date.now() + Math.min(FAILURE_BACKOFF_MS * 2 ** (this.failures - 1), MAX_FAILURE_BACKOFF_MS);
         this.error = e instanceof Error ? e.message : 'Loading the tasks failed.';
         this.status = this.data ? 'stale' : 'error';
       }
