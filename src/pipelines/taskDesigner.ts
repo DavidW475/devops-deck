@@ -296,8 +296,15 @@ export function planTaskStep(o: TaskEditInput): LineEdit[] {
   return edits;
 }
 
+/** Where a new step goes: line `at`, its `indent` and the file's indent `unit`. */
+export interface NewTaskPlace {
+  at: number;
+  indent: number;
+  unit: number;
+}
+
 /** The edit that inserts a new step at line `at`. */
-export function planNewTask(info: TaskInfo, form: TaskForm, pending: Record<string, string>, at: number, indent: number, unit: number,
+export function planNewTask(info: TaskInfo, form: TaskForm, pending: Record<string, string>, where: NewTaskPlace,
   opts: EditOptions, displayName?: string): LineEdit {
-  return { line: at, deleteCount: 0, insert: newTaskLines(`${info.name}@${info.major}`, form.declared, pending, indent, unit, opts, displayName) };
+  return { line: where.at, deleteCount: 0, insert: newTaskLines(`${info.name}@${info.major}`, form.declared, pending, where.indent, where.unit, opts, displayName) };
 }

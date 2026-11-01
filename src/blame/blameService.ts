@@ -548,7 +548,7 @@ export class BlameService implements BlameLookups {
 /** A pull request as the REST endpoint may really return it: title and status can be missing. */
 type SparsePr = Omit<PullRequest, 'title' | 'status'> & Partial<Pick<PullRequest, 'title' | 'status'>>;
 const hasTitleAndStatus = (p: SparsePr): p is PullRequest => p.title !== undefined && p.status !== undefined;
-const isPr = (p: SparsePr | undefined): p is PullRequest => p !== undefined && p.status !== undefined;
+const isPr = (p: SparsePr | undefined): p is PullRequest => p?.status !== undefined;
 
 /** The dependencies of the extension: real git extension, real REST client, VS Code settings. */
 export function defaultBlameDeps(client: AdoClient, connections: Pick<ConnectionManager, 'current'>): BlameDeps {

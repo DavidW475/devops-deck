@@ -209,7 +209,7 @@ function versionIssue(step: TaskStepRef, task: TaskInfo | undefined, index: Task
   return undefined;
 }
 
-const isBlockScalarHeader = (v: string) => v.length > 0 && '|>'.includes(v[0]) && [...v.slice(1)].every(c => '+-0123456789'.includes(c));
+const isBlockScalarHeader = (v: string) => /^[|>][+\-0-9]*$/.test(v);
 
 /** Why the written value doesn't fit the input's type or static options; undefined when it fits or can't be judged. */
 function valueProblem(input: TaskInput, e: ParamEntry): string | undefined {

@@ -18,7 +18,7 @@ type Mode = 'off' | 'statusBar' | 'inline' | 'both';
 
 const SETTING = 'azureDevOps.blame.annotations';
 const DEBOUNCE_MS = 400;
-const MODES: readonly string[] = ['off', 'statusBar', 'inline', 'both'];
+const MODES: ReadonlySet<string> = new Set(['off', 'statusBar', 'inline', 'both']);
 const HINT_TEXT = 'Another extension or VS Code already shows blame at the end of the line.';
 const HINT_BUTTON = 'Use status bar instead';
 
@@ -282,7 +282,7 @@ class Annotations {
 
   private readMode(): Mode {
     const value = vscode.workspace.getConfiguration('azureDevOps').get<string>('blame.annotations', 'off');
-    return MODES.includes(value) ? value as Mode : 'off';
+    return MODES.has(value) ? value as Mode : 'off';
   }
 
   private get statusOn(): boolean {

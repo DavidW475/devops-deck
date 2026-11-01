@@ -110,7 +110,7 @@ describe('mergeWorkItems', () => {
 
 describe('cleanText', () => {
   it('removes control and bidi characters and collapses whitespace', () => {
-    assert.equal(cleanText('a\u0000b‮c⁦d‏e؜f'), 'a bcdef');
+    assert.equal(cleanText('a\u0000b\u202ec\u2066d\u200fe\u061cf'), 'a bcdef');
     assert.equal(cleanText('  a\n\t b \u0085 c  '), 'a b c');
     assert.equal(cleanText('x\u007Fy'), 'x y');
   });
@@ -183,11 +183,11 @@ describe('annotationText', () => {
   });
 
   it('limits the length and cleans the texts', () => {
-    const l = line({ author: `${'Erika '.repeat(30)}‮` });
+    const l = line({ author: `${'Erika '.repeat(30)}\u202e` });
     const t = annotationText({ lookup: { state: 'commit', line: l, repo }, pr: { repoId: REPO_ID, match: { ...match, pr: pr(1, 'completed', undefined, '$(alert) '.repeat(20)) } } }, NOW) ?? '';
     assert.ok(Array.from(t).length <= 80);
     assert.ok(!t.includes('$('));
-    assert.ok(!t.includes('‮'));
+    assert.ok(!t.includes('\u202e'));
   });
 });
 
@@ -343,7 +343,7 @@ describe('traceRows', () => {
 
   it('cleans plain texts so a title cannot produce an icon', () => {
     const rows = traceRows(base({
-      line: line({ summary: '$(alert) ‮' + 'x'.repeat(200), sha: 'abc' }),
+      line: line({ summary: '$(alert) \u202e' + 'x'.repeat(200), sha: 'abc' }),
       pr: { repoId: REPO_ID, match: { pr: pr(1, 'completed', undefined, '$(rocket) hi'), via: 'commit', others: [] } },
       workItems: [{ item: wi(2, 'Bug', '$(bug) t', 'New'), sources: ['pr'] }],
     }), NOW);
@@ -368,7 +368,7 @@ describe('stateMessage', () => {
   });
 
   it('cleans the error message and ignores traceable states', () => {
-    assert.equal(stateMessage({ state: 'error', message: 'Bad\n‮thing $(x)', auth: false }, 'a', undefined), 'Bad thing $ (x)');
+    assert.equal(stateMessage({ state: 'error', message: 'Bad\n\u202ething $(x)', auth: false }, 'a', undefined), 'Bad thing $ (x)');
     assert.equal(stateMessage({ state: 'commit', line: line(), repo }, 'a', undefined), undefined);
     assert.equal(stateMessage({ state: 'shallow', line: line(), repo }, 'a', undefined), undefined);
     assert.equal(stateMessage({ state: 'unpublished', line: line(), repo }, 'a', undefined), undefined);

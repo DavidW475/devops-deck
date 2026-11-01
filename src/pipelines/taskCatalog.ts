@@ -84,7 +84,7 @@ function toInput(raw: unknown): TaskInput | undefined {
     label: str(raw.label) ?? name,
     required: raw.required === true,
     type: (str(raw.type) ?? 'string').toLowerCase(),
-    default: def ? def : undefined,
+    default: def || undefined,
     help: str(raw.helpMarkDown) || undefined,
     visibleRule: str(raw.visibleRule) || undefined,
     group: str(raw.groupName) || undefined,

@@ -614,7 +614,7 @@ export class PipelineDesignerPanel {
     }
     const opts = { writeDefaults: this.writeDefaults };
     if (call.isNew) {
-      return call.point ? [planNewTask(t.info, t.form, this.pending, call.point.line, call.point.indent, indentUnit(text), opts, this.displayName)] : [];
+      return call.point ? [planNewTask(t.info, t.form, this.pending, { at: call.point.line, indent: call.point.indent, unit: indentUnit(text) }, opts, this.displayName)] : [];
     }
     return t.step ? planTaskStep({ step: t.step, info: t.info, form: t.form, text, pending: this.pending, opts, displayName: this.displayName, major: this.taskMajor }) : [];
   }
@@ -866,7 +866,7 @@ export class PipelineDesignerPanel {
       return;
     }
     this.tasksRequested = true;
-    this.host.tasks.ensure().then(() => undefined, () => undefined).then(() => {
+    void this.host.tasks.ensure().then(() => undefined, () => undefined).then(() => {
       if (!this.disposed) {
         void this.render();
       }

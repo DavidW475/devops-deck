@@ -6,13 +6,12 @@
  */
 import * as vscode from 'vscode';
 import { Connection } from '../connection';
-import { plural } from '../util';
+import { mdEscape, plural } from '../util';
 import { yamlScalar } from './objectParams';
 import { CatalogSnapshot, TaskCompletionContext, TaskInfo, TaskInput, TaskIndex, TaskIssue, TaskIssueCode, TaskStepRef } from './taskModel';
 import { checkTaskStep, findTaskSteps, taskCompletionContext } from './taskRefs';
 import { retirementOf } from './taskRetirement';
 import { findInput, inputVisibility } from './taskRules';
-import { mdEscape } from '../util';
 import { snippetEscape } from './templateRefs';
 import { isPipelineDoc, SELECTOR } from './yamlTemplates';
 
@@ -420,7 +419,7 @@ export class YamlTaskSupport implements vscode.CompletionItemProvider, vscode.Ho
     const text = doc.getText();
     const actions: vscode.CodeAction[] = [];
     for (const d of context.diagnostics) {
-      const issue = d.source === SOURCE && ISSUE_CODES.has(String(d.code)) ? known.find(i => sameIssue(i, d)) : undefined;
+      const issue = d.source === SOURCE && typeof d.code === 'string' && ISSUE_CODES.has(d.code) ? known.find(i => sameIssue(i, d)) : undefined;
       const action = issue && quickFix(doc, text, issue);
       if (action) {
         action.diagnostics = [d];

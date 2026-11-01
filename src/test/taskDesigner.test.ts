@@ -193,7 +193,7 @@ describe('task edits', () => {
 
   it('plans a new step at an insertion point', () => {
     const f = buildTaskForm(TEXT, DEPLOY, undefined, undefined, { connection: 'x', script: 'a\nb' });
-    const edit = planNewTask(DEPLOY, f, { connection: 'x', script: 'a\nb' }, 7, 0, 2, opts, 'Roll out');
+    const edit = planNewTask(DEPLOY, f, { connection: 'x', script: 'a\nb' }, { at: 7, indent: 0, unit: 2 }, opts, 'Roll out');
     assert.deepEqual(edit, {
       line: 7, deleteCount: 0,
       insert: ['- task: ContosoDeploy@2', '  displayName: Roll out', '  inputs:', '    connection: x', '    script: |', '      a', '      b'],
