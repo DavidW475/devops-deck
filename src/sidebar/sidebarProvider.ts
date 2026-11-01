@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { AdoClient, AdoError } from '../client';
 import { ConnectionManager, normalizeOrgUrl } from '../connection';
 import { buildDto, timelineTree } from '../pipelines/timeline';
-import { summarizeChecks } from '../pullRequests/checks';
+import { ChecksSummary, summarizeChecks } from '../pullRequests/checks';
 import { changeVersion, ReviewedFiles } from '../pullRequests/reviewed';
 import { Approval, PullRequest, TeamIteration, WorkItem, WorkItemState } from '../types';
 import type { MyDayService } from '../myDay/service';
@@ -27,12 +27,16 @@ const DEFAULT_QUERIES: BuiltinQuery[] = [
 /** The built-in "Assigned to me" query, also the work item source of My Day. */
 export const ASSIGNED_TO_ME: BuiltinQuery = DEFAULT_QUERIES[0];
 
+/** How long the policy status of a pull request is reused: switching filters or refreshing in a burst asks once. */
+const CHECKS_TTL_MS = 15_000;
+
 const badgeTooltip = (count: number): string => (count === 1 ? '1 item needs you in My Day' : `${plural(count, 'item')} need you in My Day`);
 
 /** The sidebar dashboard: a single webview with tabs for pull requests, work items and pipelines. */
 export class SidebarProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
   private readonly stateCache = new Map<string, Promise<WorkItemState[]>>();
+  private readonly checksCache = new Map<string, { at: number; checks: Promise<ChecksSummary | undefined> }>();
   private myDay?: MyDayService;
   private myDaySubscribed = false;
   private lastCount = 0;
@@ -104,6 +108,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
   refresh(): void {
     this.stateCache.clear();
+    this.checksCache.clear();
     void this.view?.webview.postMessage({ type: 'refresh' });
   }
 
@@ -149,7 +154,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       case 'me':
         return c.getMe();
       case 'prs':
-        return this.pullRequests(String(p.filter));
+        return this.pullRequests(String(p.filter), !!p.force);
       case 'prFiles':
         return this.prFiles(String(p.repoId), Number(p.prId));
       case 'setReviewed':
@@ -302,7 +307,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   }
 
   /** Pull requests of the selected projects, newest first, with the state of their required checks. */
-  private async pullRequests(filter: string) {
+  private async pullRequests(filter: string, force: boolean) {
     const c = this.client;
     const me = await c.getMe();
     const criteria: Record<string, { creatorId?: string; reviewerId?: string }> = { mine: { creatorId: me.id }, review: { reviewerId: me.id } };
@@ -312,9 +317,21 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     const prs = (await this.perProject<PullRequest>(list)).toSorted((a, b) => b.creationDate.localeCompare(a.creationDate));
     // Policy status per PR (at most 6 requests at a time); a PR whose policies cannot be read just shows no checks.
     const checks = await mapLimit(prs, 6, pr => pr.repository.project?.id
-      ? c.getPolicyEvaluations(pr.repository.project.id, pr.pullRequestId).then(summarizeChecks, () => undefined)
+      ? this.checksOf(pr.repository.project.id, pr.pullRequestId, force)
       : Promise.resolve(undefined));
     return prs.map((pr, i) => ({ ...this.prDto(pr, me.id), project: pr.project, checks: checks[i] }));
+  }
+
+  /** The required-check summary of a PR; reused for CHECKS_TTL_MS unless `force` asks again. */
+  private checksOf(projectId: string, prId: number, force: boolean): Promise<ChecksSummary | undefined> {
+    const key = `${projectId}/${prId}`;
+    const cached = this.checksCache.get(key);
+    if (cached && !force && Date.now() - cached.at < CHECKS_TTL_MS) {
+      return cached.checks;
+    }
+    const checks = this.client.getPolicyEvaluations(projectId, prId).then(summarizeChecks, () => undefined);
+    this.checksCache.set(key, { at: Date.now(), checks });
+    return checks;
   }
 
   /** Files of a PR's latest update with their reviewed check marks. */

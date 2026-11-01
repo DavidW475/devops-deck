@@ -218,7 +218,7 @@
   /** The data of a tab for its current filter; `force` makes My Day skip its cache. */
   function fetchTab(tab, force = false) {
     if (tab === 'myday') return rpc('myDay', { force });
-    if (tab === 'prs') return rpc('prs', { filter: S.prFilter });
+    if (tab === 'prs') return rpc('prs', { filter: S.prFilter, force });
     if (tab === 'wis') return rpc('workItems', { query: S.wiQuery });
     if (tab === 'sprint') return loadSprint();
     if (S.buildFilter === 'approvals') return rpc('approvals');
