@@ -8,7 +8,7 @@ Review and create pull requests, plan sprints, manage work items, watch pipeline
 
 ### Dashboard
 
-A sidebar with tabs for pull requests, work items, the current sprint and pipelines. It has search, filter chips, avatars and status badges, and it follows your VS Code theme. Buttons at the top open repositories and the wiki.
+A sidebar with tabs for My Day, pull requests, work items, the current sprint and pipelines. It has search, filter chips, avatars and status badges, and it follows your VS Code theme. Buttons at the top open repositories and the wiki.
 
 <p align="center">
   <img src="media/screenshots/pull-requests.png" width="24%" alt="Pull requests tab with an expanded pull request, its checks and changed files">
@@ -20,6 +20,10 @@ A sidebar with tabs for pull requests, work items, the current sprint and pipeli
 **Several projects at once:** in the project picker, tick more projects of the organization and choose *Show N projects*. Pull requests, work items, sprints, pipelines and approvals of all of them are then listed together, each card marked with its project. Clicking a project name still switches to just that project.
 
 <p align="center"><img src="media/screenshots/projects.png" width="36%" alt="Project picker with two projects ticked and pull requests of both projects in the list"></p>
+
+### My Day
+
+The *My Day* tab is a short, ranked list of what needs you now: approvals waiting for you, failed pipeline runs you started, pull requests waiting for your review and work items assigned to you, with the most urgent first. Each entry says why it ranks where it does, and has quick actions such as *Approve*, *Vote*, *Open run*, *Run again* or *Change state*. Defer what can wait: snooze an item for a few hours, until tomorrow or next Monday, mark it done until it changes, or hide it; deferred items are listed in their own section where you can bring them back. Approvals can only be snoozed. The number of open items is shown as a badge on the view. Failed runs on your important branches rank higher; set them with `azureDevOps.myDay.importantBranches`.
 
 ### Pull requests
 
@@ -206,6 +210,7 @@ If there is no Azure Repos remote, or you want a different project, click the pr
 | `azureDevOps.tenantId` | | Entra ID tenant, if it differs from your account's home tenant |
 | `azureDevOps.workItems.queries` | `[]` | Custom WIQL queries for the work item dropdown; these replace the built-in ones |
 | `azureDevOps.refreshInterval` | `60` | Seconds between automatic refreshes of the visible sidebar tab, paused while VS Code is not focused (`0` = off) |
+| `azureDevOps.myDay.importantBranches` | `["main", "master", "release/*"]` | Branches where a failed run of yours ranks higher in *My Day*, besides the repository's default branch (`*` matches any text) |
 | `azureDevOps.pipelines.refreshInterval` | `10` | Seconds between refreshes while a run is in progress |
 | `azureDevOps.pipelines.logPollInterval` | `3` | Seconds between polls when streaming logs |
 | `azureDevOps.pipelines.showTimestamps` | `false` | Show timestamps in pipeline logs |
@@ -243,6 +248,7 @@ Example of a custom query:
 - **Live logs arrive per step, not line by line.** The public REST API only returns log lines once the agent uploads them, usually when a step finishes. Step status updates live, though. The web UI's line-by-line streaming uses an undocumented channel.
 - **Reviewed-file check marks are not synced** with the check marks in the Azure DevOps web UI, because that storage is not a public API. The same applies to "new since your last visit" in pull requests, which is remembered locally.
 - **Stage dependencies of classic pipelines and of YAML that cannot be expanded** (for example with required runtime parameters that have no default) are inferred from start and finish times, which is right for runs that have started but can only guess for stages that have not.
+- **My Day finds only direct assignments:** pull requests that are waiting for a team or group you belong to, and approvals assigned to a group, do not show up.
 - **Watchers, saved queries, the wiki and repositories** use the primary project when several projects are selected.
 - **Tracing a line:** the pull request is found through the commit. Whether squash, rebase and rebase-merge commits are found has not been tested against a live organization; if none is found, the pull request number in a `Merged PR 123:` commit message is used. Needs `git` and a trusted workspace; organizations configured as `https://<name>.visualstudio.com` do not match remotes (same as the other git features).
 - **Template checks are local:** template paths built from expressions (`${{ }}`) are not followed by hovers and checks. The *Local* pipeline preview evaluates them, but it is a re-implementation and can differ from Azure DevOps in edge cases (for example YAML anchors or variable templates in compile-time expressions); the *Azure DevOps* preview gives the exact result.

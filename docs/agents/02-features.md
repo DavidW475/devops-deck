@@ -15,6 +15,28 @@ Short map from user features to code, plus pitfalls found while building them. C
 | Create PR: title/description from commits, work item IDs from branch name and commit text, reviewers, existing-PR check | `createPrPanel.ts`, helpers in `src/git.ts` |
 | Status bar: PR of the checked-out branch with checks, latest run of the branch, or "Create pull request" | `prStatusBar.ts` |
 
+## My Day (`src/myDay/`)
+
+| Feature | Code |
+| --- | --- |
+| Ranked list of what needs you: approvals, failed runs of yours, pull requests to review, assigned work items, each with quick actions | `service.ts` (`MyDayService.get`), `model.ts` (items and actions), `rank.ts` (`RULES`) |
+| Defer an item: snooze, done until it changes (fingerprint), hide; restore from the "Deferred" section | `defers.ts` (`MyDayDefers`, `snoozeUntil`), `commands.ts` (`deferItem`), commands `azureDevOps.myDay.defer` / `.restore` |
+| Vote on a pull request from the list | `commands.ts` (`voteOnPullRequest`), command `azureDevOps.pr.vote` |
+| Badge on the view with the number of items | `SidebarProvider.setBadge`, fed by the `myDay` push |
+| Setting `azureDevOps.myDay.importantBranches` | `service.ts` (`importantBranches` dep), rule R2 |
+
+Pitfalls:
+
+- **All weights live in `rank.ts`:** the `RULES` table (id, points, label) is the only place; code and tests refer to the id. Change a weight there, not in `model.ts`.
+- **Approvals:** the run id is `approval.pipeline.owner.id`; `approval.pipeline.id` is the pipeline **definition**. Mixing them opens the wrong run. An approval can only be snoozed (the run waits for it), never marked done or hidden. `Approval.pipeline` is not in Learn's object definition, see [03-azure-devops-api.md](03-azure-devops-api.md).
+- **Garbage collection of defers** (`MyDayDefers.prune`) runs only for sources that loaded without error. A source that failed keeps its entries, otherwise a network error would bring back everything the user had hidden.
+- **Host timer:** the service polls from the extension host (`TICK` 15 s, each source when due), because the page does not run timers while hidden. The timer starts when the sidebar view is first resolved (`start()`), not at activation. It does nothing while the window is not focused or while `throttledUntil` is in the future, and it refreshes faster only while the My Day tab is open and visible (`setVisible`, driven by the `tab` rpc and view visibility).
+- **Keys contain colons:** item keys look like `pr:<repoId>:<id>` or `run:<project>:<id>`; the page prefixes them with `md:` for its cards (`md:pr:<repoId>:<id>`), because the other tabs use plain ids as keys. Strip the `md:` prefix (and only that) before splitting; project names may hold colons or spaces, so never split the whole key blindly.
+- **View badges add up:** VS Code adds the number badges of all views in a container to the container's badge. The My Day count is shown on the dashboard view and therefore also on the activity bar icon together with the watchers view.
+- **Shared raw lists:** `rawReviews(project)` and `rawApprovals(project)` give the PR and Approvals tabs the lists My Day already loaded, so the same data is not requested twice. Do not mutate them.
+- **Not covered (MVP):** reviews requested from a team or group and approvals assigned to a group do not show up; only direct assignment is found.
+- **Not built yet:** phases 2 to 5 of the concept (`docs/concepts/2026-11-01-feature-konzepte.md`, section 3).
+
 ## Work items (`src/workItems/`)
 
 | Feature | Code |

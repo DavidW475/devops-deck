@@ -89,6 +89,15 @@ Used by `src/blame/` (see [02-features.md](02-features.md)). Calls go through `A
 - `commitWebUrl(repoName, sha)` builds `<repo URL>/commit/<sha>`; `webUrl` takes numbers for its second part, so a SHA does not fit there.
 - No new PAT scope: Code (Read) and Work Items (Read) are enough.
 
+## My Day
+
+Used by `src/myDay/` (see [02-features.md](02-features.md)).
+
+- **Throttling:** every answer goes through `AdoClient.noteThrottling`. `Retry-After` is read in seconds or as an HTTP date, on any status (also 200, which Azure DevOps uses for "slow down"); a 429 without the header pauses 60 s and the call still throws `AdoError`. The pause is stored on the root client, so project clients share it, and a later shorter header never shortens it. `throttledUntil` exposes it; the My Day timer honours it. Direct user actions are not blocked.
+- `listIterationDates()`: `GET wit/classificationnodes/Iterations?$depth=10`, flattened to `{ path, finishDate }` with backslash paths (`Fabrikam Shop\Sprint 1`); `finishDate` is `attributes.finishDate` and may be missing.
+- `listBuildsSince(since, order, { requestedFor, top })`: `requestedFor` (identity id) and `$top` (default 200) are query parameters of `GET build/builds`. **The combination of `requestedFor` with `minTime`, `queryOrder` and `statusFilter` has not been tested live.**
+- `Approval.pipeline` (the run, with `owner.id` as run id and `id` as the definition id) is **not in Learn's object definition** of the approvals API; it is what the service returns in practice. `src/types.ts` marks it optional and the model skips the run link when it is missing.
+
 ## Code search is intentionally not supported
 
 Azure DevOps Code Search is only served from `almsearch.dev.azure.com`, which `isAzureDevOpsUrl` rejects on purpose. The maintainer decided not to offer code search rather than loosen the credential host check. Do not re-add it without asking the maintainer.

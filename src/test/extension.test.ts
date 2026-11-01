@@ -4,6 +4,8 @@ import { fakeDoc, openedDocs, quickPicks, registered, resetExtras, shownDocs } f
 import { lastPanel } from './fakeWebview';
 import * as vscode from './vscodeStub';
 import { activate, deactivate } from '../extension';
+import { MyDayService } from '../myDay/service';
+import { FakeWebview } from './fakeWebview';
 
 const pkg = require('../../package.json') as { contributes: { commands: { command: string }[] } };
 const flush = () => new Promise(r => setImmediate(r));
@@ -53,6 +55,9 @@ async function fakeFetch(url: string | URL, init?: RequestInit): Promise<Respons
 const run = (id: string, ...args: unknown[]) => registered.get(id)!(...args);
 let inputs: unknown[] = [];
 let warnings: unknown[] = [];
+let sidebarProvider: { resolveWebviewView(view: unknown): void } | undefined;
+const resetSpy = { calls: 0 };
+const realReset = MyDayService.prototype.reset;
 let sessionListener: ((e: { provider: { id: string } }) => void) | undefined;
 const realFetch = globalThis.fetch;
 
@@ -67,11 +72,14 @@ describe('activate', () => {
     vscode.settings['azureDevOps.refreshInterval'] = 0;
     secrets.set('azureDevOps.pat', 'fake-pat');
     (vscode.authentication as any).onDidChangeSessions = (l: typeof sessionListener) => { sessionListener = l; return { dispose() { /* stub */ } }; };
+    w.registerWebviewViewProvider = (_id: string, provider: typeof sidebarProvider) => { sidebarProvider = provider; return { dispose() { /* stub */ } }; };
+    MyDayService.prototype.reset = function (this: MyDayService) { resetSpy.calls++; realReset.call(this); };
     await activate(context as any);
   });
   after(() => {
     context.subscriptions.forEach(d => d.dispose());
     deactivate();
+    MyDayService.prototype.reset = realReset;
     globalThis.fetch = realFetch;
   });
   beforeEach(() => {
@@ -240,5 +248,64 @@ describe('activate', () => {
     second.fire('accept');
     await done;
     assert.equal(vscode.settings['azureDevOps.project'], 'Contoso Web');
+  });
+
+  it('declares and registers the My Day commands', () => {
+    const declared = pkg.contributes.commands.map(c => c.command);
+    for (const id of ['azureDevOps.myDay.defer', 'azureDevOps.myDay.restore', 'azureDevOps.pr.vote']) {
+      assert.ok(declared.includes(id), `${id} is declared`);
+      assert.ok(registered.has(id), `${id} is registered`);
+    }
+  });
+
+  /** Resolves the sidebar with a fake page; returns the messages it received. */
+  function openSidebar(): FakeWebview {
+    const webview = new FakeWebview();
+    const view = { webview, badge: undefined as unknown, visible: true, onDidChangeVisibility: () => ({ dispose() { /* stub */ } }) };
+    sidebarProvider!.resolveWebviewView(view);
+    return webview;
+  }
+
+  it('ignores a vote with invalid arguments without a request or refresh', async () => {
+    const page = openSidebar();
+    let picks = 0;
+    w.showQuickPick = async () => { picks++; return undefined; };
+    const before = requests.length;
+    await run('azureDevOps.pr.vote', '', 7);
+    await run('azureDevOps.pr.vote', 42, 7);
+    await run('azureDevOps.pr.vote', 'web-shop', 'x');
+    await run('azureDevOps.pr.vote', 'web-shop', 1.5);
+    await run('azureDevOps.pr.vote', 'web-shop', 0);
+    assert.equal(picks, 0);
+    assert.equal(requests.slice(before).filter(u => u.includes('/reviewers/')).length, 0);
+    assert.equal(page.ofType('refresh').length, 0);
+  });
+
+  it('does nothing when deferring an unknown My Day key', async () => {
+    let picks = 0;
+    w.showQuickPick = async () => { picks++; return undefined; };
+    await run('azureDevOps.myDay.defer', 'pr:unknown');
+    await run('azureDevOps.myDay.defer', 12);
+    await run('azureDevOps.myDay.defer');
+    assert.equal(picks, 0);
+    await run('azureDevOps.myDay.restore', 'pr:unknown');
+  });
+
+  it('serves My Day through the sidebar and resets it on sign-in and configuration changes', async () => {
+    const page = openSidebar();
+    await page.send({ type: 'rpc', id: 1, method: 'myDay', params: {} });
+    const answer = page.ofType('rpc').find(m => m.id === 1);
+    assert.ok(answer, 'the sidebar answers the myDay call');
+    assert.notEqual(answer.error?.message, 'My Day is not available', 'the service is connected to the sidebar');
+    const base = resetSpy.calls;
+    await run('azureDevOps.signIn');
+    assert.equal(resetSpy.calls, base + 1, 'sign-in resets My Day');
+    await run('azureDevOps.setPat');
+    await vscode.workspace.getConfiguration('azureDevOps').update('additionalProjects', ['Contoso Web']);
+    await flush();
+    assert.ok(resetSpy.calls >= base + 2, 'a configuration change resets My Day');
+    const afterConfig = resetSpy.calls;
+    sessionListener!({ provider: { id: 'microsoft' } });
+    assert.equal(resetSpy.calls, afterConfig + 1, 'a Microsoft session change resets My Day');
   });
 });

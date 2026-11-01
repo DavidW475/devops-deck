@@ -9,6 +9,7 @@ export interface Reviewer extends IdentityRef {
   vote: number;
   isRequired?: boolean;
   isContainer?: boolean;
+  hasDeclined?: boolean;
 }
 
 export interface GitRepositoryRef {
@@ -215,6 +216,8 @@ export interface Build {
   startTime?: string;
   finishTime?: string;
   reason?: string;
+  /** often empty in list answers */
+  repository?: { defaultBranch?: string };
 }
 
 export interface TimelineRecord {
@@ -281,6 +284,13 @@ export interface ClassificationNode {
   name: string;
   hasChildren?: boolean;
   children?: ClassificationNode[];
+  attributes?: { startDate?: string; finishDate?: string };
+}
+
+/** An iteration with its full path, as work items name it in System.IterationPath. */
+export interface ClassificationIteration {
+  path: string;
+  finishDate?: string;
 }
 
 export interface Approval {
@@ -289,6 +299,7 @@ export interface Approval {
   createdOn?: string;
   instructions?: string;
   minRequiredApprovers?: number;
+  blockedApprovers?: IdentityRef[];
   steps?: { assignedApprover: IdentityRef; status: string; comment?: string }[];
   pipeline?: { id?: number | string; name?: string; owner?: { id: number; name?: string } };
 }

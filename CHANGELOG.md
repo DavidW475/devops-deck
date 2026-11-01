@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- My Day: a tab with a ranked list of what needs you now (approvals waiting for you, your failed runs, pull requests to review, assigned work items), the reason for each rank and quick actions. Items can be snoozed, marked done until they change or hidden, and restored. A badge on the view shows the count. New commands *Defer* and *Restore* for items and *Vote on Pull Request*, and the setting `azureDevOps.myDay.importantBranches`
+
 ## 1.2.0
 
 ### Added
