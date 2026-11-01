@@ -8,10 +8,12 @@ import * as vscode from 'vscode';
 import { Connection } from '../connection';
 import { mdEscape, plural } from '../util';
 import { yamlScalar } from './objectParams';
-import { CatalogSnapshot, TaskCompletionContext, TaskInfo, TaskInput, TaskIndex, TaskIssue, TaskIssueCode, TaskStepRef } from './taskModel';
-import { checkTaskStep, findTaskSteps, taskCompletionContext } from './taskRefs';
+import { CatalogSnapshot, MAX_AGE_MS, TaskCompletionContext, TaskInfo, TaskInput, TaskIndex, TaskIssue, TaskIssueCode, TaskStepRef } from './taskModel';
+import { checkTaskStep, findTaskSteps, newestMajor, stepInputValues, taskCompletionContext } from './taskRefs';
 import { retirementOf } from './taskRetirement';
-import { findInput, inputVisibility } from './taskRules';
+import { plainHelp, safeHelpUrl } from './taskHelp';
+import { findInput, inputVisibility, ruleOf } from './taskRules';
+import { indentUnit } from './templateEdits';
 import { snippetEscape } from './templateRefs';
 import { isPipelineDoc, SELECTOR } from './yamlTemplates';
 
@@ -21,8 +23,6 @@ export const REFRESH_COMMAND = 'azureDevOps.yaml.refreshTaskCatalog';
 export const OTHER_EXTENSION_ID = 'ms-azure-devops.azure-pipelines';
 const DEBOUNCE_MS = 600;
 const LOADING_MS = 3000;
-const MAX_AGE_MS = 24 * 60 * 60 * 1000;
-const MAX_HELP = 800;
 
 /** What `YamlTaskSupport` needs from `TaskCatalog`, so tests can fake it. */
 export interface TaskCatalogSource {
@@ -38,64 +38,7 @@ const ISSUE_CODES: ReadonlySet<string> = new Set<TaskIssueCode>(['missingInput',
 
 // ----- pure helpers -----
 
-/** Text of a `helpMarkDown` without Markdown links and images: only the link text stays. Linear, no regexes. */
-export function plainHelp(markdown: string): string {
-  const s = markdown.slice(0, MAX_HELP * 2);
-  let out = '';
-  let i = 0;
-  while (i < s.length) {
-    const link = s[i] === '!' && s[i + 1] === '[' ? linkAt(s, i + 1) : undefined;
-    const text = s[i] === '[' ? linkAt(s, i) : undefined;
-    if (link) {
-      i = link.after;
-    } else if (text) {
-      out += s.slice(i + 1, text.close);
-      i = text.after;
-    } else {
-      out += s[i];
-      i++;
-    }
-  }
-  return out.trim().slice(0, MAX_HELP);
-}
-
-/** `[text](url)` starting at `open`: where the text ends and what follows the link. */
-function linkAt(s: string, open: number): { close: number; after: number } | undefined {
-  const close = s.indexOf(']', open + 1);
-  if (close < 0 || s[close + 1] !== '(') {
-    return undefined;
-  }
-  const end = s.indexOf(')', close + 2);
-  return end < 0 ? undefined : { close, after: end + 1 };
-}
-
-/** The link target when it is an `https:` URL, else undefined. Brackets and parentheses are escaped for Markdown. */
-export function safeHelpUrl(url: string | undefined): string | undefined {
-  if (!url) {
-    return undefined;
-  }
-  try {
-    const u = new URL(url);
-    return u.protocol === 'https:' ? u.href.replaceAll('(', '%28').replaceAll(')', '%29').replaceAll('[', '%5B').replaceAll(']', '%5D') : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 const leadingSpaces = (line: string) => line.length - line.trimStart().length;
-
-/** The file's indentation step: the smallest indent of a non-blank, non-comment line (2 when there is none). */
-export function indentUnit(lines: string[]): number {
-  let unit = 0;
-  for (const line of lines) {
-    const t = line.trim();
-    const n = leadingSpaces(line);
-    if (t && !t.startsWith('#') && n > 0 && (unit === 0 || n < unit)) {
-      unit = n;
-    }
-  }
-  return Math.min(Math.max(unit, 2), 8);
-}
 
 export interface TextInsert {
   line: number;
@@ -140,7 +83,7 @@ export function addInputEdit(text: string, issue: TaskIssue): TextInsert | undef
   }
   const lines = text.split(/\r?\n/);
   const eol = text.includes('\r\n') ? '\r\n' : '\n';
-  const unit = indentUnit(lines);
+  const unit = indentUnit(text);
   const entry = `${issue.input}: `;
   if (step.inputsLine === undefined) {
     const last = lastContentLine(lines, step.line, step.end);
@@ -166,16 +109,6 @@ function inputsSnippet(task: TaskInfo, pad: string, unit: number): string {
   const child = pad + ' '.repeat(unit);
   const lines = alwaysRequired(task).map((input, n) => `\n${child}${snippetEscape(input.yamlName)}: \${${n + 1}}`);
   return 'inputs:' + (lines.length ? lines.join('') : `\n${child}$0`);
-}
-
-function newestMajor(index: TaskIndex, name: string, major: number): number | undefined {
-  for (const m of index.majors(name)) {
-    const t = index.find(name, m);
-    if (t && !t.deprecated && !t.preview) {
-      return m > major ? m : undefined;
-    }
-  }
-  return undefined;
 }
 
 const range = (line: number, start: number, end: number) => new vscode.Range(line, start, line, end);
@@ -261,7 +194,7 @@ export class YamlTaskSupport implements vscode.CompletionItemProvider, vscode.Ho
     if (!loaded.index) {
       return loaded.loading && cc.kind === 'taskName' ? [this.loadingItem(cc)] : undefined;
     }
-    return completionItems(cc, loaded.index, text.split(/\r?\n/));
+    return completionItems(cc, loaded.index, text);
   }
 
   /** Microsoft's extension offers task names itself in `azure-pipelines` documents: skip ours to avoid duplicates. */
@@ -472,9 +405,9 @@ function quickFix(doc: vscode.TextDocument, text: string, issue: TaskIssue): vsc
 
 // ----- completion items -----
 
-function completionItems(cc: TaskCompletionContext, index: TaskIndex, lines: string[]): vscode.CompletionItem[] | undefined {
+function completionItems(cc: TaskCompletionContext, index: TaskIndex, text: string): vscode.CompletionItem[] | undefined {
   if (cc.kind === 'taskName') {
-    return nameItems(cc, index, lines);
+    return nameItems(cc, index, text);
   }
   if (cc.kind === 'taskVersion') {
     return versionItems(cc, index);
@@ -484,17 +417,20 @@ function completionItems(cc: TaskCompletionContext, index: TaskIndex, lines: str
     return undefined;
   }
   if (cc.kind === 'inputsKey') {
-    return [inputsKeyItem(task, lines)];
+    return [inputsKeyItem(task, text)];
   }
   return cc.kind === 'inputName' ? inputNameItems(task, cc.step) : inputValueItems(task, cc.name);
 }
 
-function nameItems(cc: Extract<TaskCompletionContext, { kind: 'taskName' }>, index: TaskIndex, lines: string[]): vscode.CompletionItem[] {
+function nameItems(cc: Extract<TaskCompletionContext, { kind: 'taskName' }>, index: TaskIndex, text: string): vscode.CompletionItem[] {
+  const lines = text.split(/\r?\n/);
   const seen = new Set<string>();
-  const unit = indentUnit(lines);
+  const unit = indentUnit(text);
   const step = cc.step;
   // The editor adds the indentation of the current line to every line of a snippet; the `- ` of the step is not part of it.
   const pad = step ? ' '.repeat(Math.max(step.keyCol - leadingSpaces(lines[cc.line] ?? ''), 0)) : undefined;
+  // Text after the value (a comment) would end up behind the snippet's last line.
+  const alone = (lines[cc.line] ?? '').slice(cc.end).trim() === '';
   const items: vscode.CompletionItem[] = [];
   for (const t of index.all()) {
     const label = `${t.name}@${t.major}`;
@@ -509,7 +445,8 @@ function nameItems(cc: Extract<TaskCompletionContext, { kind: 'taskName' }>, ind
     item.detail = nameDetail(t, index);
     item.sortText = `${ended ? '1' : '0'}${t.name.toLowerCase()}@${String(9999 - t.major).padStart(4, '0')}`;
     item.documentation = plainDocs(t.description);
-    const withInputs = pad !== undefined && step?.inputsLine === undefined;
+    // Inside quotes the multi-line snippet would end up in the string.
+    const withInputs = pad !== undefined && step?.inputsLine === undefined && !cc.quoted && alone;
     item.insertText = withInputs ? new vscode.SnippetString(`${snippetEscape(label)}\n${pad}${inputsSnippet(t, pad, unit)}`) : label;
     items.push(item);
   }
@@ -527,17 +464,16 @@ function versionItems(cc: Extract<TaskCompletionContext, { kind: 'taskVersion' }
   });
 }
 
-function inputsKeyItem(task: TaskInfo, lines: string[]): vscode.CompletionItem {
+function inputsKeyItem(task: TaskInfo, text: string): vscode.CompletionItem {
   const item = new vscode.CompletionItem('inputs', vscode.CompletionItemKind.Snippet);
   const required = alwaysRequired(task);
-  item.insertText = new vscode.SnippetString(inputsSnippet(task, '', indentUnit(lines)));
+  item.insertText = new vscode.SnippetString(inputsSnippet(task, '', indentUnit(text)));
   item.detail = required.length ? `with the required ${plural(required.length, 'input')}` : `Inputs of ${task.name}@${task.major}`;
   return item;
 }
 
 function inputNameItems(task: TaskInfo, step: TaskStepRef): vscode.CompletionItem[] {
-  const passed = new Map(step.inputs.map(e => [e.name, e.value] as [string, string]));
-  const conditional = new Set(step.inputs.filter(e => e.conditional).map(e => e.name));
+  const { passed, conditional } = stepInputValues(step);
   const given = new Set(step.inputs.map(e => findInput(task, e.name)));
   return task.inputs.filter(i => !given.has(i) && inputVisibility(task, i, passed, conditional) !== false).map(input => {
     const item = new vscode.CompletionItem(input.yamlName, vscode.CompletionItemKind.Property);
@@ -576,11 +512,6 @@ function inputValueItems(task: TaskInfo, name: string): vscode.CompletionItem[] 
 
 // ----- input hover -----
 
-function ruleOf(task: TaskInfo, input: TaskInput): string {
-  const group = task.groups.find(g => g.name === input.group)?.visibleRule;
-  return [input.visibleRule, group].filter((r): r is string => !!r?.trim()).join(' and ');
-}
-
 function visibilityText(shown: boolean | undefined): string {
   if (shown === undefined) {
     return 'unknown';
@@ -589,8 +520,7 @@ function visibilityText(shown: boolean | undefined): string {
 }
 
 function inputMarkdown(task: TaskInfo, input: TaskInput, step: TaskStepRef): vscode.MarkdownString {
-  const passed = new Map(step.inputs.map(e => [e.name, e.value] as [string, string]));
-  const conditional = new Set(step.inputs.filter(e => e.conditional).map(e => e.name));
+  const { passed, conditional } = stepInputValues(step);
   const shown = inputVisibility(task, input, passed, conditional);
   const state = visibilityText(shown);
   const rule = ruleOf(task, input);

@@ -9,11 +9,10 @@ import * as vscode from 'vscode';
 import { AdoClient } from '../client';
 import type { Connection } from '../connection';
 import * as T from '../types';
-import { CatalogSnapshot, CatalogStatus, TaskIndex, TaskInfo, TaskInput } from './taskModel';
+import { CatalogSnapshot, CatalogStatus, MAX_AGE_MS, TaskIndex, TaskInfo, TaskInput } from './taskModel';
 
 const SCHEMA = 1;
-/** Data older than this is refreshed in the background. */
-export const MAX_AGE_MS = 24 * 60 * 60 * 1000;
+export { MAX_AGE_MS };
 /** An unknown task starts a refresh at most this often. */
 export const UNKNOWN_TASK_INTERVAL_MS = 10 * 60 * 1000;
 /** After a failed refresh, automatic refreshes wait this long (doubling per failure, up to the maximum). */

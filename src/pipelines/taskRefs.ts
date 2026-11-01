@@ -4,7 +4,7 @@
  * diagnostics, and every YAML file reaches these functions, so they report only what is certain.
  */
 import { RetiredTask, TaskCompletionContext, TaskInfo, TaskInput, TaskIssue, TaskIndex, TaskStepRef } from './taskModel';
-import { findInput, inputVisibility } from './taskRules';
+import { findInput, inputVisibility, ruleOf } from './taskRules';
 import { blockParams, flowParams, isExpression, mappingOf, ParamEntry, parentOf, scanYaml, TemplateRef, YLine } from './templateRefs';
 import { isBlockHeader, PipelineParameter, unquote } from './yamlParameters';
 
@@ -64,8 +64,11 @@ function inputsOf(lines: YLine[], p: YLine): { inputs: ParamEntry[]; dynamic: bo
 
 /** Every `- task:` step of the document (only list items with the key `task`; a task named in a script is no step). */
 export function findTaskSteps(text: string): TaskStepRef[] {
-  const raw = text.split(/\r?\n/);
-  const lines = scanYaml(text);
+  return stepsIn(scanYaml(text), text.split(/\r?\n/));
+}
+
+/** `findTaskSteps` on text that is already scanned (a completion request scans once). */
+function stepsIn(lines: YLine[], raw: string[]): TaskStepRef[] {
   const steps: TaskStepRef[] = [];
   for (const l of lines) {
     if (l.blank || !l.dash || l.key !== 'task') {
@@ -110,7 +113,8 @@ function valueContext(lines: YLine[], step: TaskStepRef, rawLine: string, col: n
   while (rawLine[start] === ' ') {
     start++;
   }
-  start = isQuote(rawLine[start]) ? start + 1 : start;
+  const quoted = isQuote(rawLine[start]);
+  start = quoted ? start + 1 : start;
   const end = Math.max(step.valueEnd, start);
   if (col < start || col > end || isExpression(step.raw)) {
     return undefined;
@@ -126,7 +130,8 @@ function valueContext(lines: YLine[], step: TaskStepRef, rawLine: string, col: n
   if (at < 0 && !inStepsContext(lines, step.line, step.keyCol)) {
     return undefined;
   }
-  return { kind: 'taskName', step, prefix: typed, start, end: at >= 0 ? start + at : end, line: step.line };
+  // The range covers the whole value (also an existing `@2`): the completion inserts the name with its major.
+  return { kind: 'taskName', step, prefix: typed, start, end, line: step.line, ...(quoted ? { quoted: true } : {}) };
 }
 
 /** Cursor on an empty or partly typed line beside or below a step: the `inputs` key, an input name or a value. */
@@ -158,7 +163,7 @@ export function taskCompletionContext(text: string, line: number, col: number): 
   if (line < 0 || line >= rawLines.length || !lines[line]) {
     return undefined;
   }
-  const steps = findTaskSteps(text);
+  const steps = stepsIn(lines, rawLines);
   const own = steps.find(s => s.line === line);
   if (own) {
     return valueContext(lines, own, rawLine, col);
@@ -176,6 +181,14 @@ export interface TaskCheckOptions {
   versionHints: boolean;
   /** The step's task appears on the retirement list. */
   retired?: RetiredTask;
+}
+
+/** The written inputs of a step as the visibility rules see them: name → value, and the names set under `${{ if }}` / `${{ each }}`. */
+export function stepInputValues(step: TaskStepRef): { passed: Map<string, string>; conditional: Set<string> } {
+  return {
+    passed: new Map(step.inputs.map(e => [e.name, e.value] as [string, string])),
+    conditional: new Set(step.inputs.filter(e => e.conditional).map(e => e.name)),
+  };
 }
 
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
@@ -259,17 +272,15 @@ function entryIssues(step: TaskStepRef, task: TaskInfo, label: string): TaskIssu
 }
 
 function ruleText(task: TaskInfo, input: TaskInput): string {
-  const group = task.groups.find(g => g.name === input.group)?.visibleRule;
-  const rules = [input.visibleRule, group].filter((r): r is string => !!r?.trim());
-  return rules.length ? ` (visible when ${rules.join(' and ')})` : '';
+  const rule = ruleOf(task, input);
+  return rule ? ` (visible when ${rule})` : '';
 }
 
 function missingIssues(step: TaskStepRef, task: TaskInfo, label: string): TaskIssue[] {
   if (step.dynamicInputs || step.pinned) {
     return [];
   }
-  const passed = new Map(step.inputs.map(e => [e.name, e.value] as [string, string]));
-  const conditional = new Set(step.inputs.filter(e => e.conditional).map(e => e.name));
+  const { passed, conditional } = stepInputValues(step);
   const out: TaskIssue[] = [];
   for (const input of task.inputs) {
     const given = step.inputs.some(e => findInput(task, e.name) === input);

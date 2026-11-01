@@ -7,12 +7,12 @@
 import { ParamView, paramViews } from './designerModel';
 import { CatalogSnapshot, TaskIndex, TaskInfo, TaskInput, TaskStepRef } from './taskModel';
 import { asTemplateRef, newestMajor, toParameter } from './taskRefs';
+import { plainHelp, safeHelpUrl } from './taskHelp';
 import { retirementOf } from './taskRetirement';
 import { findInput, inputVisibility } from './taskRules';
 import { EditOptions, LineEdit, newTaskLines, planCallEdits, planDisplayName, planTaskVersion, scalarValue } from './templateEdits';
 import { isExpression, TemplateRef } from './templateRefs';
-import { PipelineParameter } from './yamlParameters';
-import { plainHelp, safeHelpUrl } from './yamlTasks';
+import { isBlockHeader, PipelineParameter } from './yamlParameters';
 
 const MAX_DESCRIPTION = 160;
 
@@ -199,7 +199,8 @@ function passedInputs(text: string, info: TaskInfo, step: TaskStepRef | undefine
     if (e.conditional) {
       conditional.add(key);
     } else {
-      values.set(key, e.value === '' ? (scalarValue(text, e)?.text ?? '') : e.value);
+      // A block scalar (`script: |`) or a value on the following lines: the rules compare the text, not the header.
+      values.set(key, e.value === '' || isBlockHeader(e.value) ? (scalarValue(text, e)?.text ?? '') : e.value);
     }
   }
   for (const [key, value] of Object.entries(pending)) {
@@ -247,15 +248,16 @@ function taskRow(view: ParamView, input: TaskInput, hidden: boolean, p: Pipeline
 export function buildTaskForm(text: string, info: TaskInfo, step: TaskStepRef | undefined, ref: TemplateRef | undefined,
   pending: Record<string, string>, readOnly?: string): TaskForm {
   const passed = passedInputs(text, info, step, pending);
-  const shown: { input: TaskInput; hidden: boolean }[] = [];
+  const shown: { input: TaskInput; hidden: boolean; undecided: boolean }[] = [];
   for (const input of info.inputs) {
     const visible = inputVisibility(info, input, passed.values, passed.conditional);
     const written = !!step?.inputs.some(e => findInput(info, e.name) === input);
     if (visible !== false || written) {
-      shown.push({ input, hidden: visible === false });
+      shown.push({ input, hidden: visible === false, undecided: visible === undefined });
     }
   }
-  const declared = shown.map(s => toParameter(s.input));
+  // Like the diagnostics, a required input is only required when its rule says it is shown: an undecidable rule asks for nothing.
+  const declared = shown.map(s => (s.undecided && s.input.required ? { ...toParameter(s.input), default: '', unsetWhenBlank: true } : toParameter(s.input)));
   const rows = paramViews(text, declared, ref, pending, readOnly).map((v, i) => taskRow(v, shown[i].input, shown[i].hidden, declared[i]));
   const groups: TaskForm['groups'] = [];
   for (const row of rows) {

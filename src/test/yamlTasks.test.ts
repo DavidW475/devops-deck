@@ -5,8 +5,10 @@ import * as vscode from './vscodeStub';
 import { buildIndex } from '../pipelines/taskCatalog';
 import { CatalogSnapshot, TaskInfo, TaskInput, TaskIssue } from '../pipelines/taskModel';
 import {
-  addInputEdit, indentUnit, OTHER_EXTENSION_ID, plainHelp, REFRESH_COMMAND, safeHelpUrl, TaskCatalogSource, YamlTaskSupport,
+  addInputEdit, OTHER_EXTENSION_ID, REFRESH_COMMAND, TaskCatalogSource, YamlTaskSupport,
 } from '../pipelines/yamlTasks';
+import { plainHelp, safeHelpUrl } from '../pipelines/taskHelp';
+import { indentUnit } from '../pipelines/templateEdits';
 
 const ORG = 'https://dev.azure.com/contoso';
 const URI = vscode.Uri.file('/repo/azure-pipelines.yml');
@@ -102,11 +104,10 @@ describe('pure helpers', () => {
     assert.equal(safeHelpUrl(undefined), undefined);
   });
 
-  it('indentUnit follows the file', () => {
-    assert.equal(indentUnit(['steps:', '- task: A@1']), 2);
-    assert.equal(indentUnit(['steps:', '    - task: A@1', '      inputs:']), 4);
-    assert.equal(indentUnit(['# c', '   x: 1', ' y']), 2);
-    assert.equal(indentUnit(['a:', '          b: 1']), 8);
+  it('uses the same indentation as the designer', () => {
+    // A quick fix and the designer read the same file: both use the most common step.
+    const text = ['steps:', '    - task: A@1', '      displayName: A', '      inputs:', '          x: 1', '    - task: B@1', '      displayName: B'].join('\n');
+    assert.equal(indentUnit(text), 4);
   });
 });
 
@@ -135,6 +136,26 @@ describe('completion', () => {
     assert.equal(items.find(i => i.label === 'ContosoDeploy@2')!.insertText, 'ContosoDeploy@2');
     const plain = (await complete(makeDoc(NAME_DOC), 1, 12))!;
     assert.equal((plain.find(i => i.label === 'ContosoLegacy@1')!.insertText as { value: string }).value, 'ContosoLegacy@1\n  inputs:\n    $0');
+  });
+
+  it('replaces an existing @major instead of doubling it, also when a snippet with inputs is inserted', async () => {
+    const line = '- task: ContosoDeploy@1';
+    const items = (await complete(makeDoc(`steps:\n${line}`), 1, 14))!;
+    const item = items.find(i => i.label === 'ContosoDeploy@2')!;
+    const range = item.range as Range;
+    const text = typeof item.insertText === 'string' ? item.insertText : (item.insertText as { value: string }).value;
+    const result = line.slice(0, range.start.character) + text + line.slice(range.end.character);
+    assert.ok(!result.includes('@2@1') && !result.includes('@1'), result);
+    assert.ok(result.startsWith('- task: ContosoDeploy@2'), result);
+    // With inputs: the step has none, so the snippet is multi-line and nothing of the old version is left behind it.
+    assert.ok(result.endsWith('${2}'), result);
+  });
+
+  it('inserts only the name inside quotes and before a trailing comment', async () => {
+    for (const doc of ['steps:\n- task: "Cont', "steps:\n- task: 'Cont", 'steps:\n- task: Cont # why']) {
+      const items = (await complete(makeDoc(doc), 1, doc.includes('"') || doc.includes("'") ? 13 : 12))!;
+      assert.equal(items.find(i => i.label === 'ContosoDeploy@2')!.insertText, 'ContosoDeploy@2', doc);
+    }
   });
 
   it('drops names with unsafe characters and duplicates', async () => {

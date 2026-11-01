@@ -251,3 +251,9 @@ export function inputVisibility(
 ): boolean | undefined {
   return visibilityOf({ task, passed, conditional, open: new Set() }, input);
 }
+
+/** The rules that make an input visible (its own and its group's), joined with `and`; empty when it always shows. */
+export function ruleOf(task: TaskInfo, input: TaskInput): string {
+  const group = task.groups.find(g => g.name === input.group)?.visibleRule;
+  return [input.visibleRule, group].filter((r): r is string => !!r?.trim()).join(' and ');
+}

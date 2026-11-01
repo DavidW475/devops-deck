@@ -228,7 +228,7 @@ describe('taskCompletionContext', () => {
   it('completes the name when the cursor is left of an existing @', () => {
     const c = complete('steps:\n- task: Contoso|Deploy@1');
     assert.ok(c?.kind === 'taskName');
-    assert.equal(c.end, 21);
+    assert.equal(c.end, 23, 'the range covers the whole value, version included');
   });
 
   it('is undefined on the key, in the comment and for expressions', () => {

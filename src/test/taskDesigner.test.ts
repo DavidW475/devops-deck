@@ -165,6 +165,30 @@ describe('task form', () => {
     assert.equal(form({}, text.replace('connectionName: x', 'other: x')).rows[0].error, 'A value is required.');
   });
 
+  it('does not require an input whose rule cannot be decided (like the diagnostics), and does not write it', () => {
+    const t = task('ContosoRule', 1, { inputs: [tin('mode', { type: 'picklist', options: [{ value: 'a', label: 'A' }] }), tin('target', { required: true, visibleRule: 'mode contains a' })] });
+    const bare = 'steps:\n- task: ContosoRule@1\n';
+    const st = findTaskSteps(bare)[0];
+    const f = buildTaskForm(bare, t, st, asTemplateRef(st, t), {});
+    const target = f.rows.find(r => r.name === 'target')!;
+    assert.equal(target.error, undefined, 'no "A value is required." for an undecidable rule');
+    assert.ok(f.rows.every(r => r.error === undefined));
+    const lines = planNewTask(t, f, {}, { at: 2, indent: 0, unit: 2 }, { writeDefaults: false }, undefined).insert;
+    assert.deepEqual(lines, ['- task: ContosoRule@1']);
+    // A decidable rule that shows the input still requires it.
+    const decided = task('ContosoRule', 1, { inputs: [tin('target', { required: true, visibleRule: 'mode = a' }), tin('mode', { default: 'a' })] });
+    const df = buildTaskForm(bare, decided, st, asTemplateRef(st, decided), {});
+    assert.equal(df.rows.find(r => r.name === 'target')?.error, 'A value is required.');
+  });
+
+  it('reads the text of a block scalar for the rules, not its header', () => {
+    const t = task('ContosoRule', 1, { inputs: [tin('script', { type: 'multiline' }), tin('extra', { visibleRule: 'script = echo hi' })] });
+    const text = 'steps:\n- task: ContosoRule@1\n  inputs:\n    script: |\n      echo hi\n';
+    const st = findTaskSteps(text)[0];
+    const f = buildTaskForm(text, t, st, asTemplateRef(st, t), {});
+    assert.ok(f.rows.some(r => r.name === 'extra'), 'the rule sees "echo hi", not "|"');
+  });
+
   it('is read-only without errors when the call is read-only', () => {
     const st = step();
     const f = buildTaskForm(TEXT, DEPLOY, st, asTemplateRef(st, DEPLOY), { connection: '' }, 'read only');

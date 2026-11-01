@@ -4,6 +4,9 @@
  */
 import { ParamEntry } from './templateRefs';
 
+/** Catalog data older than this is refreshed in the background, and "not installed" is only reported for newer data. */
+export const MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
 export interface TaskInput {
   /** The input's name in `task.json`, e.g. `connectedServiceNameARM`. */
   name: string;
@@ -90,7 +93,7 @@ export interface TaskStepRef {
 }
 
 export type TaskCompletionContext =
-  | { kind: 'taskName'; step?: TaskStepRef; prefix: string; start: number; end: number; line: number }
+  | { kind: 'taskName'; step?: TaskStepRef; prefix: string; start: number; end: number; line: number; quoted?: boolean }
   | { kind: 'taskVersion'; step: TaskStepRef; name: string; prefix: string; start: number; end: number; line: number }
   | { kind: 'inputsKey'; step: TaskStepRef }
   | { kind: 'inputName'; step: TaskStepRef }
