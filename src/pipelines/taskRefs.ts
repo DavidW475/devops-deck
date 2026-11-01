@@ -6,7 +6,7 @@
 import { RetiredTask, TaskCompletionContext, TaskInfo, TaskInput, TaskIssue, TaskIndex, TaskStepRef } from './taskModel';
 import { findInput, inputVisibility } from './taskRules';
 import { blockParams, flowParams, isExpression, mappingOf, ParamEntry, parentOf, scanYaml, TemplateRef, YLine } from './templateRefs';
-import { PipelineParameter, unquote } from './yamlParameters';
+import { isBlockHeader, PipelineParameter, unquote } from './yamlParameters';
 
 const isDigits = (s: string) => s.length > 0 && [...s].every(c => c >= '0' && c <= '9');
 
@@ -39,11 +39,12 @@ function valueSpan(l: YLine): { start: number; end: number } {
 }
 
 /** End of the step's mapping, including the text of a block scalar (`script: |`) that scanYaml reads as blank. */
-function stepEnd(lines: YLine[], raw: string[], end: number): number {
+function stepEnd(lines: YLine[], raw: string[], end: number, keyCol: number): number {
   let last = end;
   for (let j = end + 1; j < lines.length && lines[j].blank; j++) {
     const t = raw[j].trim();
-    if (t && !t.startsWith('#')) {
+    // A `# …` line indented deeper than the step's keys can be the end of a block scalar: text, not a comment.
+    if (t && (!t.startsWith('#') || (lines[j].commentCol ?? 0) > keyCol)) {
       last = j;
     }
   }
@@ -75,7 +76,7 @@ export function findTaskSteps(text: string): TaskStepRef[] {
     const value = unquote(l.rest);
     const ref = parseTaskRef(value);
     const step: TaskStepRef = {
-      line: l.n, keyCol: l.keyCol, raw: value, valueStart: span.start, valueEnd: span.end, end: stepEnd(lines, raw, end),
+      line: l.n, keyCol: l.keyCol, raw: value, valueStart: span.start, valueEnd: span.end, end: stepEnd(lines, raw, end, l.keyCol),
       name: ref?.name, major: ref?.major, pinned: ref?.pinned, dynamicInputs: false, inputs: [],
     };
     const p = siblings.find(s => s.key === 'inputs');
@@ -209,12 +210,10 @@ function versionIssue(step: TaskStepRef, task: TaskInfo | undefined, index: Task
   return undefined;
 }
 
-const isBlockScalarHeader = (v: string) => /^[|>][+\-0-9]*$/.test(v);
-
 /** Why the written value doesn't fit the input's type or static options; undefined when it fits or can't be judged. */
 function valueProblem(input: TaskInput, e: ParamEntry): string | undefined {
   const v = e.value.trim();
-  if (!v || isExpression(v) || isBlockScalarHeader(v)) {
+  if (!v || isExpression(v) || isBlockHeader(v)) {
     return undefined;
   }
   const type = input.type.toLowerCase();
@@ -324,6 +323,7 @@ export function toParameter(input: TaskInput): PipelineParameter {
     type: Object.hasOwn(kinds, type) ? kinds[type] : 'string',
     default: input.required && given === '' ? undefined : given,
     values: choice ? input.options.map(o => o.value) : undefined,
+    ...(!input.required && given === '' ? { unsetWhenBlank: true } : {}),
   };
 }
 

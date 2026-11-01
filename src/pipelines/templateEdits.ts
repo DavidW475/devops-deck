@@ -11,7 +11,7 @@ import {
 import { TaskStepRef } from './taskModel';
 import { findDisplayName } from './taskRefs';
 import { ParamEntry, scanYaml, TemplateRef, YLine } from './templateRefs';
-import { PipelineParameter, stripComment, unquote } from './yamlParameters';
+import { isBlockHeader, PipelineParameter, stripComment, unquote } from './yamlParameters';
 
 export { yamlScalar } from './objectParams';
 
@@ -95,6 +95,9 @@ export function controlOf(p: PipelineParameter): ControlKind {
   const kinds: Record<string, ControlKind> = { string: 'text', number: 'number', boolean: 'boolean', multiline: 'multiline' };
   return isOwn(kinds, p.type) ? kinds[p.type] : 'raw';
 }
+
+/** A blank value of a task input that has no default: it means "not set", so no `opt: ''` line is written. */
+const isUnset = (p: PipelineParameter, value: string) => p.unsetWhenBlank === true && value.trim() === '';
 
 const isNumeric = (v: string) => v.trim() !== '' && Number.isFinite(Number(v));
 
@@ -198,7 +201,7 @@ export function withValue(text: string, keyCol: number, value: string): string {
 /** True when the entry's value continues on the following lines (block scalar or nested collection). */
 function isBlockValue(lines: YLine[], line: number, keyCol: number): boolean {
   const own = lines[line];
-  if (own.rest && !/^[|>][-+]?\d*$/.test(own.rest)) {
+  if (own.rest && !isBlockScalarText(own.rest)) {
     return false;
   }
   const next = lines.slice(line + 1).find(l => !l.blank);
@@ -215,9 +218,18 @@ export function isBlockEntry(text: string, line: number, keyCol: number): boolea
 export function blockEnd(lines: YLine[], at: number): number {
   const col = lines[at].keyCol;
   let end = at;
+  // Column of the key whose block scalar we are inside, if any.
+  let scalarCol = isBlockHeader(lines[at].rest) ? col : undefined;
   for (let j = at + 1; j < lines.length && (lines[j].blank || lines[j].indent > col || (lines[j].indent === col && lines[j].dash && !lines[at].dash)); j++) {
-    // Lines of a block scalar (`script: |`) are scanned as blank but still belong to the block.
-    if (!lines[j].blank || lines[j].indent > col) {
+    const l = lines[j];
+    if (!l.blank) {
+      end = j;
+      scalarCol = isBlockHeader(l.rest) ? l.keyCol : undefined;
+    } else if (l.indent > col) {
+      // Lines of a block scalar (`script: |`) are scanned as blank but still belong to the block.
+      end = j;
+    } else if (scalarCol !== undefined && l.commentCol !== undefined && l.commentCol > scalarCol) {
+      // A `# …` line inside a block scalar is text, not a comment.
       end = j;
     }
   }
@@ -230,35 +242,52 @@ export function passedValue(text: string, entry: ParamEntry): PassedValue {
   return passedText(splitLines(text), entry.line, scanned[entry.line].rest, blockEnd(scanned, entry.line));
 }
 
-/** Sorts edits and merges the ones that touch, so the result has no overlapping or adjacent ranges. */
-export function normalizeEdits(edits: LineEdit[]): LineEdit[] {
+export type LineMark = '+' | '~';
+
+/** A merged edit with the mark of each inserted line. */
+interface MarkedEdit extends LineEdit {
+  marks: LineMark[];
+}
+
+/** Marks of one edit's inserted lines: the ones that take the place of a deleted line are changed (~), the others inserted (+). */
+const marksOf = (e: LineEdit): LineMark[] => e.insert.map((_, k): LineMark => (k < e.deleteCount ? '~' : '+'));
+
+/**
+ * Sorts edits and merges the ones that touch. Inserts at the same line keep the order they were given in. This is the one
+ * place that decides the order, so the preview (`applyLineEdits`) and the written text (`toRangeEdits`) agree.
+ */
+function mergeEdits(edits: LineEdit[]): MarkedEdit[] {
   const sorted = [...edits].sort((a, b) => a.line - b.line || b.deleteCount - a.deleteCount);
-  const out: LineEdit[] = [];
+  const out: MarkedEdit[] = [];
   for (const e of sorted) {
     const last = out.at(-1);
     if (last && e.line <= last.line + last.deleteCount) {
       const extra = Math.max(0, e.line + e.deleteCount - (last.line + last.deleteCount));
-      out[out.length - 1] = { line: last.line, deleteCount: last.deleteCount + extra, insert: [...last.insert, ...e.insert] };
+      out[out.length - 1] = {
+        line: last.line, deleteCount: last.deleteCount + extra, insert: [...last.insert, ...e.insert], marks: [...last.marks, ...marksOf(e)],
+      };
     } else {
-      out.push({ ...e, insert: [...e.insert] });
+      out.push({ ...e, insert: [...e.insert], marks: marksOf(e) });
     }
   }
   return out;
 }
 
-export type LineMark = '+' | '~';
+/** Sorts edits and merges the ones that touch, so the result has no overlapping or adjacent ranges. */
+export function normalizeEdits(edits: LineEdit[]): LineEdit[] {
+  return mergeEdits(edits).map(({ line, deleteCount, insert }) => ({ line, deleteCount, insert }));
+}
 
 /**
  * Applies line edits; returns the new text and, per new line number, whether it was changed (~) or inserted (+).
- * The edits are applied one by one from the bottom (not merged), so a removed line next to inserted ones does not
- * turn them into "changed" lines.
+ * The edits are merged like the ones written to the document (`toRangeEdits`), but each edit keeps its own marks, so a
+ * removed line next to inserted ones does not turn them into "changed" lines.
  */
 export function applyLineEdits(text: string, edits: LineEdit[]): { text: string; marks: Map<number, LineMark> } {
   const eol = text.includes('\r\n') ? '\r\n' : '\n';
   const rows: { text: string; mark?: LineMark }[] = splitLines(text).map(t => ({ text: t }));
-  const ordered = [...edits].sort((a, b) => b.line - a.line || b.deleteCount - a.deleteCount);
-  for (const e of ordered) {
-    rows.splice(e.line, e.deleteCount, ...e.insert.map((t, k): { text: string; mark: LineMark } => ({ text: t, mark: k < e.deleteCount ? '~' : '+' })));
+  for (const e of mergeEdits(edits).reverse()) {
+    rows.splice(e.line, e.deleteCount, ...e.insert.map((t, k): { text: string; mark: LineMark } => ({ text: t, mark: e.marks[k] })));
   }
   const marks = new Map<number, LineMark>();
   rows.forEach((r, n) => {
@@ -355,10 +384,20 @@ function scalarOf(lines: string[], scanned: YLine[], entry: ParamEntry): ScalarT
   return { header: l.rest, text: trimNewlines(body.map(x => x.slice(Math.min(cut, indentOf(x))).trimEnd()).join('\n')), end, childCol };
 }
 
-/** `|` with an indentation indicator when the first line starts with spaces (YAML would read them as the block's indentation). */
-function blockHeader(header: string, text: string, unit: number): string {
+/**
+ * `|` with an indentation indicator when the first line starts with spaces (YAML would read them as the block's
+ * indentation). The indicator is the body's column minus the key's column (1 to 9); the readers accept `|2-` and `|-2`.
+ */
+function blockHeader(header: string, text: string, keyCol: number, bodyCol: number): string {
+  const indicator = bodyCol - keyCol;
+  const written = /\d/.exec(header)?.[0];
+  if (written !== undefined && Number(written) === indicator) {
+    return header;
+  }
+  // A stale indicator (the body moved) is dropped; one is added only when the first line starts with spaces.
+  const base = header.replace(/\d/, '');
   const first = text.split('\n').find(x => x.trim());
-  return first?.startsWith(' ') && !/\d/.test(header) ? `${header[0]}${unit}${header.slice(1)}` : header;
+  return first?.startsWith(' ') && indicator >= 1 && indicator <= 9 ? `${base[0]}${indicator}${base.slice(1)}` : base;
 }
 
 /** Lines of a block scalar below an existing key line: the text indented at `col`, empty lines stay empty. */
@@ -371,7 +410,7 @@ function multilineLines(p: PipelineParameter, text: string, col: number, unit: n
   if (!text.includes('\n')) {
     return [`${pad(col)}${yamlScalar(p.name)}: ${formatValue(p, text)}`];
   }
-  return [`${pad(col)}${yamlScalar(p.name)}: ${blockHeader('|', text, unit)}`, ...blockBody(text, col + unit)];
+  return [`${pad(col)}${yamlScalar(p.name)}: ${blockHeader('|', text, col, col + unit)}`, ...blockBody(text, col + unit)];
 }
 
 /** A multi-line input (`inlineScript: |`): replace, remove or add it; an existing header (`|-`) and the key's spelling stay. */
@@ -383,7 +422,7 @@ function planMultiline(s: CallScope, p: PipelineParameter, entry: ParamEntry | u
     return;
   }
   const text = trimNewlines(pending[p.name].replaceAll('\r\n', '\n'));
-  const write = opts.writeDefaults || p.default === undefined || text !== trimNewlines(p.default);
+  const write = (opts.writeDefaults || p.default === undefined || text !== trimNewlines(p.default)) && !isUnset(p, text);
   if (!entry) {
     if (write) {
       s.added.push(...multilineLines(p, text, s.col, s.unit));
@@ -404,8 +443,11 @@ function planMultiline(s: CallScope, p: PipelineParameter, entry: ParamEntry | u
       s.edits.push({ line: entry.line, deleteCount, insert: [withValue(line, entry.start, formatValue(p, text))] });
       return;
     }
-    const header = blockHeader(current.header ?? '|', text, s.unit);
-    s.edits.push({ line: entry.line, deleteCount, insert: [withValue(line, entry.start, header), ...blockBody(text, current.childCol ?? entry.start + s.unit)] });
+    // An indicator needs a column 1 to 9 right of the key; else the body moves to the file's indentation.
+    const near = current.childCol !== undefined && current.childCol > entry.start && current.childCol - entry.start <= 9;
+    const bodyCol = near ? current.childCol! : entry.start + s.unit;
+    const header = blockHeader(current.header ?? '|', text, entry.start, bodyCol);
+    s.edits.push({ line: entry.line, deleteCount, insert: [withValue(line, entry.start, header), ...blockBody(text, bodyCol)] });
   }
 }
 
@@ -427,13 +469,13 @@ function planParam(s: CallScope, p: PipelineParameter, pending: Record<string, s
     return;
   }
   if (!isOwn(pending, p.name)) {
-    if (opts.writeDefaults && !entry && p.default !== undefined) {
+    if (opts.writeDefaults && !entry && p.default !== undefined && !isUnset(p, p.default)) {
       addParam(s, p.name, formatValue(p, p.default));
     }
     return;
   }
   const value = pending[p.name];
-  const write = opts.writeDefaults || p.default === undefined || !sameValue(p, value, p.default);
+  const write = (opts.writeDefaults || p.default === undefined || !sameValue(p, value, p.default)) && !isUnset(p, value);
   if (entry && write && !sameValue(p, entry.value, value)) {
     s.edits.push({ line: entry.line, deleteCount: 1, insert: [withValue(s.lines[entry.line], entry.start, formatValue(p, value))] });
   } else if (entry && !write) {
@@ -599,7 +641,7 @@ export function newTaskLines(taskRef: string, declared: PipelineParameter[], pen
   const inputs: string[] = [];
   for (const p of declared) {
     const value = isOwn(pending, p.name) ? pending[p.name] : p.default;
-    if (opts.writeDefaults || p.default === undefined || !sameValue(p, value, p.default)) {
+    if ((opts.writeDefaults || p.default === undefined || !sameValue(p, value, p.default)) && !isUnset(p, value ?? '')) {
       inputs.push(...inputLines(p, value ?? '', inner + unit, unit));
     }
   }

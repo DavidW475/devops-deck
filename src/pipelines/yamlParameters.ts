@@ -11,7 +11,15 @@ export interface PipelineParameter {
   /** default as the run API expects it: plain text, 'true'/'false', or JSON for structured values */
   default?: string;
   values?: string[];
+  /** A task input without a default: an empty value means "not set" and is never written (`opt: ''`). */
+  unsetWhenBlank?: boolean;
 }
+
+/** `|`, `>`, with an indentation indicator and a chomping indicator in either order (`|2-`, `|-2`). */
+const BLOCK_HEADER = /^[|>](?:\d[-+]?|[-+]\d?)?$/;
+
+/** True for a block scalar header such as `|`, `>-`, `|2-` or `|-2`. */
+export const isBlockHeader = (rest: string): boolean => BLOCK_HEADER.test(rest);
 
 interface Line {
   indent: number;
@@ -194,8 +202,8 @@ function parseMap(lines: Line[], start: number, indent: number): [Value, number]
 }
 
 function parseMapValue(lines: Line[], i: number, indent: number, rest: string): [Value, number] {
-  if (/^[|>][-+]?$/.test(rest)) {
-    return blockScalar(lines, i, indent, rest.startsWith('>'));
+  if (isBlockHeader(rest)) {
+    return blockScalar(lines, i, indent, rest);
   }
   if (rest) {
     return [scalar(rest), i + 1];
@@ -211,7 +219,9 @@ function parseMapValue(lines: Line[], i: number, indent: number, rest: string): 
  * "key: |" or "key: >" followed by more indented lines, read from the source: "#", blank lines and "---" in there are
  * text, not comments or document markers. The scalar ends at the first non-blank line that is not indented deeper.
  */
-function blockScalar(lines: Line[], i: number, indent: number, folded: boolean): [Value, number] {
+function blockScalar(lines: Line[], i: number, indent: number, header: string): [Value, number] {
+  const folded = header.startsWith('>');
+  const explicit = /\d/.exec(header)?.[0];
   const { src, n } = lines[i];
   const body: string[] = [];
   for (let k = n + 1; k < src.length; k++) {
@@ -229,7 +239,9 @@ function blockScalar(lines: Line[], i: number, indent: number, folded: boolean):
   while (j < lines.length && lines[j].n < end) {
     j++;
   }
-  const min = Math.min(...body.filter(Boolean).map(b => b.length - b.trimStart().length));
+  const detected = Math.min(...body.filter(Boolean).map(b => b.length - b.trimStart().length));
+  // An indentation indicator is relative to the key's column; it keeps leading spaces of the first line.
+  const min = explicit === undefined ? detected : Math.min(indent + Number(explicit), detected);
   const text = body.map(b => b.slice(min));
   return [folded ? fold(text) : text.join('\n'), j];
 }

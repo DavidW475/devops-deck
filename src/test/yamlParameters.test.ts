@@ -124,6 +124,16 @@ describe('parsePipelineParameters', () => {
 });
 
 describe('parseYamlDocument', () => {
+  it('reads block scalar headers with the indentation indicator before or after the chomping indicator', () => {
+    for (const header of ['|2-', '|-2', '|2', '>2-']) {
+      const doc = parseYamlDocument(`script: ${header}\n    lead\n  next\nother: 1`) as Record<string, unknown>;
+      assert.equal(typeof doc.script, 'string', header);
+      assert.equal(doc.other, '1');
+    }
+    // The indicator keeps the leading spaces of the first line (relative to the key's column).
+    assert.equal((parseYamlDocument('a:\n  script: |2\n      lead\n    next\n') as { a: { script: string } }).a.script, '  lead\nnext');
+  });
+
   it('keeps "#", blank lines and "---" inside block scalars', () => {
     const doc = parseYamlDocument([
       'steps:',

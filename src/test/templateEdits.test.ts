@@ -458,6 +458,105 @@ function planTask(text: string, pending: Record<string, string>, opts = { writeD
   return { plan, ...applyLineEdits(text, plan.edits) };
 }
 
+describe('optional inputs without a default are not written as empty strings', () => {
+  const NEW = '- task: ContosoDeploy@2';
+  it('does not write them with Write defaults, in an existing step or a new one', () => {
+    const existing = planTask('- task: ContosoDeploy@2\n  inputs:\n    retries: 5', {}, { writeDefaults: true });
+    assert.ok(!existing.text.includes("''"), existing.text);
+    const cleared = planTask('- task: ContosoDeploy@2\n  inputs:\n    retries: 5', { notes: '', script: '  ' }, { writeDefaults: true });
+    assert.ok(!cleared.text.includes('notes') && !cleared.text.includes('script'), cleared.text);
+    const fresh = newTaskLines('ContosoDeploy@2', DECLARED_TASK, { connection: 'x', notes: '  ' }, 0, 2, { writeDefaults: true });
+    assert.ok(!fresh.some(l => l.includes('notes') || l.includes('script')), fresh.join('\n'));
+    assert.equal(planTask(NEW, {}, { writeDefaults: true }).text.includes("''"), false);
+  });
+
+  it('still removes the line of an input the user cleared', () => {
+    const text = '- task: ContosoDeploy@2\n  inputs:\n    notes: hi\n    retries: 5';
+    assert.deepEqual(planTask(text, { notes: '' }, { writeDefaults: true }).text.split('\n'), ['- task: ContosoDeploy@2', '  inputs:', '    retries: 5', '    mode: fast', '    verbose: false']);
+  });
+});
+
+describe('block scalar headers and comments', () => {
+  const rows = (text: string) => text.split('\n');
+
+  it('writes an indentation indicator that the next edit can read (indicator before chomp)', () => {
+    const first = planTask('- task: ContosoDeploy@2\n  inputs:\n    script: |-\n      a\n    retries: 5', { script: '  indented\nsecond' });
+    const header = rows(first.text)[2];
+    assert.match(header, /^ {4}script: \|(2-|-2)$/);
+    // The edit just written must be understood by the next one, not turned into a second block.
+    const second = planTask(first.text, { script: '  indented\nthird' });
+    assert.deepEqual(rows(second.text).slice(2, 5), [header, '        indented', '      third']);
+    assert.equal(rows(second.text).filter(l => l.includes('script:')).length, 1);
+    const reread = scalarValue(first.text, findTaskSteps(first.text)[0].inputs[0]);
+    assert.equal(reread?.header, header.trim().replace('script: ', ''));
+  });
+
+  it('accepts both orders of the indicators when reading', () => {
+    for (const header of ['|2-', '|-2', '|2', '|+2', '>2-']) {
+      const text = `- task: ContosoDeploy@2\n  inputs:\n    script: ${header}\n      a\n    retries: 5`;
+      const read = scalarValue(text, findTaskSteps(text)[0].inputs[0]);
+      assert.equal(read?.header, header);
+      assert.equal(read?.text, 'a');
+      assert.equal(planTask(text, { script: 'b' }).text.split('\n')[3], '      b');
+    }
+  });
+
+  it('computes the indicator from the key column, not from the indentation unit', () => {
+    const text = '- task: ContosoDeploy@2\n  inputs:\n    script: |\n          a\n    retries: 5';
+    const out = planTask(text, { script: '  lead\nb' });
+    // The body stays at column 10 under the key at column 4: indicator 6.
+    assert.deepEqual(rows(out.text).slice(2, 5), ['    script: |6', '            lead', '          b']);
+    // 10+ columns cannot be written as an indicator: the body moves to the file's indentation.
+    const far = '- task: ContosoDeploy@2\n  inputs:\n    script: |\n                a\n    retries: 5';
+    assert.deepEqual(rows(planTask(far, { script: '  lead\nb' }).text).slice(2, 5), ['    script: |2', '        lead', '      b']);
+  });
+
+  it('counts trailing # lines of a block scalar as content', () => {
+    const text = '- task: ContosoDeploy@2\n  inputs:\n    script: |\n      echo a\n      # done\n    retries: 5';
+    const input = findTaskSteps(text)[0].inputs[0];
+    assert.equal(scalarValue(text, input)?.text, 'echo a\n# done');
+    // Adding an input does not move the comment out of the script.
+    const added = planTask(text, { mode: 'safe' });
+    assert.deepEqual(rows(added.text).slice(2, 7), ['    script: |', '      echo a', '      # done', '    retries: 5', '    mode: safe']);
+    // Clearing the script takes the comment with it.
+    assert.equal(planTask(text, { script: '' }, { writeDefaults: false }).text.includes('# done'), false);
+  });
+
+  it('keeps a trailing # line of a script step inside it when inputs: is added below', () => {
+    const text = '- task: Bash@3\n  script: |\n    echo a\n    # done';
+    const step0 = findTaskSteps(text)[0];
+    assert.equal(step0.end, 4);
+  });
+
+  it('does not count a comment at the key column as part of the block scalar', () => {
+    const text = '- task: ContosoDeploy@2\n  inputs:\n    script: |\n      echo a\n    # about retries\n    retries: 5';
+    assert.equal(scalarValue(text, findTaskSteps(text)[0].inputs[0])?.text, 'echo a');
+  });
+});
+
+describe('line edits at the same line', () => {
+  it('orders two inserts at the same line the same way in the preview and in the written text', () => {
+    const text = '- task: ContosoDeploy@2';
+    const edits = [
+      { line: 1, deleteCount: 0, insert: ['  displayName: Deploy'] },
+      { line: 1, deleteCount: 0, insert: ['  inputs:', '    connection: x'] },
+    ];
+    const expected = ['- task: ContosoDeploy@2', '  displayName: Deploy', '  inputs:', '    connection: x'];
+    assert.deepEqual(applyLineEdits(text, edits).text.split('\n'), expected);
+    const ranges = toRangeEdits(text, edits);
+    assert.equal(ranges.length, 1);
+    assert.equal(text + ranges[0].text, expected.join('\n'));
+    assert.deepEqual(applyLineEdits(text, edits.toReversed()).text.split('\n'), ['- task: ContosoDeploy@2', '  inputs:', '    connection: x', '  displayName: Deploy']);
+  });
+
+  it('keeps the marks of each edit when edits touch', () => {
+    const text = 'a\nb\nc';
+    const out = applyLineEdits(text, [{ line: 1, deleteCount: 1, insert: ['B'] }, { line: 2, deleteCount: 0, insert: ['x'] }]);
+    assert.equal(out.text, 'a\nB\nx\nc');
+    assert.deepEqual([...out.marks], [[1, '~'], [2, '+']]);
+  });
+});
+
 describe('task steps: toParameter', () => {
   it('maps input types to parameter types, enums and required', () => {
     const [conn, mode, script, retries, verbose, notes] = DECLARED_TASK;
@@ -467,6 +566,8 @@ describe('task steps: toParameter', () => {
     assert.deepEqual([retries.type, controlOf(retries)], ['number', 'number']);
     assert.deepEqual([verbose.type, controlOf(verbose)], ['boolean', 'boolean']);
     assert.equal(notes.default, '', 'optional inputs default to empty');
+    assert.equal(notes.unsetWhenBlank, true, 'and an empty value means not set');
+    assert.equal(retries.unsetWhenBlank, undefined);
     const editable = toParameter(tin('region', { type: 'picklist', options: [{ value: 'a', label: 'A' }], editable: true }));
     const multi = toParameter(tin('tags', { type: 'picklist', options: [{ value: 'a', label: 'A' }], multi: true }));
     const dynamic = toParameter(tin('pool', { type: 'picklist' }));
@@ -494,7 +595,7 @@ describe('task steps: planCallEdits with blockKey inputs', () => {
     const same = planTask(STEP, { mode: 'fast', verbose: 'FALSE' });
     assert.deepEqual(same.plan.edits, []);
     const defaults = planTask(STEP, {}, { writeDefaults: true });
-    assert.deepEqual(defaults.text.split('\n').slice(8, 13), ['    retries: 5 # keep', '    mode: fast', '    verbose: false', "    notes: ''", '- script: echo done']);
+    assert.deepEqual(defaults.text.split('\n').slice(8, 13), ['    retries: 5 # keep', '    mode: fast', '    verbose: false', '- script: echo done']);
   });
 
   it('creates inputs: below a step without one, with the file indentation, and drops it when it is emptied', () => {
@@ -618,7 +719,7 @@ describe('newTaskLines', () => {
   it('writes required inputs without a value as empty strings, defaults only on request, and nothing without inputs', () => {
     assert.deepEqual(newTaskLines('ContosoDeploy@2', DECLARED_TASK, {}, 0, 2, { writeDefaults: false }), ['- task: ContosoDeploy@2', '  inputs:', "    connection: ''"]);
     assert.deepEqual(newTaskLines('ContosoDeploy@2', DECLARED_TASK, { connection: 'x' }, 2, 4, { writeDefaults: true }, '  '), [
-      '  - task: ContosoDeploy@2', '    inputs:', '        connection: x', '        mode: fast', "        script: ''", '        retries: 3', '        verbose: false', "        notes: ''",
+      '  - task: ContosoDeploy@2', '    inputs:', '        connection: x', '        mode: fast', '        retries: 3', '        verbose: false',
     ]);
     assert.deepEqual(newTaskLines('Gone@1', [], {}, 0, 2, { writeDefaults: false }), ['- task: Gone@1']);
   });
