@@ -51,8 +51,11 @@
     sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
     prPlus: '<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 9v12"/><path d="M13 6h3a2 2 0 0 1 2 2v3"/><path d="M18 15v6"/><path d="M21 18h-6"/>',
   };
-  const icon = (name, cls = '') =>
-    `<svg class="i ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`;
+  // One hidden sprite holds every icon; each use is just `<svg><use/></svg>` (two nodes instead of an svg with its paths),
+  // which keeps long lists small to parse, style and lay out. Stroke styling lives in sidebar.css (`.i`).
+  document.body.insertAdjacentHTML('afterbegin', '<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">'
+    + Object.entries(ICONS).map(([name, body]) => `<symbol id="i-${name}" viewBox="0 0 24 24">${body}</symbol>`).join('') + '</svg>');
+  const icon = (name, cls = '') => `<svg class="i ${cls}" aria-hidden="true"><use href="#i-${ICONS[name] ? name : 'dot'}"/></svg>`;
 
   // ---------- helpers ----------
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -157,7 +160,10 @@
     queries: null,
     /** project dropdown: null when closed, else { org, projects, loading, error, filter, saving } */
     picker: null,
+    /** how many cards of the visible list are rendered; grows by PAGE when the end comes into view */
+    shown: 40,
   };
+  const PAGE = 40;
   const persist = () => vscode.setState({
     tab: S.tab, prFilter: S.prFilter, wiQuery: S.wiQuery, buildFilter: S.buildFilter, folder: S.folder,
     sprintTeam: S.sprintTeam, sprintIteration: S.sprintIteration, sprintGroup: S.sprintGroup,
@@ -429,7 +435,7 @@
     const input = /** @type {HTMLInputElement} */ (document.getElementById('search'));
     input.value = S.search;
     // Typing fast filters once per frame, not once per keystroke.
-    input.addEventListener('input', () => { S.search = input.value.trim().toLowerCase(); onFrame('search', renderList); });
+    input.addEventListener('input', () => { S.search = input.value.trim().toLowerCase(); resetWindow(); onFrame('search', renderList); });
     renderHeader();
     renderTabs();
     renderToolbar();
@@ -713,6 +719,12 @@
     const el = document.getElementById('list');
     if (!el) return;
     patchList(el, listHtml(el));
+    watchMore();
+  }
+
+  /** A new list (tab, filter, search, folder) starts with its first page again. */
+  function resetWindow() {
+    S.shown = PAGE;
   }
 
   function listHtml(el) {
@@ -729,15 +741,51 @@
     if (tab === 'sprint') return progress + sprintView(data);
     if (tab === 'pipelines' && S.buildFilter === 'folders') return progress + folderView(data);
     const filtered = data.filter((item) => !S.search || haystack(tab, item).includes(S.search));
-    const render = cardRenderer(tab);
-    return progress + (filtered.length ? filtered.map((item) => render(item)).join('') : emptyState(tab));
+    const [render, keyOf] = cardRenderer(tab);
+    const win = windowOf();
+    return progress + (filtered.length ? win.take(filtered, render, keyOf) + win.more() : emptyState(tab));
   }
 
+  /** [render, key] of the cards of a tab; the key is set only for cards that can be opened. */
   function cardRenderer(tab) {
-    if (tab === 'prs') return prCard;
-    if (tab === 'wis') return wiCard;
-    if (S.buildFilter === 'approvals') return approvalCard;
-    return S.buildFilter === 'defs' ? defCard : buildCard;
+    if (tab === 'prs') return [prCard, (pr) => `pr:${pr.repoId}:${pr.id}`];
+    if (tab === 'wis') return [wiCard];
+    if (S.buildFilter === 'approvals') return [approvalCard];
+    return S.buildFilter === 'defs' ? [defCard, defKey] : [buildCard];
+  }
+  const defKey = (def) => `def:${def.id}:${def.project || ''}`;
+
+  /**
+   * Windowing: only the first `S.shown` cards of a list are rendered (the DOM of a 1000 item list costs
+   * tens of thousands of nodes to build, style and diff on every refresh); the rest follows as the end is
+   * scrolled into view, or at the "Show more" button. Open cards are always kept.
+   */
+  function windowOf() {
+    let left = S.shown;
+    let hidden = 0;
+    return {
+      take(items, render, key) {
+        let n = Math.max(0, left);
+        if (key && S.expanded.size) items.forEach((item, i) => { if (i >= n && S.expanded.has(key(item))) n = i + 1; });
+        n = Math.min(n, items.length);
+        left -= n;
+        hidden += items.length - n;
+        return items.slice(0, n).map((item) => render(item)).join('');
+      },
+      more: () => (hidden ? `<button class="more-row" data-key="more" data-act="more">Show ${Math.min(hidden, PAGE)} more <span class="muted">· ${hidden} left</span></button>` : ''),
+    };
+  }
+
+  /** Lets the end of a long list load the next page when it nears the screen. */
+  let moreWatch = null;
+  function watchMore() {
+    if (typeof IntersectionObserver === 'undefined') return;
+    moreWatch ??= new IntersectionObserver((entries) => {
+      if (entries.some((x) => x.isIntersecting)) { S.shown += PAGE; renderList(); }
+    }, { rootMargin: '300px' });
+    moreWatch.disconnect();
+    const button = document.querySelector('.more-row');
+    if (button) moreWatch.observe(button);
   }
 
   function haystack(tab, i) {
@@ -1012,8 +1060,12 @@
     const items = d.items.filter((i) => !S.search || haystack('wis', i).includes(S.search));
     const groups = sprintGroups(items);
     const groupKey = (g) => (g.parentItem ? 'parent:' + g.parentItem.id : 'group:' + g.label);
-    const body = groups.map((g) => `<section class="group" data-key="${esc(groupKey(g))}">${groupHead(g)}${g.items.map((w) => wiCard(w)).join('')}</section>`).join('');
-    return sprintHeader(d) + (body || emptyState('sprint'));
+    const win = windowOf();
+    const body = groups.map((g) => {
+      const cards = win.take(g.items, wiCard);
+      return cards || !g.items.length ? `<section class="group" data-key="${esc(groupKey(g))}">${groupHead(g)}${cards}</section>` : '';
+    }).join('');
+    return sprintHeader(d) + (body ? body + win.more() : emptyState('sprint'));
   }
 
   // ----- approvals -----
@@ -1084,7 +1136,8 @@
 
     if (S.search) {
       const hits = below.filter((d) => haystack('pipelines', d).includes(S.search));
-      return head + (hits.length ? hits.map(defCard).join('') : emptyState('pipelines'));
+      const win = windowOf();
+      return head + (hits.length ? win.take(hits, defCard, defKey) + win.more() : emptyState('pipelines'));
     }
 
     const subfolders = new Map();
@@ -1106,7 +1159,8 @@
       </button>`).join('');
     const here = below.filter((d) => d.folder.length === folder.length);
     if (!folders && !here.length) return head + emptyState('pipelines');
-    return head + (folders ? `<div class="folders">${folders}</div>` : '') + here.map(defCard).join('');
+    const win = windowOf();
+    return head + (folders ? `<div class="folders">${folders}</div>` : '') + win.take(here, defCard, defKey) + win.more();
   }
 
   const runWhen = (r) => (isRunning(r) ? 'running' : timeAgo(r.finishTime || r.queueTime));
@@ -1129,7 +1183,7 @@
   }
 
   function defCard(def) {
-    const key = `def:${def.id}:${def.project || ''}`;
+    const key = defKey(def);
     const open = S.expanded.has(key);
     const l = def.latest;
     const d = S.details.get(key);
@@ -1198,22 +1252,26 @@
     }
     html += myDayFailures(r.failures || []);
     if (nothing && S.search) return html + emptyState('myday');
+    const win = windowOf();
+    const card = (i) => myDayCard(i, !!r.multi);
     for (const [tier, label] of MD_TIERS) {
       const list = top.filter((i) => i.tier === tier);
       if (!list.length) continue;
-      html += `<div class="md-tier" data-key="md-tier:${tier}">${label} · ${list.length}</div>` + list.map((i) => myDayCard(i, !!r.multi)).join('');
+      html += `<div class="md-tier" data-key="md-tier:${tier}">${label} · ${list.length}</div>` + win.take(list, card, mdKey);
     }
     if (!top.length && !S.search) {
       html += `<div class="empty md-empty" data-key="md-empty">${icon('check')}<p>All done for today.<br>Nothing needs you right now.</p></div>`;
     }
-    return html + myDayLater(later, !!r.multi) + myDayDeferred(deferred);
+    return html + myDayLater(later, win, card) + win.more() + myDayDeferred(deferred);
   }
 
-  function myDayLater(later, multi) {
+  const mdKey = (item) => `md:${item.key}`;
+
+  function myDayLater(later, win, card) {
     if (!later.length) return '';
     const open = S.mdLater || !!S.search;
     const head = `<button class="md-fold" data-key="md-later" data-act="mdLater" aria-expanded="${open}">${icon(open ? 'chevronDown' : 'chevron')}<span>LATER · ${later.length}</span></button>`;
-    return open ? head + later.map((i) => myDayCard(i, multi)).join('') : head;
+    return open ? head + win.take(later, card, mdKey) : head;
   }
 
   function myDayFailures(failures) {
@@ -1318,11 +1376,13 @@
     folder: (el) => {
       S.folder = JSON.parse(el.dataset.args || '[]');
       persist();
+      resetWindow();
       renderList();
       document.getElementById('list')?.scrollTo({ top: 0 });
     },
     reviewed: (el) => { rpc('setReviewed', JSON.parse(el.dataset.args || '{}')).catch(() => undefined); },
     refresh: () => refreshAll(),
+    more: () => { S.shown += PAGE; renderList(); },
     mdRetry: () => load('myday', false, true),
     mdLater: () => { S.mdLater = !S.mdLater; renderList(); },
     mdDeferred: () => { S.mdDeferred = !S.mdDeferred; renderList(); },
@@ -1336,6 +1396,7 @@
   function switchTab(tab) {
     S.tab = tab;
     persist();
+    resetWindow();
     tellTab();
     renderTabs();
     renderToolbar();
@@ -1348,6 +1409,7 @@
   function setFilter(name, value) {
     S[name] = value;
     persist();
+    resetWindow();
     renderToolbar();
     if (name === 'sprintGroup') { renderList(); return; }
     S.data[S.tab] = null;

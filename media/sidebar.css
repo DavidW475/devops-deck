@@ -29,7 +29,9 @@ body {
   overflow-x: hidden;
 }
 button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; }
-.i { width: 16px; height: 16px; flex: none; }
+.i { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.more-row { width: 100%; padding: 8px; border-radius: 8px; font-size: 12px; color: var(--vscode-textLink-foreground, var(--accent)); text-align: center; }
+.more-row:hover { background: var(--card-hover); }
 .mono { font-family: var(--vscode-editor-font-family, monospace); font-size: .92em; }
 .muted { color: var(--muted); }
 .small { font-size: 11px; }
