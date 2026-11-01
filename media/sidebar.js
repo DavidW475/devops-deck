@@ -48,6 +48,7 @@
     book: '<path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20"/>',
     repo: '<path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/>',
     hand: '<path d="M18 11V6a2 2 0 0 0-4 0v5"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>',
+    sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
     prPlus: '<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 9v12"/><path d="M13 6h3a2 2 0 0 1 2 2v3"/><path d="M18 15v6"/><path d="M21 18h-6"/>',
   };
   const icon = (name, cls = '') =>
@@ -126,7 +127,7 @@
   // ---------- state ----------
   const saved = vscode.getState() || {};
   const S = {
-    tab: saved.tab || 'prs',
+    tab: saved.tab || 'myday',
     prFilter: saved.prFilter || 'review',
     wiQuery: saved.wiQuery || 'builtin:0',
     buildFilter: saved.buildFilter || 'recent',
@@ -147,8 +148,11 @@
     loadedAt: {},
     /** whether the VS Code window has focus; background refresh pauses without it */
     focused: true,
-    req: { prs: 0, wis: 0, sprint: 0, pipelines: 0 },
+    req: { myday: 0, prs: 0, wis: 0, sprint: 0, pipelines: 0 },
     expanded: new Set(),
+    /** My Day: the collapsed LATER tier and the deferred list are open (not persisted) */
+    mdLater: false,
+    mdDeferred: false,
     details: new Map(),
     queries: null,
     /** project dropdown: null when closed, else { org, projects, loading, error, filter, saving } */
@@ -160,6 +164,7 @@
   });
 
   const TABS = [
+    { id: 'myday', label: 'My Day', icon: 'sun' },
     { id: 'prs', label: 'Pull Requests', icon: 'pr' },
     { id: 'wis', label: 'Work Items', icon: 'board' },
     { id: 'sprint', label: 'Sprint', icon: 'calendar' },
@@ -171,7 +176,7 @@
   const usesDefinitions = () => S.buildFilter === 'defs' || S.buildFilter === 'folders';
 
   // ---------- data loading ----------
-  async function load(tab, silent = false) {
+  async function load(tab, silent = false, force = false) {
     if (!S.ctx?.configured) return;
     const req = ++S.req[tab];
     if (!silent) {
@@ -179,12 +184,12 @@
       if (tab === S.tab) renderList();
     }
     try {
-      const data = await fetchTab(tab);
+      const data = await fetchTab(tab, force);
       if (req !== S.req[tab]) return;
       S.data[tab] = data;
       if (!silent) S.animate = true;
       S.errors[tab] = null;
-      S.counts[tab] = tab === 'sprint' ? data.items.filter((i) => i.stateCategory !== 'Completed').length : data.length;
+      S.counts[tab] = countOf(tab, data);
       S.loadedAt[tab] = Date.now();
       // The sprint toolbar lists the iterations of the loaded data.
       if (tab === 'sprint' && S.tab === 'sprint') renderToolbar();
@@ -197,8 +202,16 @@
     if (tab === S.tab) renderList();
   }
 
-  /** The data of a tab for its current filter. */
-  function fetchTab(tab) {
+  /** The number on a tab: open sprint items, the items that need you in My Day, else the list length. */
+  function countOf(tab, data) {
+    if (tab === 'sprint') return data.items.filter((i) => i.stateCategory !== 'Completed').length;
+    if (tab === 'myday') return data.count;
+    return data.length;
+  }
+
+  /** The data of a tab for its current filter; `force` makes My Day skip its cache. */
+  function fetchTab(tab, force = false) {
+    if (tab === 'myday') return rpc('myDay', { force });
     if (tab === 'prs') return rpc('prs', { filter: S.prFilter });
     if (tab === 'wis') return rpc('workItems', { query: S.wiQuery });
     if (tab === 'sprint') return loadSprint();
@@ -247,6 +260,12 @@
 
   /** HTML of the card `key` from the loaded data, or undefined when it is no longer listed. */
   function cardHtml(key) {
+    // My Day keys (`md:pr:<repo>:<id>`) hold colons of their own: cut only the prefix.
+    if (key.startsWith('md:')) {
+      const r = S.data.myday;
+      const item = r?.items.find((x) => x.key === key.slice(3));
+      return item && myDayCard(item, !!r.multi);
+    }
     const [kind, a, b] = key.split(':');
     const items = S.data[kind === 'pr' ? 'prs' : 'pipelines'] || [];
     if (kind === 'pr') { const pr = items.find((x) => x.repoId === a && x.id === Number(b)); return pr && prCard(pr); }
@@ -291,6 +310,7 @@
     S.details.clear();
     renderShell();
     if (!S.ctx.configured) return;
+    tellTab();
     rpc('me').then((me) => { S.me = me; renderHeader(); }).catch(() => undefined);
     await load(S.tab);
     // Background loads for the tab badges; the sprint (several requests) waits until it is opened.
@@ -591,7 +611,9 @@
       const on = btn.dataset.tab === S.tab;
       btn.classList.toggle('active', on);
       if (btn.getAttribute('aria-selected') !== String(on)) btn.setAttribute('aria-selected', String(on));
-      setBadge(btn, S.counts[btn.dataset.tab || '']);
+      const id = btn.dataset.tab || '';
+      // My Day shows nothing at 0: an empty day needs no number.
+      setBadge(btn, id === 'myday' && !S.counts[id] ? undefined : S.counts[id]);
     }
     if (el.dataset.active !== S.tab) {
       el.dataset.active = S.tab;
@@ -607,7 +629,7 @@
       badge.className = 'badge';
       btn.append(badge);
     }
-    const text = String(count);
+    const text = count > 99 ? '99+' : String(count);
     if (badge.textContent !== text) badge.textContent = text;
   }
 
@@ -677,7 +699,8 @@
       </div>${chips(SPRINT_GROUPS, S.sprintGroup, 'sprintGroup')}`;
   }
 
-  const TOOLBARS = { prs: prToolbar, wis: wiToolbar, sprint: sprintToolbar, pipelines: pipelineToolbar };
+  /** My Day has only the search box. */
+  const TOOLBARS = { myday: () => '', prs: prToolbar, wis: wiToolbar, sprint: sprintToolbar, pipelines: pipelineToolbar };
 
   /** Dropdowns of the toolbar (delegated, so morphing the toolbar keeps working listeners). */
   const CHANGES = {
@@ -702,6 +725,7 @@
     // Entrance animation only for freshly loaded data, not for background refreshes or filtering.
     el.classList.toggle('animate', !!S.animate);
     S.animate = false;
+    if (tab === 'myday') return progress + myDayView(data);
     if (tab === 'sprint') return progress + sprintView(data);
     if (tab === 'pipelines' && S.buildFilter === 'folders') return progress + folderView(data);
     const filtered = data.filter((item) => !S.search || haystack(tab, item).includes(S.search));
@@ -717,6 +741,7 @@
   }
 
   function haystack(tab, i) {
+    if (tab === 'myday') return `${i.title} ${i.meta.join(' ')} ${i.project || ''}`.toLowerCase();
     if (tab === 'prs') return `${i.id} ${i.title} ${i.repoName} ${i.author} ${i.source} ${i.target} ${i.project || ''}`.toLowerCase();
     if (tab === 'wis') return `${i.id} ${i.title} ${i.type} ${i.state} ${i.assignedTo || ''} ${i.tags.join(' ')} ${i.project || ''}`.toLowerCase();
     if (i.definitionName) return `${i.number} ${i.definitionName} ${i.branch} ${i.requestedFor || ''}`.toLowerCase();
@@ -736,6 +761,7 @@
   }
 
   function emptyMessage(tab) {
+    if (tab === 'myday') return 'Nothing needs you right now.';
     if (tab === 'prs') return S.prFilter === 'review' ? 'No pull requests waiting for your review. Enjoy the calm.' : 'No active pull requests.';
     if (tab === 'wis') return 'No work items in this query.';
     if (tab === 'sprint') return 'No work items in this sprint.';
@@ -758,7 +784,7 @@
   }
 
   function actionBtn(iconName, title, cmd, args, cls = '') {
-    return `<button class="icon-btn ${cls}" title="${esc(title)}" data-cmd="${cmd}" data-args="${attr(args)}">${icon(iconName)}</button>`;
+    return `<button class="icon-btn ${esc(cls)}" title="${esc(title)}" data-cmd="${esc(cmd)}" data-args="${attr(args)}">${icon(iconName)}</button>`;
   }
 
   // ----- pull requests -----
@@ -1132,6 +1158,135 @@
       </article>`;
   }
 
+  // ----- My Day -----
+  const MD_SOURCES = { reviews: 'Reviews', approvals: 'Approvals', runs: 'Runs', workItems: 'Work items' };
+  const MD_TIERS = [['now', 'NOW'], ['today', 'TODAY']];
+
+  /** A result pushed by the host (polling, defer, restore) replaces the data in place. */
+  function setMyDay(result) {
+    if (!result || !Array.isArray(result.items)) return;
+    S.data.myday = result;
+    S.errors.myday = null;
+    S.counts.myday = result.count;
+    S.loadedAt.myday = Date.now();
+    renderTabs();
+    if (S.tab === 'myday') renderList();
+  }
+
+  /** "12m", "3h", "2d": the age of a time in ms without the "ago". */
+  function ageShort(ms) {
+    const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+    if (s < 60) return '<1m';
+    if (s < 3600) return `${Math.floor(s / 60)}m`;
+    if (s < 86400) return `${Math.floor(s / 3600)}h`;
+    return `${Math.floor(s / 86400)}d`;
+  }
+
+  const signed = (n) => (n < 0 ? `−${Math.abs(n)}` : `+${n}`);
+
+  function myDayView(r) {
+    const match = (title, project) => !S.search || `${title} ${project || ''}`.toLowerCase().includes(S.search);
+    const items = r.items.filter((i) => !S.search || haystack('myday', i).includes(S.search));
+    const deferred = r.deferred.filter((d) => match(d.title, d.project));
+    const top = items.filter((i) => i.tier !== 'later');
+    const later = items.filter((i) => i.tier === 'later');
+    const nothing = !top.length && !later.length && !deferred.length;
+    let html = '';
+    if (!S.search) {
+      const updated = r.loadedAt ? ` · updated ${esc(timeAgo(new Date(r.loadedAt).toISOString()))}` : '';
+      html += `<div class="md-summary" data-key="md-summary">${r.count} ${r.count === 1 ? 'needs' : 'need'} you${updated}</div>`;
+    }
+    html += myDayFailures(r.failures || []);
+    if (nothing && S.search) return html + emptyState('myday');
+    for (const [tier, label] of MD_TIERS) {
+      const list = top.filter((i) => i.tier === tier);
+      if (!list.length) continue;
+      html += `<div class="md-tier" data-key="md-tier:${tier}">${label} · ${list.length}</div>` + list.map((i) => myDayCard(i, !!r.multi)).join('');
+    }
+    if (!top.length && !S.search) {
+      html += `<div class="empty md-empty" data-key="md-empty">${icon('check')}<p>All done for today.<br>Nothing needs you right now.</p></div>`;
+    }
+    return html + myDayLater(later, !!r.multi) + myDayDeferred(deferred);
+  }
+
+  function myDayLater(later, multi) {
+    if (!later.length) return '';
+    const open = S.mdLater || !!S.search;
+    const head = `<button class="md-fold" data-key="md-later" data-act="mdLater" aria-expanded="${open}">${icon(open ? 'chevronDown' : 'chevron')}<span>LATER · ${later.length}</span></button>`;
+    return open ? head + later.map((i) => myDayCard(i, multi)).join('') : head;
+  }
+
+  function myDayFailures(failures) {
+    if (!failures.length) return '';
+    const row = (f) => {
+      const stale = f.staleSince ? `, showing data from ${ageShort(f.staleSince)} ago` : '';
+      const project = f.project ? ` · ${esc(f.project)}` : '';
+      return `<li>${esc(MD_SOURCES[f.source] || f.source)}${project}: ${esc(f.message)}${esc(stale)}</li>`;
+    };
+    return `<section class="md-failures" data-key="md-failures" role="status">
+      <div class="md-failures-head">${icon('warn')}<strong>${esc(plural(failures.length, 'source'))} incomplete</strong><span class="grow"></span>
+        <button class="link" data-act="mdRetry">Retry</button></div>
+      <ul>${failures.map(row).join('')}</ul></section>`;
+  }
+
+  /** When a deferred item comes back, or what brings it back. */
+  function deferredWhen(d) {
+    if (d.kind === 'snooze' && d.until) return `back ${new Date(d.until).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}`;
+    return d.kind === 'hide' ? 'hidden until restored' : 'back when it changes';
+  }
+
+  function myDayDeferred(deferred) {
+    if (!deferred.length) return '';
+    const next = Math.min(...deferred.filter((d) => d.kind === 'snooze' && d.until).map((d) => Number(d.until)));
+    const nextText = Number.isFinite(next) ? ` · next back ${new Date(next).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}` : '';
+    const label = `${deferred.length} deferred${nextText}`;
+    const open = S.mdDeferred || !!S.search;
+    let html = `<button class="md-fold" data-key="md-deferred" data-act="mdDeferred" aria-expanded="${open}">${icon(open ? 'chevronDown' : 'chevron')}<span>${esc(label)}</span></button>`;
+    if (open) {
+      html += deferred.map((d) => `
+        <div class="md-deferred" data-key="md-def:${esc(d.key)}">
+          <div class="md-def-text"><span class="md-def-title">${esc(d.title)}</span>
+            <span class="muted small">${d.project ? `${esc(d.project)} · ` : ''}${esc(deferredWhen(d))}</span></div>
+          <button class="btn subtle" data-cmd="azureDevOps.myDay.restore" data-args="${attr([d.key])}">Restore</button>
+        </div>`).join('');
+    }
+    return html;
+  }
+
+  function myDayCard(item, multi) {
+    const key = `md:${item.key}`;
+    const open = S.expanded.has(key);
+    const defer = actionBtn('clock', 'Defer', 'azureDevOps.myDay.defer', [item.key]);
+    const stale = item.staleSince
+      ? `<span class="md-stale" title="Source failed, showing data from ${esc(ageShort(item.staleSince))} ago">${icon('clock')}${esc(ageShort(item.staleSince))}</span>` : '';
+    let expand = '';
+    if (open) {
+      const reasons = item.reasons.map((x) => `<li><span class="md-pts">${esc(signed(x.points))}</span><span>${esc(x.label)}</span></li>`).join('');
+      const named = item.actions.filter((a) => a.primary).map((a) =>
+        `<button class="btn subtle" data-cmd="${esc(a.cmd)}" data-args="${attr(a.args)}">${icon(a.icon)}${esc(a.title)}</button>`).join('');
+      expand = `<div class="expand md-why">
+          <div class="md-why-head">Why here?</div>
+          <ul class="md-reasons">${reasons}</ul>
+          ${item.instructions ? `<p class="md-instructions"><strong>Instructions:</strong> ${esc(item.instructions)}</p>` : ''}
+          <div class="row-gap md-buttons">${named}
+            <button class="btn subtle" data-cmd="azureDevOps.myDay.defer" data-args="${attr([item.key])}">${icon('clock')}Defer</button></div>
+        </div>`;
+    }
+    return `
+      <article class="card md ${open ? 'open' : ''}" data-key="${esc(key)}" data-toggle="${esc(key)}" tabindex="0">
+        <div class="card-row">
+          <span class="status ${esc(item.iconClass)}">${icon(item.icon)}</span>
+          <div class="card-body">
+            <div class="card-title">${esc(item.title)}</div>
+            <div class="meta">${multi ? projChip(item.project) : ''}<span>${esc(item.meta.join(' · '))}</span></div>
+          </div>
+          ${stale}<span class="md-score" title="Score">${esc(item.score)}</span>
+          <div class="card-actions">${item.actions.map((a) => actionBtn(a.icon, a.title, a.cmd, a.args, a.style || '')).join('')}${defer}</div>
+        </div>
+        ${expand}
+      </article>`;
+  }
+
   // ---------- interaction ----------
   function toggle(key) {
     if (S.expanded.has(key)) {
@@ -1140,7 +1295,8 @@
       return;
     }
     S.expanded.add(key);
-    loadDetail(key);
+    // My Day cards have everything they show; there is nothing to load.
+    if (key.startsWith('md:')) renderCard(key); else loadDetail(key);
   }
 
   /** Clicks on elements with one of these data attributes, checked in this order. */
@@ -1167,11 +1323,20 @@
     },
     reviewed: (el) => { rpc('setReviewed', JSON.parse(el.dataset.args || '{}')).catch(() => undefined); },
     refresh: () => refreshAll(),
+    mdRetry: () => load('myday', false, true),
+    mdLater: () => { S.mdLater = !S.mdLater; renderList(); },
+    mdDeferred: () => { S.mdDeferred = !S.mdDeferred; renderList(); },
   };
+
+  /** Tells the host which tab is on screen, so My Day refreshes faster while it is visible. */
+  function tellTab() {
+    rpc('tab', { tab: S.tab }).catch(() => undefined);
+  }
 
   function switchTab(tab) {
     S.tab = tab;
     persist();
+    tellTab();
     renderTabs();
     renderToolbar();
     renderList();
@@ -1240,7 +1405,7 @@
       // (no collapse and "Loading…" flash); cached details of closed cards are dropped.
       for (const key of [...S.details.keys()]) if (!S.expanded.has(key)) S.details.delete(key);
       for (const key of S.expanded) loadDetail(key);
-      for (const t of TABS) if (t.id === S.tab || t.id !== 'sprint' || S.data.sprint) load(t.id, t.id !== S.tab);
+      for (const t of TABS) if (t.id === S.tab || t.id !== 'sprint' || S.data.sprint) load(t.id, t.id !== S.tab, true);
     }).catch(() => undefined);
   }
 
@@ -1291,6 +1456,8 @@
       if (S.focused && !document.hidden && isStale(S.tab)) refreshVisible();
     } else if (m.type === 'refresh') {
       refreshAll();
+    } else if (m.type === 'myDay') {
+      setMyDay(m.result);
     } else if (m.type === 'reviewed') {
       // Keep check marks in sync, whether toggled here or from the diff editor.
       const d = S.details.get(`pr:${m.repoId}:${m.prId}`);

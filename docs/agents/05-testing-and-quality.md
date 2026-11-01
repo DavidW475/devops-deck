@@ -30,6 +30,7 @@
 | `blameModel.test.ts` | pure blame logic: `pickPullRequest`, `prIdFromMessage`, `mergeWorkItems`, annotation text, hover Markdown (escaping, only `HOVER_COMMANDS`), trace rows, state messages |
 | `blameService.test.ts` | `BlameService` with a fake git runner and fake client: states, window and caches, trust and foreign roots, request budget, PR search, work items, auth errors |
 | `blameUi.test.ts` | `BlameUi` with a fake `BlameLookups`: trace quick pick, details provider (`historyProviders`), status bar entry and inline decorations, settings, commands with invalid arguments |
+| `myDayRank.test.ts`, `myDayModel.test.ts`, `myDayDefers.test.ts`, `myDayCommands.test.ts`, `myDayService.test.ts` | My Day: the rank table and each rule (`rank.ts`); items, actions and fingerprints from fake REST data (`model.ts`); snooze / done / hide, expiry and garbage collection against a fake memento (`defers.ts`); the defer quick pick and the vote command with invalid arguments (`commands.ts`); `MyDayService` with fake deps (sources, caches, failures, throttling, timer, visibility, `reset` and `invalidate`) |
 | `watchers.test.ts` | watcher matching, events, the `Watchers` engine with a fake client |
 | `clientApi.test.ts` | every `AdoClient` API method (method, path, query, body, mapping), paging, auth, `isSafeApiPath` |
 | `git.test.ts`, `logsStream.test.ts`, `approvals.test.ts`, `utilUi.test.ts`, `securityHelpers.test.ts` | local repos and `ConnectionManager`, live log terminal, approvals, UI helpers, `assertBranchName` / `glob` / watcher command guard |

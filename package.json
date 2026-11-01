@@ -389,6 +389,21 @@
         "command": "azureDevOps.blame.openCommit",
         "title": "Open Commit in Browser",
         "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.myDay.defer",
+        "title": "Defer My Day Item",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.myDay.restore",
+        "title": "Restore My Day Item",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.pr.vote",
+        "title": "Vote on Pull Request",
+        "category": "DevOps Deck"
       }
     ],
     "keybindings": [
@@ -751,6 +766,18 @@
         {
           "command": "azureDevOps.blame.openCommit",
           "when": "false"
+        },
+        {
+          "command": "azureDevOps.myDay.defer",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.myDay.restore",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.pr.vote",
+          "when": "false"
         }
       ],
       "view/item/context": [
@@ -1096,6 +1123,18 @@
           "type": "boolean",
           "default": false,
           "markdownDescription": "Also follow lines moved from other files of the same commit when tracing a line (`git blame -C`). Slower on large histories."
+        },
+        "azureDevOps.myDay.importantBranches": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "main",
+            "master",
+            "release/*"
+          ],
+          "markdownDescription": "Branches where a failed run of yours ranks higher in *My Day*, in addition to the default branch of the repository. `*` matches any text."
         }
       }
     },

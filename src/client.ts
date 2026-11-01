@@ -58,6 +58,7 @@ const REPO_BY_ID = /^git\/repositories\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9
 export class AdoClient {
   private me?: Promise<T.IdentityRef>;
   private readonly scoped = new Map<string, AdoClient>();
+  private pauseUntil = 0;
 
   constructor(private readonly secrets: vscode.SecretStorage, private readonly connections: Pick<ConnectionManager, 'current'>,
     private readonly parent?: AdoClient) {}
@@ -152,6 +153,25 @@ export class AdoClient {
   }
 
   /** Sends a request with credentials; only to Azure DevOps hosts. Non-2xx answers become AdoErrors. */
+  /** Time (ms) until which Azure DevOps asked to pause; background polling honours it. 0 when it did not. */
+  get throttledUntil(): number {
+    return (this.parent ?? this).pauseUntil;
+  }
+
+  /** `Retry-After` can come with any status, also 200; a 429 without it pauses for a minute. */
+  private noteThrottling(res: Response): void {
+    const header = res.headers.get('retry-after');
+    let waitMs = res.status === 429 ? 60_000 : 0;
+    if (header) {
+      const seconds = Number(header);
+      waitMs = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header) - Date.now();
+    }
+    if (waitMs > 0) {
+      const root = this.parent ?? this;
+      root.pauseUntil = Math.max(root.pauseUntil, Date.now() + waitMs);
+    }
+  }
+
   private async send(method: string, url: string, body?: unknown,
     opts: { contentType?: string; raw?: boolean; binary?: boolean; headers?: Record<string, string>; timeoutMs?: number } = {}): Promise<Response> {
     if (!isAzureDevOpsUrl(url)) {
@@ -176,6 +196,7 @@ export class AdoClient {
     const res = await fetch(url, {
       method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(opts.timeoutMs ?? REQUEST_TIMEOUT_MS),
     });
+    this.noteThrottling(res);
     const contentType = res.headers.get('content-type') ?? '';
     if (res.status === 401 || res.status === 203 || contentType.includes('text/html')) {
       throw new AdoError('Azure DevOps rejected the credentials.', 401, true);
@@ -726,6 +747,20 @@ export class AdoClient {
   }
 
   /** Iteration or area paths of the project, e.g. "Fabrikam\\Sprint 1". */
+  /** Iterations of the project with their end dates. */
+  async listIterationDates(): Promise<T.ClassificationIteration[]> {
+    const root = await this.get<T.ClassificationNode>('project', 'wit/classificationnodes/Iterations', { $depth: 10 });
+    const out: T.ClassificationIteration[] = [];
+    const visit = (node: T.ClassificationNode, path: string) => {
+      out.push({ path, finishDate: node.attributes?.finishDate });
+      for (const c of node.children ?? []) {
+        visit(c, `${path}\\${c.name}`);
+      }
+    };
+    visit(root, root.name);
+    return out;
+  }
+
   async listClassificationPaths(group: 'Iterations' | 'Areas'): Promise<string[]> {
     const root = await this.get<T.ClassificationNode>('project', `wit/classificationnodes/${group}`, { $depth: 10 });
     const out: string[] = [];
@@ -842,10 +877,10 @@ export class AdoClient {
   }
 
   /** Builds that finished (or, with 'started', started) after `since`, newest first. */
-  async listBuildsSince(since: Date, order: 'finished' | 'started'): Promise<T.Build[]> {
+  async listBuildsSince(since: Date, order: 'finished' | 'started', opts: { requestedFor?: string; top?: number } = {}): Promise<T.Build[]> {
     const r = await this.get<{ value: T.Build[] }>('project', 'build/builds', {
       minTime: since.toISOString(), queryOrder: order === 'finished' ? 'finishTimeDescending' : 'startTimeDescending',
-      statusFilter: order === 'finished' ? 'completed' : undefined, $top: 200,
+      statusFilter: order === 'finished' ? 'completed' : undefined, requestedFor: opts.requestedFor, $top: opts.top ?? 200,
     });
     return r.value;
   }

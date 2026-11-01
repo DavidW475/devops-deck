@@ -7,6 +7,9 @@ import { BuildLogTerminal, LOG_SCHEME, LogDocumentProvider, makeLogUri } from '.
 import { answerApproval } from './pipelines/approvals';
 import { RunPipelinePanel } from './pipelines/runPanel';
 import { RunViewPanel } from './pipelines/runView';
+import { deferItem, voteOnPullRequest } from './myDay/commands';
+import { MyDayDefers } from './myDay/defers';
+import { MyDayService } from './myDay/service';
 import { DesignerCodeLens, DesignerHost, PipelineDesignerPanel } from './pipelines/designerPanel';
 import { PipelinePreviewPanel, PreviewMode } from './pipelines/previewPanel';
 import { TaskCatalog } from './pipelines/taskCatalog';
@@ -20,7 +23,7 @@ import { PullRequestPanel } from './pullRequests/prPanel';
 import { PrStatusBar } from './pullRequests/prStatusBar';
 import { ReviewedFiles } from './pullRequests/reviewed';
 import { ReposPanel } from './repos/reposPanel';
-import { SidebarProvider } from './sidebar/sidebarProvider';
+import { ASSIGNED_TO_ME, SidebarProvider } from './sidebar/sidebarProvider';
 import { openWiki, WIKI_SCHEME, WikiFileSystem } from './wiki/wiki';
 import { guarded, plural } from './util';
 import {
@@ -54,7 +57,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     tasks: taskCatalog,
     orgUrl: () => connections.current?.orgUrl,
   };
+  const myDay = new MyDayService({
+    getMe: () => client.getMe(),
+    clientFor: project => client.forProject(project),
+    projects: () => connections.current?.projects ?? [],
+    statesFor: (project, type) => sidebar.statesFor(project, type),
+    assignedWiql: () => ASSIGNED_TO_ME.wiql,
+    importantBranches: () => vscode.workspace.getConfiguration('azureDevOps').get<string[]>('myDay.importantBranches', ['main', 'master', 'release/*']),
+    refreshSeconds: () => vscode.workspace.getConfiguration('azureDevOps').get<number>('refreshInterval', 60),
+    isFocused: () => vscode.window.state.focused,
+    throttledUntil: () => client.throttledUntil,
+  }, new MyDayDefers(context.globalState, () => connections.current?.orgUrl ?? ''));
+  sidebar.useMyDay(myDay);
   const refresh = () => {
+    myDay.invalidate();
     sidebar.refresh();
     prStatus.refresh();
   };
@@ -82,6 +98,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     taskCatalog,
     yamlTasks,
     blame,
+    myDay,
     designerLens,
     vscode.languages.registerCodeLensProvider([{ language: 'yaml', scheme: 'file' }, { language: 'azure-pipelines', scheme: 'file' }], designerLens),
     vscode.languages.registerCodeActionsProvider({ scheme: 'file' }, new TodoCodeActions(), { providedCodeActionKinds: TodoCodeActions.kinds }),
@@ -94,6 +111,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       client.reset();
       taskCatalog.reset();
       blame.reset();
+      myDay.reset();
       refresh();
     }),
     vscode.workspace.onDidChangeConfiguration(e => {
@@ -103,6 +121,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (e.affectsConfiguration('azureDevOps')) {
         client.reset();
         blame.reset();
+        myDay.reset();
         void connections.resolve().then(refresh);
       }
     }),
@@ -111,6 +130,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         client.reset();
         taskCatalog.reset();
         blame.reset();
+        myDay.reset();
         refresh();
       }
     }),
@@ -126,6 +146,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     await client.signIn();
     taskCatalog.reset();
     blame.reset();
+    myDay.reset();
     refresh();
   });
   command('azureDevOps.setPat', async () => {
@@ -143,6 +164,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     client.reset();
     taskCatalog.reset();
     blame.reset();
+    myDay.reset();
     refresh();
   });
   command('azureDevOps.configure', async () => {
@@ -210,6 +232,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   command('azureDevOps.pr.openOverview', async (repoId: string, prId: number) =>
     PullRequestPanel.show(client, context.extensionUri, repoId, prId, refresh));
   command('azureDevOps.pr.openDiff', async (args: PrFileArgs) => openPrDiff(args));
+  mutation('azureDevOps.pr.vote', (repoId: unknown, prId: unknown, project?: unknown) => voteOnPullRequest(at(project), repoId, prId));
   command('azureDevOps.pr.checkout', async (repoId: string, prId: number) =>
     checkoutPullRequest(await client.getPullRequest(repoId, prId)));
   command('azureDevOps.pr.create', async (repoName?: string, source?: string) =>
@@ -219,6 +242,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     compareIterations(client, repoId, prId, base, target));
   command('azureDevOps.pr.openInBrowser', async (repoName: string, prId: number, project?: string) =>
     vscode.env.openExternal(vscode.Uri.parse(client.webUrl('pr', repoName, prId, at(project).connection.project))));
+
+  // ----- my day -----
+  command('azureDevOps.myDay.defer', (key: unknown) => deferItem(myDay, key));
+  command('azureDevOps.myDay.restore', (key: unknown) => myDay.restore(key));
 
   // ----- blame -----
   command('azureDevOps.blame.traceLine', () => blame.traceLine());
