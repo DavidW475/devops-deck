@@ -3,6 +3,7 @@
  * the parameters passed to them, and checks those parameters against what a template declares. Pure functions,
  * line based: the extension has no YAML dependency, and positions are needed for completions and diagnostics.
  */
+import { mdEscape } from '../util';
 import { isRecord, PipelineParameter, splitFlow, splitKey, stripComment, topLevelValue, unquote } from './yamlParameters';
 
 /** `path@alias` of a template reference; alias undefined = same repository as the including file. */
@@ -370,11 +371,6 @@ function missingIssue(ref: TemplateRef, declared: PipelineParameter[]): ParamIss
 /** Unknown parameters, missing required ones (no default) and values that don't fit the declared type or values. */
 export function checkTemplateParameters(ref: TemplateRef, declared: PipelineParameter[]): ParamIssue[] {
   return [...ref.params.map(e => entryIssue(e, declared)), missingIssue(ref, declared)].filter((i): i is ParamIssue => !!i);
-}
-
-/** Escapes text for a Markdown hover (no links, emphasis or HTML from template content). */
-export function mdEscape(s: string): string {
-  return s.replace(/[\\`*_{}[\]()#+\-.!|<>~]/g, c => '\\' + c);
 }
 
 /** Markdown summary of one parameter: type, default and allowed values. */

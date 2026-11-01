@@ -12,7 +12,8 @@ import { CatalogSnapshot, TaskCompletionContext, TaskInfo, TaskInput, TaskIndex,
 import { checkTaskStep, findTaskSteps, taskCompletionContext } from './taskRefs';
 import { retirementOf } from './taskRetirement';
 import { findInput, inputVisibility } from './taskRules';
-import { mdEscape, snippetEscape } from './templateRefs';
+import { mdEscape } from '../util';
+import { snippetEscape } from './templateRefs';
 import { isPipelineDoc, SELECTOR } from './yamlTemplates';
 
 export const SOURCE = 'DevOps Deck';

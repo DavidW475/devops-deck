@@ -20,7 +20,7 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "In untrusted workspaces, organization, project, tenant, queries and watchers from workspace settings are ignored.",
+      "description": "In untrusted workspaces, organization, project, tenant, queries and watchers from workspace settings are ignored. Tracing lines to pull requests runs git and is off.",
       "restrictedConfigurations": [
         "azureDevOps.organization",
         "azureDevOps.project",
@@ -373,6 +373,22 @@
         "title": "Refresh Task Catalog",
         "category": "DevOps Deck",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "azureDevOps.blame.traceLine",
+        "title": "Trace Line to Pull Request",
+        "category": "DevOps Deck",
+        "icon": "$(git-pull-request)"
+      },
+      {
+        "command": "azureDevOps.blame.openForCommit",
+        "title": "Pull Request & Work Items of Commit",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.blame.openCommit",
+        "title": "Open Commit in Browser",
+        "category": "DevOps Deck"
       }
     ],
     "keybindings": [
@@ -484,6 +500,11 @@
           "command": "azureDevOps.yaml.openDesigner",
           "when": "resourceScheme == file && (resourceLangId == yaml || resourceLangId == azure-pipelines)",
           "group": "1_ado@7"
+        },
+        {
+          "command": "azureDevOps.blame.traceLine",
+          "when": "resourceScheme == file && azureDevOps.configured",
+          "group": "1_ado@9"
         }
       ],
       "editor/title": [
@@ -718,6 +739,18 @@
         {
           "command": "azureDevOps.yaml.refreshTaskCatalog",
           "when": "editorLangId == yaml || editorLangId == azure-pipelines"
+        },
+        {
+          "command": "azureDevOps.blame.traceLine",
+          "when": "resourceScheme == file && azureDevOps.configured"
+        },
+        {
+          "command": "azureDevOps.blame.openForCommit",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.blame.openCommit",
+          "when": "false"
         }
       ],
       "view/item/context": [
@@ -1036,6 +1069,33 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Show \"Open in Designer\" above `template:` and `extends:` calls and `- task:` steps in pipeline YAML (task steps need `azureDevOps.yaml.taskSupport`). The designer edits the parameters of a call or the inputs of a task step in a form, inserts calls of templates from a template repository and steps of tasks from the task catalog, and validates the result with Azure DevOps."
+        },
+        "azureDevOps.blame.annotations": {
+          "type": "string",
+          "enum": [
+            "off",
+            "statusBar",
+            "inline",
+            "both"
+          ],
+          "default": "off",
+          "enumDescriptions": [
+            "Only the command and the link in the blame hover of VS Code.",
+            "A status bar entry for the cursor line.",
+            "Text after the cursor line, with a hover.",
+            "Status bar entry and text after the cursor line."
+          ],
+          "markdownDescription": "Show the author, age and pull request of the cursor line. Runs `git blame` and asks Azure DevOps when the cursor rests on a line of another commit."
+        },
+        "azureDevOps.blame.ignoreWhitespace": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Skip commits that only changed whitespace when tracing a line (`git blame -w`). VS Code does not by default (`#git.blame.ignoreWhitespace#`), so both can name a different commit."
+        },
+        "azureDevOps.blame.detectCopies": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Also follow lines moved from other files of the same commit when tracing a line (`git blame -C`). Slower on large histories."
         }
       }
     },

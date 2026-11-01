@@ -32,6 +32,7 @@ export interface PullRequest {
   reviewers: Reviewer[];
   mergeStatus?: string;
   lastMergeSourceCommit?: { commitId: string };
+  lastMergeCommit?: { commitId: string };
   closedDate?: string;
   closedBy?: IdentityRef;
   autoCompleteSetBy?: IdentityRef;
@@ -43,6 +44,12 @@ export interface PrCompletionOptions {
   deleteSourceBranch?: boolean;
   transitionWorkItems?: boolean;
   mergeCommitMessage?: string;
+}
+
+/** Pull requests of one commit: those that created it as their merge commit, and those that merged it. */
+export interface CommitPrQueryResult {
+  byMergeCommit: PullRequest[];
+  byCommit: PullRequest[];
 }
 
 /** A person or group found with the identity picker. */

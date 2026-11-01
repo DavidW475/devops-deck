@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
-import { AdoClient, AdoError, isSafeApiPath, prArtifactUrl, refName, ZERO_OBJECT_ID } from '../client';
+import { AdoClient, AdoError, commitArtifactUrl, isSafeApiPath, prArtifactUrl, refName, ZERO_OBJECT_ID } from '../client';
 import { ConnectionManager } from '../connection';
 import * as vscode from './vscodeStub';
 
@@ -655,5 +655,50 @@ describe('AdoClient identity, auth and errors', () => {
   it('uses the status when the JSON error has no message', async () => {
     reply = () => json({}, 409);
     await assert.rejects(newClient().getBuild(1), (e: unknown) => e instanceof AdoError && e.status === 409 && /^409/.test(e.message));
+  });
+});
+
+describe('commit lookups', () => {
+  const SHA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
+
+  it('queryPullRequestsByCommit asks both queries in one organization-route request', async () => {
+    const pr = { pullRequestId: 7 };
+    const other = { pullRequestId: 9 };
+    replyWith({ results: [{ [SHA]: [pr] }, { [SHA]: [other, pr] }] });
+    const r = await newClient().queryPullRequestsByCommit(GUID, SHA);
+    assert.deepEqual(r, { byMergeCommit: [pr], byCommit: [other, pr] });
+    const c = lastCall();
+    assert.equal(c.method, 'POST');
+    assert.equal(c.url.pathname, `${O}git/repositories/${GUID}/pullrequestquery`);
+    assert.deepEqual(c.body, { queries: [{ type: 'lastMergeCommit', items: [SHA] }, { type: 'commit', items: [SHA] }] });
+  });
+
+  it('queryPullRequestsByCommit gives empty lists for missing results', async () => {
+    replyWith({});
+    assert.deepEqual(await newClient().queryPullRequestsByCommit(GUID, SHA), { byMergeCommit: [], byCommit: [] });
+    replyWith({ results: [{}, { other: [{ pullRequestId: 1 }] }] });
+    assert.deepEqual(await newClient().queryPullRequestsByCommit(GUID, SHA), { byMergeCommit: [], byCommit: [] });
+  });
+
+  it('getCommitWorkItemIds posts the commit artifact URI and maps the ids', async () => {
+    const uri = `vstfs:///Git/Commit/proj-1%2Frepo-1%2F${SHA}`;
+    replyWith({ artifactUrisQueryResult: { [uri]: [{ id: 12 }, { id: 15 }] } });
+    assert.deepEqual(await newClient().getCommitWorkItemIds('proj-1', 'repo-1', SHA), [12, 15]);
+    const c = lastCall();
+    assert.equal(c.method, 'POST');
+    assert.equal(c.url.pathname, `${O}wit/artifacturiquery`);
+    assert.deepEqual(c.body, { artifactUris: [uri] });
+  });
+
+  it('getCommitWorkItemIds is empty without a result', async () => {
+    replyWith({});
+    assert.deepEqual(await newClient().getCommitWorkItemIds('proj-1', 'repo-1', SHA), []);
+    replyWith({ artifactUrisQueryResult: {} });
+    assert.deepEqual(await newClient().getCommitWorkItemIds('proj-1', 'repo-1', SHA), []);
+  });
+
+  it('commitWebUrl encodes project and repository name', async () => {
+    assert.equal(newClient().commitWebUrl('web shop', SHA), `https://dev.azure.com/contoso/Fabrikam%20Shop/_git/web%20shop/commit/${SHA}`);
+    assert.equal(commitArtifactUrl('p', 'r', SHA), `vstfs:///Git/Commit/p%2Fr%2F${SHA}`);
   });
 });

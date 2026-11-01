@@ -108,6 +108,16 @@ Help for `template:` and `extends:` references in local pipeline files (language
 - **Show Pipeline Templates:** lists every template the file includes, recursively, with nesting, source and number of parameters; pick one to open it.
 - **Validate and Preview Expanded Pipeline** (button in the editor title): Azure DevOps expands the pipeline with the local content of the file, without starting a run. You see the final YAML, or the errors marked in the file. Other files, including local templates, are read from the server at the checked-out branch.
 
+### Tracing a line to its pull request
+
+Ask "why is this line here?" and get the pull request and work items behind it, opened in the DevOps Deck panels instead of the browser.
+
+- **Command:** *DevOps Deck: Trace Line to Pull Request* (editor context menu or Command Palette) shows the commit of the cursor line, its pull request and the linked work items, which fill in step by step. Pick a row to open the pull request, a work item or the commit in the browser.
+- **Blame hover of VS Code:** the hover of VS Code's own blame (status bar entry) gets a *Pull Request & Work Items* link for commits of Azure Repos. Nothing is requested until you click.
+- **Annotations (off by default):** `azureDevOps.blame.annotations` adds the author, age and pull request of the cursor line to the status bar, as text after the line, or both.
+
+It works in clones whose remote is in your organization (any of its projects), runs `git blame` locally and asks Azure DevOps for the pull request of the commit. Uncommitted and unpushed lines get a note instead of a request. See *Known limitations*.
+
 ### Repositories and wiki
 
 - **Repositories and branches:** every branch with how far it is ahead of and behind the default branch, its last commit and author. Compare a branch with the default branch file by file in the diff editor, create a pull request, create or delete branches on the server, check a branch out, or clone the repository.
@@ -205,6 +215,9 @@ If there is no Azure Repos remote, or you want a different project, click the pr
 | `azureDevOps.yaml.taskSupport` | `true` | Completion, hover, checks and quick fixes for `- task:` steps (`false` turns all of it off) |
 | `azureDevOps.yaml.taskDiagnostics` | `true` | Mark problems of `- task:` steps |
 | `azureDevOps.yaml.taskVersionHints` | `true` | Hint when a newer major version of a task is installed |
+| `azureDevOps.blame.annotations` | `off` | Show author, age and pull request of the cursor line: `off`, `statusBar`, `inline` or `both` |
+| `azureDevOps.blame.ignoreWhitespace` | `true` | Skip whitespace-only commits when tracing a line (`git blame -w`) |
+| `azureDevOps.blame.detectCopies` | `false` | Also follow lines moved from other files of the same commit (`git blame -C`) |
 
 Example of a custom query:
 
@@ -220,7 +233,7 @@ Example of a custom query:
 ## Security and privacy
 
 - Credentials are only ever sent to `https://dev.azure.com` and `https://*.visualstudio.com`. Requests to any other host are refused, even if a workspace's settings point elsewhere.
-- In untrusted workspaces (see [Workspace Trust](https://code.visualstudio.com/docs/editor/workspace-trust)), the organization, project, tenant, query and watcher settings from the workspace are ignored.
+- In untrusted workspaces (see [Workspace Trust](https://code.visualstudio.com/docs/editor/workspace-trust)), the organization, project, tenant, query and watcher settings from the workspace are ignored. Tracing lines runs git and is off there.
 - Work item descriptions, comments and pull request text are written by other people. They are sanitized before they are shown: scripts, event handlers, styles, forms and non-http(s) links are removed.
 - DevOps Deck collects no telemetry. Reviewed-file check marks are stored locally on your machine.
 
@@ -231,6 +244,7 @@ Example of a custom query:
 - **Reviewed-file check marks are not synced** with the check marks in the Azure DevOps web UI, because that storage is not a public API. The same applies to "new since your last visit" in pull requests, which is remembered locally.
 - **Stage dependencies of classic pipelines and of YAML that cannot be expanded** (for example with required runtime parameters that have no default) are inferred from start and finish times, which is right for runs that have started but can only guess for stages that have not.
 - **Watchers, saved queries, the wiki and repositories** use the primary project when several projects are selected.
+- **Tracing a line:** the pull request is found through the commit. Whether squash, rebase and rebase-merge commits are found has not been tested against a live organization; if none is found, the pull request number in a `Merged PR 123:` commit message is used. Needs `git` and a trusted workspace; organizations configured as `https://<name>.visualstudio.com` do not match remotes (same as the other git features).
 - **Template checks are local:** template paths built from expressions (`${{ }}`) are not followed by hovers and checks. The *Local* pipeline preview evaluates them, but it is a re-implementation and can differ from Azure DevOps in edge cases (for example YAML anchors or variable templates in compile-time expressions); the *Azure DevOps* preview gives the exact result.
 - **No code search:** Azure DevOps Code Search is only served from `almsearch.dev.azure.com`, and DevOps Deck sends credentials to `dev.azure.com` and `*.visualstudio.com` only.
 

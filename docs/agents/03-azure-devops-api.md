@@ -75,6 +75,20 @@ Default `7.1`. These calls pass a preview version explicitly:
 - Not verified against a real organization: whether every major version is returned, `deprecationMessage` / `removalDate`, response size.
 - Server text (titles, help, options) is untrusted: hovers use `mdEscape`, `MarkdownString` is neither trusted nor HTML, `helpUrl` is only linked for `https:` and never fetched.
 
+## Blame: commit to pull request and work items
+
+Used by `src/blame/` (see [02-features.md](02-features.md)). Calls go through `AdoClient`; the project comes from the file's own Azure Repos remote, so any project of the organization works.
+
+- `queryPullRequestsByCommit(repoId, sha)`: `POST git/repositories/{id}/pullrequestquery` with two queries in one request, `lastMergeCommit` and `commit`, each with `items: [sha]`. Route, body and types are in the REST reference. **Not verified live:**
+  - Whether the results are full pull requests or only a few fields. The service therefore loads each result that lacks a title or status with `getPullRequest` (a few at most) before it picks one.
+  - Whether squash, rebase and rebase-merge commits are found. The reference says `lastMergeCommit` finds the PRs that "created the supplied merge commits" and `commit` those that "merged the supplied commits"; whether a squash commit counts as a merge commit is not stated. When both queries are empty, the service tries the id in the commit summary (`Merged PR 123: ...`, checked with `getPullRequestById`, same repository and completed). Without either, the result is "no pull request found", which is also what a direct push gives.
+  - The limit of `items` per query and the behaviour for an unknown commit (assumed: empty lists, not an error).
+- `getCommitWorkItemIds(projectId, repoId, sha)`: `POST wit/artifacturiquery` (organization route) with the artifact URI `vstfs:///Git/Commit/{projectId}%2F{repoId}%2F{sha}` from `commitArtifactUrl`, the same form as the documented example for pull requests. Needs the project GUID, which comes from `getRepository`. Reading the result for commits was not tested live either.
+- Work items of the pull request: `getPullRequestWorkItemIds`; titles and states: `getWorkItems` (missing items are left out). Work items mentioned in the commit message (`#123`) come from `workItemIdsFromText`.
+- `git/commits/{id}/workitems` is **not a documented route** (not in the REST reference's list of commit operations), so it is not used.
+- `commitWebUrl(repoName, sha)` builds `<repo URL>/commit/<sha>`; `webUrl` takes numbers for its second part, so a SHA does not fit there.
+- No new PAT scope: Code (Read) and Work Items (Read) are enough.
+
 ## Code search is intentionally not supported
 
 Azure DevOps Code Search is only served from `almsearch.dev.azure.com`, which `isAzureDevOpsUrl` rejects on purpose. The maintainer decided not to offer code search rather than loosen the credential host check. Do not re-add it without asking the maintainer.

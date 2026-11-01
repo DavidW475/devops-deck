@@ -8,6 +8,7 @@
 
 - Pipeline designer for task steps: *Open in Designer* above `- task:` lines, task steps in the structure strip, and a form with the version, display name and inputs in groups. Inputs show and hide with the task's `visibleRule` as values change (a hidden input that the file sets stays, marked), multi-line inputs such as `inlineScript` are text areas that keep the block scalar header, and help texts are plain text. Changes are written as line edits like for templates; changing the version edits only the `task:` line. Steps with expression-built inputs are read-only
 - Pipeline designer task catalog: a *Templates* / *Tasks* switch lists the tasks of the organization by category with version chips and a collapsible *Deprecated* list, with loading, error (naming the Agent Pools scope) and offline states, the age of the list and a reload button. A picked task opens a new-step form with a choice of the `steps:` list and a preview; *Insert into pipeline* writes the step
+- Trace a line to its pull request and work items: the command *Trace Line to Pull Request* (editor context menu), a *Pull Request & Work Items* link in the blame hover of VS Code, and opt-in annotations in the status bar and after the cursor line. Settings `azureDevOps.blame.annotations`, `.ignoreWhitespace` and `.detectCopies`. Runs `git blame` locally (not in untrusted workspaces)
 
 ### Changed
 

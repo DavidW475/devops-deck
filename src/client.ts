@@ -325,6 +325,21 @@ export class AdoClient {
     return r.value.map(w => Number(w.id));
   }
 
+  /** Pull requests of a commit, in one request: as their merge commit and as a merged commit. */
+  async queryPullRequestsByCommit(repoId: string, sha: string): Promise<T.CommitPrQueryResult> {
+    const r = await this.request<{ results?: Record<string, T.PullRequest[]>[] }>('POST', this.url('project', `git/repositories/${repoId}/pullrequestquery`), {
+      queries: [{ type: 'lastMergeCommit', items: [sha] }, { type: 'commit', items: [sha] }],
+    });
+    return { byMergeCommit: r.results?.[0]?.[sha] ?? [], byCommit: r.results?.[1]?.[sha] ?? [] };
+  }
+
+  /** Work items linked to a commit on the server. */
+  async getCommitWorkItemIds(projectId: string, repoId: string, sha: string): Promise<number[]> {
+    const uri = commitArtifactUrl(projectId, repoId, sha);
+    const r = await this.request<{ artifactUrisQueryResult?: Record<string, { id: number }[]> }>('POST', this.url('org', 'wit/artifacturiquery'), { artifactUris: [uri] });
+    return (r.artifactUrisQueryResult?.[uri] ?? []).map(w => w.id);
+  }
+
   async getPolicyEvaluations(projectId: string, prId: number): Promise<T.PolicyEvaluation[]> {
     // The PR's own project (by ID) in the route, so this works for PRs of every selected project.
     const r = await this.request<{ value: T.PolicyEvaluation[] }>('GET', this.url('project', 'policy/evaluations',
@@ -875,6 +890,11 @@ export class AdoClient {
 
   // ---------- web links ----------
 
+  /** Browser URL of a commit in a repository of this client's project. */
+  commitWebUrl(repoName: string, sha: string): string {
+    return `${this.webUrl('repo', repoName)}/commit/${sha}`;
+  }
+
   webUrl(kind: 'pr' | 'workItem' | 'build' | 'definition' | 'repo', a: string | number, b?: number, project?: string): string {
     const c = this.connection;
     const p = `${c.orgUrl}/${encodeURIComponent(project ?? c.project)}`;
@@ -895,6 +915,10 @@ export interface PrArtifact {
 }
 
 const PR_ARTIFACT = 'vstfs:///Git/PullRequestId/';
+
+export function commitArtifactUrl(projectId: string, repoId: string, sha: string): string {
+  return `vstfs:///Git/Commit/${projectId}%2F${repoId}%2F${sha}`;
+}
 
 export function prArtifactUrl(pr: PrArtifact): string {
   return `${PR_ARTIFACT}${pr.projectId}%2F${pr.repoId}%2F${pr.prId}`;

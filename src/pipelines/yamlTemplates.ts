@@ -8,9 +8,9 @@ import * as vscode from 'vscode';
 import { AdoClient, AdoError } from '../client';
 import { Connection } from '../connection';
 import { currentBranch, isInside, localAdoRepos } from '../git';
-import { mapLimit, plural } from '../util';
+import { mapLimit, mdEscape, plural } from '../util';
 import {
-  checkTemplateParameters, completionContext, CompletionContext, describeParameter, findTemplateRefs, mdEscape, parameterSnippet,
+  checkTemplateParameters, completionContext, CompletionContext, describeParameter, findTemplateRefs, parameterSnippet,
   parsePreviewErrors, TemplateRef,
 } from './templateRefs';
 import { ExpandResult, TemplateExpander } from './templateExpander';

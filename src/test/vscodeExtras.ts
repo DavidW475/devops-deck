@@ -125,7 +125,7 @@ export function fakeDoc(uri: any, lines: string[], languageId = 'typescript') {
     text: lines[n], lineNumber: n, range: new Range(n, 0, n, lines[n].length),
   });
   return {
-    uri, languageId, lineCount: lines.length, lineAt,
+    uri, languageId, lineCount: lines.length, lineAt, isDirty: false, version: 1, encoding: 'utf8',
     getText(r?: Range): string {
       if (!r) {
         return lines.join('\n');
@@ -143,13 +143,36 @@ export function fakeDoc(uri: any, lines: string[], languageId = 'typescript') {
 
 /** Fake editor showing a document with a selection (default: cursor at the start of the given line). */
 export function fakeEditor(doc: ReturnType<typeof fakeDoc>, selection: Range = new Range(0, 0, 0, 0)) {
-  return { document: doc, selection: Object.assign(selection, { active: selection.start }) };
+  const decorations: { type: unknown; ranges: unknown[] }[] = [];
+  return {
+    document: doc, selection: Object.assign(selection, { active: selection.start }), decorations,
+    setDecorations(type: unknown, ranges: unknown[]) { decorations.push({ type, ranges }); },
+  };
+}
+
+/** Providers registered through the git extension's registerSourceControlHistoryItemDetailsProvider. */
+export const historyProviders: any[] = [];
+
+/** The innermost of the repositories that contains the path, like the git extension's getRepository. */
+function repositoryAt(repos: any[], uri: { fsPath: string }): unknown {
+  return repos.filter(r => uri.fsPath === r.rootUri.fsPath || uri.fsPath.startsWith(r.rootUri.fsPath + '/'))
+    .sort((a, b) => b.rootUri.fsPath.length - a.rootUri.fsPath.length)[0] ?? null;
 }
 
 /** Pretends the built-in git extension is active with these repositories. */
-export function setGitRepositories(repos: unknown[] | undefined): void {
+export function setGitRepositories(repos: any[] | undefined): void {
+  const api = () => ({
+    repositories: repos,
+    git: { path: 'git' },
+    onDidOpenRepository: () => noop,
+    getRepository: (uri: { fsPath: string }) => repositoryAt(repos ?? [], uri),
+    registerSourceControlHistoryItemDetailsProvider: (p: unknown) => {
+      historyProviders.push(p);
+      return { dispose: () => { historyProviders.splice(historyProviders.indexOf(p), 1); } };
+    },
+  });
   s.extensions.getExtension = (id: string) => (id === 'vscode.git' && repos
-    ? { isActive: true, activate: async () => undefined, exports: { getAPI: () => ({ repositories: repos, onDidOpenRepository: () => noop }) } }
+    ? { isActive: true, activate: async () => undefined, exports: { getAPI: api } }
     : undefined);
 }
 
@@ -159,6 +182,21 @@ export function fakeRepo(root: string, remoteUrl: string, branch?: string) {
     rootUri: { fsPath: root },
     state: { HEAD: branch ? { name: branch } : undefined, remotes: [{ name: 'origin', fetchUrl: remoteUrl }], refs: [] as any[], onDidChange: event(`repo:${root}`) },
     calls: [] as unknown[][],
+    /** the commits of `repo.getCommit`, by hash */
+    commits: new Map<string, { hash: string; message: string; authorName?: string; authorDate?: Date }>(),
+    /** what `repo.log` returns */
+    logEntries: [] as { hash: string; message: string }[],
+    async getCommit(this: { commits: Map<string, any> }, sha: string) {
+      const c = this.commits.get(sha);
+      if (!c) {
+        throw new Error(`bad object ${sha}`);
+      }
+      return c;
+    },
+    async log(this: { logEntries: unknown[]; calls: unknown[][] }, options: unknown) {
+      this.calls.push(['log', options]);
+      return this.logEntries;
+    },
   };
 }
 
@@ -180,6 +218,8 @@ export function resetExtras(): void {
   s.workspace.workspaceFolders = [];
   files.clear();
   providers.length = 0;
+  historyProviders.length = 0;
+  s.workspace.isTrusted = true;
   setGitRepositories(undefined);
 }
 
@@ -190,11 +230,15 @@ s.CommentMode ??= { Editing: 0, Preview: 1 };
 s.CommentThreadState ??= { Unresolved: 0, Resolved: 1 };
 s.CommentThreadCollapsibleState ??= { Collapsed: 0, Expanded: 1 };
 s.QuickPickItemKind ??= { Separator: -1, Default: 0 };
+s.DecorationRangeBehavior ??= { OpenOpen: 0, ClosedClosed: 1, OpenClosed: 2, ClosedOpen: 3 };
+s.ThemeColor ??= class { constructor(readonly id: string) {} };
 s.ProgressLocation ??= { SourceControl: 1, Window: 10, Notification: 15 };
 s.Uri.from ??= (c: { scheme: string; path: string; query?: string }) => new stub.Uri(c.scheme, c.path, c.query ?? '');
 
 Object.assign(s.window, {
   createQuickPick,
+  createTextEditorDecorationType: (options: unknown) => ({ options, dispose() { /* stub */ } }),
+  onDidChangeTextEditorSelection: event('selection'),
   onDidChangeActiveTextEditor: event('activeEditor'),
   onDidChangeWindowState: event('windowState'),
   registerWebviewViewProvider: () => noop,
@@ -206,6 +250,7 @@ Object.assign(s.window, {
 });
 s.window.withProgress ??= async (_o: unknown, task: (p: unknown) => Promise<unknown>) => task({ report() { /* stub */ } });
 Object.assign(s.workspace, {
+  isTrusted: true,
   onDidOpenTextDocument: event('openDoc'),
   onDidCloseTextDocument: event('closeDoc'),
   onDidChangeTextDocument: event('changeDoc'),

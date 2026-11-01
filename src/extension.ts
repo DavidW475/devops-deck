@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import { BlameService, defaultBlameDeps } from './blame/blameService';
+import { BlameUi } from './blame/blameUi';
 import { AdoClient, PAT_SECRET_KEY } from './client';
 import { ConnectionManager, normalizeOrgUrl } from './connection';
 import { BuildLogTerminal, LOG_SCHEME, LogDocumentProvider, makeLogUri } from './pipelines/logs';
@@ -41,6 +43,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const yamlTemplates = new YamlTemplateSupport(client, connections).register();
   const taskCatalog = new TaskCatalog(client, connections, context.globalStorageUri);
   const yamlTasks = new YamlTaskSupport(taskCatalog, connections).register();
+  const blame = new BlameUi(new BlameService(defaultBlameDeps(client, connections)), connections);
   PullRequestPanel.useStore(context.globalState);
   PipelinePreviewPanel.useStore(context.globalState);
   const designerLens = new DesignerCodeLens();
@@ -78,6 +81,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     yamlTemplates,
     taskCatalog,
     yamlTasks,
+    blame,
     designerLens,
     vscode.languages.registerCodeLensProvider([{ language: 'yaml', scheme: 'file' }, { language: 'azure-pipelines', scheme: 'file' }], designerLens),
     vscode.languages.registerCodeActionsProvider({ scheme: 'file' }, new TodoCodeActions(), { providedCodeActionKinds: TodoCodeActions.kinds }),
@@ -89,6 +93,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     connections.onDidChange(() => {
       client.reset();
       taskCatalog.reset();
+      blame.reset();
       refresh();
     }),
     vscode.workspace.onDidChangeConfiguration(e => {
@@ -97,6 +102,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
       if (e.affectsConfiguration('azureDevOps')) {
         client.reset();
+        blame.reset();
         void connections.resolve().then(refresh);
       }
     }),
@@ -104,6 +110,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (e.provider.id === 'microsoft') {
         client.reset();
         taskCatalog.reset();
+        blame.reset();
         refresh();
       }
     }),
@@ -118,6 +125,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'microsoft', vscode.ConfigurationTarget.Global);
     await client.signIn();
     taskCatalog.reset();
+    blame.reset();
     refresh();
   });
   command('azureDevOps.setPat', async () => {
@@ -134,6 +142,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'pat', vscode.ConfigurationTarget.Global);
     client.reset();
     taskCatalog.reset();
+    blame.reset();
     refresh();
   });
   command('azureDevOps.configure', async () => {
@@ -210,6 +219,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     compareIterations(client, repoId, prId, base, target));
   command('azureDevOps.pr.openInBrowser', async (repoName: string, prId: number, project?: string) =>
     vscode.env.openExternal(vscode.Uri.parse(client.webUrl('pr', repoName, prId, at(project).connection.project))));
+
+  // ----- blame -----
+  command('azureDevOps.blame.traceLine', () => blame.traceLine());
+  command('azureDevOps.blame.openForCommit', (root: unknown, sha: unknown) => blame.openForCommit(root, sha));
+  command('azureDevOps.blame.openCommit', (project: unknown, repoName: unknown, sha: unknown) => blame.openCommit(project, repoName, sha));
 
   // ----- work items -----
   command('azureDevOps.watchers.checkNow', () => watchers.checkNow());
@@ -341,7 +355,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 
   await connections.resolve();
-  void connections.watchGit();
+  void connections.watchGit().then(() => blame.start());
 }
 
 export function deactivate(): void {}
