@@ -6,6 +6,10 @@
 
 - My Day: a tab with a ranked list of what needs you now (approvals waiting for you, your failed runs, pull requests to review, assigned work items), the reason for each rank and quick actions. Items can be snoozed, marked done until they change or hidden, and restored. A badge on the view shows the count. New commands *Defer* and *Restore* for items and *Vote on Pull Request*, and the setting `azureDevOps.myDay.importantBranches`
 
+### Changed
+
+- Sidebar: long lists render in pages of 40 cards (the next page loads while scrolling), icons share one sprite, and the layout follows the VS Code theme more closely (flatter cards, underline tabs, high contrast borders). Pull request checks are reused for 15 seconds instead of being requested again on every list load.
+
 ## 1.2.0
 
 ### Added
