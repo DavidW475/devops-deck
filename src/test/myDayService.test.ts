@@ -222,6 +222,23 @@ describe('MyDayService loading', () => {
     assert.deepEqual(r.failures, []);
   });
 
+  it('matches the iteration and the defers by project name without regard to case', async () => {
+    const h = make();
+    h.state.projects = ['fabrikam shop'];
+    h.overrides['fabrikam shop'] = {
+      getWorkItems: async (ids: number[]) => ids.map(id => workItem(id, SHOP)),
+      listIterationDates: async () => [{ path: `${SHOP}\\sprint 1`, finishDate: new Date(START + 24 * HOUR).toISOString() }],
+    };
+    const r = await h.service.get();
+    const wi = r.items.find(i => i.source === 'workItems')!;
+    assert.ok(wi.reasons.some(x => x.rule === 'W4'), 'sprint end found although the spelling differs');
+    // An old defer of that project is garbage collected: its source counts as loaded.
+    await h.defers.set('wi:999', { kind: 'hide', fingerprint: 'x', seenAt: START - 40 * 24 * HOUR, title: 'Old', source: 'workItems', project: SHOP });
+    await h.service.get({ force: true });
+    await flush();
+    assert.equal(h.defers.get('wi:999'), undefined);
+  });
+
   it('asks for the iterations once per hour', async () => {
     const h = make();
     await h.service.get();
@@ -281,6 +298,22 @@ describe('MyDayService timing', () => {
     h.state.now += 2 * MINUTE;
     await h.service.get();
     assert.equal(h.count('listPullRequests'), 3);
+    assert.equal(h.count('queryWiql'), 2);
+  });
+
+  it('never polls more often hidden or for work items than visible with a long refresh interval', async () => {
+    const h = make();
+    h.state.refresh = 600;
+    h.service.setVisible(true);
+    await h.service.get();
+    h.service.setVisible(false);
+    h.state.now += 301 * SECOND;
+    await h.service.get();
+    assert.equal(h.count('listPullRequests'), 1, 'hidden: not after the 5 minute default, the setting wins');
+    assert.equal(h.count('queryWiql'), 1, 'work items follow the setting too');
+    h.state.now += 300 * SECOND;
+    await h.service.get();
+    assert.equal(h.count('listPullRequests'), 2);
     assert.equal(h.count('queryWiql'), 2);
   });
 
@@ -365,6 +398,22 @@ describe('MyDayService timing', () => {
     assert.equal(h.events[0].items.filter(i => i.source === 'reviews').length, 2);
     await h.advance(15 * SECOND);
     assert.equal(h.events.length, 1);
+  });
+
+  it('a listener that throws does not leave an unhandled rejection in the timer', async () => {
+    const h = make();
+    h.service.onDidChange(() => { throw new Error('listener'); });
+    const seen: unknown[] = [];
+    const onReject = (e: unknown): void => { seen.push(e); };
+    process.on('unhandledRejection', onReject);
+    try {
+      h.service.start();
+      await h.advance(15 * SECOND);
+      await flush();
+    } finally {
+      process.off('unhandledRejection', onReject);
+    }
+    assert.deepEqual(seen, []);
   });
 
   it('a failing getMe in the timer is ignored', async () => {
@@ -466,29 +515,48 @@ describe('MyDayService failures', () => {
     assert.deepEqual(r.failures, []);
   });
 
-  it('makes no request while throttled, even when forced, and resumes after', async () => {
+  it('makes no background request while throttled, loads on a direct user action, and resumes after', async () => {
     const h = make();
     h.service.setVisible(true);
     await h.service.get();
     h.state.throttledUntil = START + 5 * MINUTE;
     h.state.now += 2 * MINUTE;
-    const r = await h.service.get({ force: true });
+    const r = await h.service.get();
     assert.equal(total(h), 6);
     assert.deepEqual(r.failures, []);
     h.service.start();
     await h.advance(15 * SECOND);
-    assert.equal(total(h), 6);
+    assert.equal(total(h), 6, 'the timer honours the pause');
+    const forced = await h.service.get({ force: true });
+    assert.equal(h.count('listPullRequests'), 2, 'Retry is a user action: not blocked');
+    assert.deepEqual(forced.failures, []);
     h.state.now = START + 6 * MINUTE;
     await h.service.get();
-    assert.equal(h.count('listPullRequests'), 2);
+    assert.equal(h.count('listPullRequests'), 3);
   });
 
-  it('get while throttled before any load returns an empty result', async () => {
+  it('get while throttled before any load says the sources are not loaded, and Retry loads them', async () => {
     const h = make();
     h.state.throttledUntil = START + MINUTE;
     const r = await h.service.get();
     assert.equal(total(h), 0);
     assert.deepEqual(r.items, []);
+    assert.equal(r.failures.length, 4, 'one per source: the page must not say "all done"');
+    assert.ok(r.failures.every(f => f.kind === 'throttled' && f.project === SHOP));
+    const retried = await h.service.get({ force: true });
+    assert.ok(retried.items.length > 0);
+    assert.deepEqual(retried.failures, []);
+  });
+
+  it('a pause that ends clears the notice on the next tick', async () => {
+    const h = make();
+    h.state.throttledUntil = START + MINUTE;
+    await h.service.get();
+    h.service.start();
+    h.state.now = START + 2 * MINUTE;
+    await h.advance(15 * SECOND);
+    assert.ok(h.events.at(-1)!.items.length > 0);
+    assert.deepEqual(h.events.at(-1)!.failures, []);
   });
 });
 
@@ -545,6 +613,33 @@ describe('MyDayService defers', () => {
     await h.defers.set('run:Fabrikam Shop:97', { ...base, kind: 'snooze', until: START + HOUR, title: 'Gone' });
     const r = await h.service.get();
     assert.deepEqual(r.deferred.map(d => d.title).toSorted((a, b) => a.localeCompare(b)), ['Done run', 'Old run']);
+  });
+
+  it('forgets a done entry once its item changed, so it does not come back under Deferred when the item is gone', async () => {
+    const h = make();
+    const r = await h.service.get();
+    const review = r.items.find(i => i.source === 'reviews')!;
+    await h.service.applyDefer(review, 'done');
+    // The pull request gets a new commit: it shows up again.
+    h.overrides[SHOP] = { listPullRequests: async () => [{ ...pr(1), lastMergeSourceCommit: { commitId: 'new' } }] };
+    const back = await h.service.get({ force: true });
+    assert.ok(back.items.some(i => i.key === review.key));
+    await flush();
+    assert.equal(h.defers.get(review.key), undefined, 'the stale entry is dropped');
+    // Later the pull request is merged and leaves the list.
+    h.overrides[SHOP] = { listPullRequests: async () => [] };
+    const gone = await h.service.get({ force: true });
+    assert.ok(!gone.deferred.some(d => d.key === review.key));
+  });
+
+  it('keeps a done entry whose item is unchanged', async () => {
+    const h = make();
+    const r = await h.service.get();
+    const review = r.items.find(i => i.source === 'reviews')!;
+    await h.service.applyDefer(review, 'done');
+    await h.service.get({ force: true });
+    await flush();
+    assert.ok(h.defers.get(review.key));
   });
 
   it('marks listed deferred items as seen after a load', async () => {
@@ -626,15 +721,56 @@ describe('MyDayService reset and raw lists', () => {
     assert.deepEqual(await h.service.rawReviews('Unknown'), []);
   });
 
-  it('raw lists reject when throttled without data and serve stale data otherwise', async () => {
+  it('raw lists load for the user although Azure DevOps asked for a pause, and the error comes from the server', async () => {
     const h = make();
     h.state.throttledUntil = START + HOUR;
-    await assert.rejects(h.service.rawApprovals(SHOP), (e: unknown) => e instanceof AdoError && e.status === 429);
-    assert.equal(total(h), 0);
-    h.state.throttledUntil = 0;
-    await h.service.rawApprovals(SHOP);
-    h.state.now += MINUTE;
-    h.state.throttledUntil = START + HOUR;
     assert.equal((await h.service.rawApprovals(SHOP)).length, 1);
+    assert.equal(h.count('listPendingApprovals'), 1);
+    h.overrides[SHOP] = { listPendingApprovals: async () => { throw new AdoError('Too many', 429); } };
+    h.state.now += MINUTE;
+    await assert.rejects(h.service.rawApprovals(SHOP), (e: unknown) => e instanceof AdoError && e.status === 429);
+  });
+
+  it('raw lists do not serve a cached list after invalidate', async () => {
+    const h = make();
+    assert.equal((await h.service.rawApprovals(SHOP)).length, 1);
+    h.overrides[SHOP] = { listPendingApprovals: async () => [] };
+    h.state.now += 5 * SECOND;
+    assert.equal((await h.service.rawApprovals(SHOP)).length, 1, 'still cached');
+    h.service.invalidate();
+    assert.equal((await h.service.rawApprovals(SHOP)).length, 0, 'the answered approval is gone');
+    assert.equal(h.count('listPendingApprovals'), 2);
+  });
+
+  it('reset while getMe is pending starts over in the new generation', async () => {
+    const h = make();
+    let release: (v: IdentityRef) => void = () => undefined;
+    h.state.me = () => new Promise<IdentityRef>(r => { release = r; });
+    const first = h.service.get();
+    await flush();
+    h.service.reset();
+    h.state.me = async () => ME;
+    release(ME);
+    const r = await first;
+    assert.ok(r.items.some(i => i.source === 'reviews'), 'the stale call loads in the new generation');
+    const again = await h.service.get();
+    assert.ok(again.items.some(i => i.source === 'reviews'), 'and later callers see the data');
+    assert.equal(h.count('listPullRequests'), 1);
+  });
+
+  it('an invalidate during a flight keeps the slot due', async () => {
+    const h = make();
+    let release: (v: PullRequest[]) => void = () => undefined;
+    h.overrides[SHOP] = { listPullRequests: () => new Promise<PullRequest[]>(r => { release = r; }) };
+    const pending = h.service.get();
+    await flush();
+    h.service.invalidate();
+    release([pr(1)]);
+    await pending;
+    h.overrides[SHOP] = {};
+    await h.service.get();
+    assert.equal(h.count('listPullRequests'), 2, 'the answer predates the invalidation');
+    await h.service.get();
+    assert.equal(h.count('listPullRequests'), 2, 'and a later load clears it');
   });
 });

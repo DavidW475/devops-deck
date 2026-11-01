@@ -45,12 +45,14 @@ interface LoadOptions {
   only?: MyDaySource;
   /** ignore the TTL (not the backoff, focus-free) */
   ignoreTtl?: boolean;
+  /** a direct user action: load although Azure DevOps asked for a pause (the timer never does) */
+  ignoreThrottle?: boolean;
 }
 
 interface Computed {
   result: MyDayResult;
-  /** keys of all listed items, deferred ones included */
-  keys: string[];
+  /** all listed items by key, deferred ones included */
+  listed: Map<string, MyDayItem>;
 }
 
 function classify(e: unknown): SourceFailure['kind'] {
@@ -68,7 +70,8 @@ function classify(e: unknown): SourceFailure['kind'] {
   return 'other';
 }
 
-const slotKey = (source: MyDaySource, project: string): string => `${source}\u0000${project}`;
+/** Project names compare case-insensitively: the setting, the work item field and the defers may spell them differently. */
+const slotKey = (source: MyDaySource, project: string): string => `${source}\u0000${project.toLowerCase()}`;
 
 /** Loads, caches and ranks everything "My Day" shows. Starts no request before `get` or `start`. */
 export class MyDayService implements vscode.Disposable, DeferTarget {
@@ -80,6 +83,8 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
   private timer: ReturnType<typeof setInterval> | undefined;
   private visible = false;
   private generation = 0;
+  /** Counts `invalidate` calls: a flight that started before one must not mark its slot as fresh. */
+  private invalidations = 0;
   private disposed = false;
   private me: IdentityRef | undefined;
   private lastItems: MyDayItem[] = [];
@@ -94,7 +99,7 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
   // ---------- public API ----------
 
   async get(options: { force?: boolean } = {}): Promise<MyDayResult> {
-    await this.ensureLoaded({ force: options.force });
+    await this.ensureLoaded({ force: options.force, ignoreThrottle: options.force });
     const { result } = this.compute();
     this.lastSignature = this.signature(result);
     const authError = this.authOnlyError();
@@ -120,6 +125,7 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
   }
 
   invalidate(): void {
+    this.invalidations++;
     for (const slot of this.slots.values()) {
       slot.stale = true;
     }
@@ -182,11 +188,11 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
     const generation = this.generation;
     try {
       await this.ensureLoaded({});
+      if (generation === this.generation && !this.disposed) {
+        this.publish(true);
+      }
     } catch {
-      return; // getMe failed: the next tick tries again
-    }
-    if (generation === this.generation && !this.disposed) {
-      this.publish(true);
+      // getMe failed (the next tick tries again) or a listener threw: a timer has nobody to tell
     }
   }
 
@@ -214,11 +220,10 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
 
   // ---------- due logic ----------
 
+  /** Never shorter than the user's refresh interval: a hidden view or the work items must not poll more often than a visible one. */
   private ttl(source: MyDaySource): number {
-    if (source === 'workItems') {
-      return SLOW_TTL;
-    }
-    return this.visible && this.deps.isFocused() ? Math.max(FAST_TTL, this.deps.refreshSeconds() * SECOND) : SLOW_TTL;
+    const visible = Math.max(FAST_TTL, this.deps.refreshSeconds() * SECOND);
+    return source !== 'workItems' && this.visible && this.deps.isFocused() ? visible : Math.max(SLOW_TTL, visible);
   }
 
   private isDue(source: MyDaySource, project: string, now: number, opts: LoadOptions): boolean {
@@ -255,7 +260,7 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
   /** Starts the due loads (one flight per source) and waits for them. Starts nothing while throttled. */
   private async ensureLoaded(opts: LoadOptions): Promise<void> {
     const now = this.now();
-    if (this.throttled()) {
+    if (this.throttled() && !opts.ignoreThrottle) {
       return;
     }
     const sources = SOURCES.filter(s => (!opts.only || opts.only === s) && (this.flights.has(s) || this.dueProjects(s, now, opts).length > 0));
@@ -267,9 +272,11 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
     const fresh = sources.filter(s => !this.flights.has(s));
     if (fresh.length > 0) {
       const me = await this.deps.getMe();
-      if (generation === this.generation) {
-        this.me = me;
+      if (generation !== this.generation) {
+        // `reset` ran while we waited for the user: start over in the new generation, never a flight that drops its records.
+        return this.ensureLoaded(opts);
       }
+      this.me = me;
       for (const s of fresh) {
         if (!this.flights.has(s)) {
           this.startFlight(s, this.dueProjects(s, now, opts), me, now, generation);
@@ -289,7 +296,7 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
   }
 
   private startFlight(source: MyDaySource, projects: string[], me: IdentityRef, now: number, generation: number): void {
-    const flight: Promise<void> = this.loadSource(source, projects, me, now, generation).finally(() => {
+    const flight: Promise<void> = this.loadSource(source, projects, me, now, generation, this.invalidations).finally(() => {
       if (this.flights.get(source) === flight) {
         this.flights.delete(source);
       }
@@ -297,10 +304,11 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
     this.flights.set(source, flight);
   }
 
-  private loadSource(source: MyDaySource, projects: string[], me: IdentityRef, now: number, generation: number): Promise<void> {
+  private loadSource(source: MyDaySource, projects: string[], me: IdentityRef, now: number, generation: number, invalidations: number): Promise<void> {
     const record = (project: string, outcome: { data: unknown } | { err: unknown }): void => {
       if (generation === this.generation) {
-        this.record(source, project, now, outcome);
+        // An `invalidate` since the request started: this answer may already be outdated, so the slot stays due.
+        this.record(source, project, now, outcome, invalidations !== this.invalidations);
       }
     };
     if (source === 'workItems') {
@@ -371,7 +379,7 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
   /** The iteration dates are a helper: a failure only costs rule W4. */
   private async refreshIterations(projects: string[], now: number, generation: number): Promise<void> {
     const stale = projects.filter(p => {
-      const known = this.iterations.get(p);
+      const known = this.iterations.get(p.toLowerCase());
       return !known || now - known.attemptAt >= ITERATIONS_TTL;
     });
     await mapLimit(stale, PROJECT_PARALLEL, async project => {
@@ -383,21 +391,21 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
       }
       if (generation === this.generation) {
         const finish = new Map<string, string>();
-        list.forEach(i => i.finishDate && finish.set(i.path, i.finishDate));
-        this.iterations.set(project, { attemptAt: now, finish });
+        list.forEach(i => i.finishDate && finish.set(i.path.toLowerCase(), i.finishDate));
+        this.iterations.set(project.toLowerCase(), { attemptAt: now, finish });
       }
     });
   }
 
-  private record(source: MyDaySource, project: string, now: number, outcome: { data: unknown } | { err: unknown }): void {
+  private record(source: MyDaySource, project: string, now: number, outcome: { data: unknown } | { err: unknown }, stale: boolean): void {
     const key = slotKey(source, project);
     const prev = this.slots.get(key) ?? {};
     if ('err' in outcome) {
       const kind = classify(outcome.err);
-      this.slots.set(key, { ...prev, attemptAt: now, stale: false, error: { err: outcome.err, kind }, blockedUntil: kind === 'forbidden' ? now + FORBIDDEN_RETRY : undefined });
+      this.slots.set(key, { ...prev, attemptAt: now, stale, error: { err: outcome.err, kind }, blockedUntil: kind === 'forbidden' ? now + FORBIDDEN_RETRY : undefined });
       return;
     }
-    this.slots.set(key, { data: outcome.data, loadedAt: now, attemptAt: now, stale: false });
+    this.slots.set(key, { data: outcome.data, loadedAt: now, attemptAt: now, stale });
   }
 
   /** After a load: remember the listed items and clean up old defers; neither blocks nor fails. */
@@ -405,12 +413,17 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
     if (!this.me) {
       return;
     }
-    const { keys } = this.compute();
+    const { listed } = this.compute();
     const ok = (source: MyDaySource, project: string): boolean => {
       const slot = this.slots.get(slotKey(source, project));
       return !!slot && slot.loadedAt !== undefined && !slot.error;
     };
-    void this.defers.markSeen(keys, now).catch(() => undefined);
+    // A "done" entry whose item changed no longer hides anything: forget it, or it would come back under Deferred once the item is gone.
+    const changed = [...listed.values()].filter(i => this.defers.get(i.key)?.kind === 'done' && this.defers.get(i.key)?.fingerprint !== i.fingerprint).map(i => i.key);
+    if (changed.length > 0) {
+      void this.defers.removeMany(changed).catch(() => undefined);
+    }
+    void this.defers.markSeen([...listed.keys()], now).catch(() => undefined);
     void this.defers.prune(ok, now).catch(() => undefined);
   }
 
@@ -420,24 +433,23 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
     const key = slotKey(source, project);
     const fresh = (): T | undefined => {
       const slot = this.slots.get(key);
-      return slot?.loadedAt !== undefined && !slot.error && this.now() - slot.loadedAt <= RAW_TTL ? slot.data as T : undefined;
+      return slot?.loadedAt !== undefined && !slot.error && !slot.stale && this.now() - slot.loadedAt <= RAW_TTL ? slot.data as T : undefined;
     };
     const cached = fresh();
     if (cached) {
       return cached;
     }
-    await this.ensureLoaded({ only: source, ignoreTtl: true });
+    // A tab the user opened: loads although Azure DevOps asked for a pause (the answer then carries the error).
+    const options: LoadOptions = { only: source, ignoreTtl: true, ignoreThrottle: true };
+    await this.ensureLoaded(options);
+    if (this.slots.get(key)?.stale) {
+      await this.ensureLoaded(options); // invalidated while the first request ran
+    }
     const slot = this.slots.get(key);
     if (slot?.error) {
       throw slot.error.err;
     }
-    if (slot?.data) {
-      return slot.data as T;
-    }
-    if (this.throttled()) {
-      throw new AdoError('Azure DevOps asked to slow down, try again shortly.', 429);
-    }
-    return [] as unknown as T;
+    return (slot?.data ?? []) as T;
   }
 
   // ---------- result ----------
@@ -476,16 +488,20 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
 
   private sprintFinish(wi: WorkItem): string | undefined {
     const project = String(wi.fields['System.TeamProject'] ?? '');
-    return this.iterations.get(project)?.finish.get(String(wi.fields['System.IterationPath'] ?? ''));
+    return this.iterations.get(project.toLowerCase())?.finish.get(String(wi.fields['System.IterationPath'] ?? '').toLowerCase());
   }
 
   private failures(projects: string[]): SourceFailure[] {
     const out: SourceFailure[] = [];
+    const paused = this.throttled();
     for (const project of projects) {
       for (const source of SOURCES) {
         const slot = this.slots.get(slotKey(source, project));
         if (slot?.error) {
           out.push({ source, project, message: errorMessage(slot.error.err), kind: slot.error.kind, staleSince: slot.loadedAt });
+        } else if (paused && slot?.attemptAt === undefined) {
+          // Nothing was loaded yet and the pause forbids it: the page must not claim that nothing needs the user.
+          out.push({ source, project, message: 'Azure DevOps asked to slow down, so this is not loaded yet. Retry loads it anyway.', kind: 'throttled' });
         }
       }
     }
@@ -521,6 +537,6 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
       multi: projects.length > 1,
       loadedAt: Math.max(0, ...loadedAts),
     };
-    return { result, keys: [...listed.keys()] };
+    return { result, listed };
   }
 }

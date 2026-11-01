@@ -87,10 +87,5 @@ describe('voteOnPullRequest', () => {
     assert.equal(await voteOnPullRequest(c, 'repo1', 7), true);
     assert.deepEqual(c.votes, [['repo1', 7, -10]]);
   });
-  it('refuses a vote value outside the known labels', async () => {
-    const c = fake();
-    answers.quickPick.push({ label: 'x', vote: 99 });
-    assert.equal(await voteOnPullRequest(c, 'repo1', 7), false);
-    assert.equal(c.votes.length, 0);
-  });
+
 });

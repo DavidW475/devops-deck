@@ -1260,7 +1260,9 @@
       if (!list.length) continue;
       html += `<div class="md-tier" data-key="md-tier:${tier}">${label} · ${list.length}</div>` + win.take(list, card, mdKey);
     }
-    if (!top.length && !S.search) {
+    // A source that never loaded (a failure without older data) means nothing is known: no claim that all is done.
+    const unknown = (r.failures || []).some((f) => !f.staleSince);
+    if (!top.length && !S.search && !unknown) {
       html += `<div class="empty md-empty" data-key="md-empty">${icon('check')}<p>All done for today.<br>Nothing needs you right now.</p></div>`;
     }
     return html + myDayLater(later, win, card) + win.more() + myDayDeferred(deferred);

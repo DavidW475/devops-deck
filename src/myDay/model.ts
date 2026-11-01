@@ -85,7 +85,8 @@ export function approvalItem(a: Approval, me: IdentityRef, project: string, now:
   }
   const openSteps = steps.filter(s => s.status === 'pending').length;
   const approved = steps.filter(s => s.status === 'approved').length;
-  const stillNeeded = a.minRequiredApprovers === undefined ? openSteps : Math.max(0, a.minRequiredApprovers - approved);
+  // `minRequiredApprovers` 0 (or missing) means every approver has to approve.
+  const stillNeeded = a.minRequiredApprovers ? Math.max(0, a.minRequiredApprovers - approved) : openSteps;
   const owner = a.pipeline?.owner?.name;
   const runId = runIdOf(a);
   const actions: MyDayAction[] = [

@@ -43,6 +43,15 @@ describe('run rules', () => {
     assert.deepEqual(rules({ ...base, result: 'succeeded' }), []);
   });
   it('R2 important branch', () => assert.deepEqual(rules({ ...base, result: 'failed', important: true }), ['R1:50', 'R2:25']));
+  it('a partially succeeded run is not called a failure in the reasons', () => {
+    const labels = (r: ReturnType<typeof rankItem>) => r.reasons.map(x => x.label);
+    const partial = rankItem({ ...base, result: 'partiallySucceeded', important: true, finishTime: ago(HOUR) }, NOW);
+    assert.deepEqual(labels(partial), ['Your run partially succeeded', 'Partly failed on an important branch', 'Just finished with problems']);
+    const old = rankItem({ ...base, result: 'partiallySucceeded', finishTime: ago(73 * HOUR) }, NOW);
+    assert.equal(old.reasons[1].label, 'Older partial failure');
+    const failed = rankItem({ ...base, result: 'failed', important: true, finishTime: ago(HOUR) }, NOW);
+    assert.deepEqual(labels(failed), ['Your run failed', 'Failed on an important branch', 'Just failed']);
+  });
   it('R3 recent, old and in between', () => {
     assert.deepEqual(rules({ ...base, result: 'failed', finishTime: ago(23 * HOUR) }), ['R1:50', 'R3:5']);
     assert.deepEqual(rules({ ...base, result: 'failed', finishTime: ago(24 * HOUR) }), ['R1:50']);
@@ -65,6 +74,9 @@ describe('review rules', () => {
   });
   it('P3 label names the working days', () => {
     assert.equal(rankItem({ ...base, creationDate: FRI }, NOW).reasons[1].label, 'Open for 3 working days');
+  });
+  it('P3 and W4 labels say "1 working day" in the singular', () => {
+    assert.equal(rankItem({ ...base, creationDate: '2026-11-03T09:00:00Z' }, NOW).reasons[1].label, 'Open for 1 working day');
   });
   it('P4 conflicts', () => assert.deepEqual(rules({ ...base, conflicts: true, creationDate: ago(HOUR) }), ['P1:40', 'P4:-10']));
   it('a creation date in the future does not go below 0 days', () => {
@@ -96,6 +108,9 @@ describe('work item rules', () => {
   });
   it('W4 label names the working days left', () => {
     assert.equal(rankItem({ ...base, sprintFinish: '2026-11-06T00:00:00Z' }, NOW).reasons[1].label, 'Sprint ends in 2 working days');
+  });
+  it('W4 label says "1 working day" in the singular', () => {
+    assert.equal(rankItem({ ...base, sprintFinish: '2026-11-05T00:00:00Z' }, NOW).reasons[1].label, 'Sprint ends in 1 working day');
   });
   it('W5 bug', () => assert.deepEqual(rules({ ...base, type: 'Bug' }), ['W1:10', 'W5:5']));
 });

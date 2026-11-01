@@ -10,6 +10,9 @@ const ADO_RESOURCE_SCOPE = '499b84ac-1321-427f-aa17-267ca6975798/.default';
 const API_VERSION = '7.1';
 /** A hung connection must not block polling loops (watchers, log streaming) forever. */
 const REQUEST_TIMEOUT_MS = 60_000;
+/** Pause after a 429 without a readable `Retry-After`, and the longest pause we accept. */
+const DEFAULT_PAUSE_MS = 60_000;
+const MAX_PAUSE_MS = 15 * 60_000;
 export const PAT_SECRET_KEY = 'azureDevOps.pat';
 
 export class AdoError extends Error {
@@ -59,6 +62,8 @@ export class AdoClient {
   private me?: Promise<T.IdentityRef>;
   private readonly scoped = new Map<string, AdoClient>();
   private pauseUntil = 0;
+  /** The organization the pause belongs to: another one is not paused. */
+  private pauseOrg?: string;
 
   constructor(private readonly secrets: vscode.SecretStorage, private readonly connections: Pick<ConnectionManager, 'current'>,
     private readonly parent?: AdoClient) {}
@@ -93,6 +98,10 @@ export class AdoClient {
   reset(): void {
     this.me = undefined;
     this.scoped.clear();
+    // A new sign-in or organization starts without the old pause.
+    const root = this.parent ?? this;
+    root.pauseUntil = 0;
+    root.pauseOrg = undefined;
   }
 
   // ---------- auth & http ----------
@@ -152,26 +161,37 @@ export class AdoClient {
     return await res.json() as R;
   }
 
-  /** Sends a request with credentials; only to Azure DevOps hosts. Non-2xx answers become AdoErrors. */
-  /** Time (ms) until which Azure DevOps asked to pause; background polling honours it. 0 when it did not. */
+  /** Time (ms) until which Azure DevOps asked to pause; background polling honours it. 0 when it did not (or for another organization). */
   get throttledUntil(): number {
-    return (this.parent ?? this).pauseUntil;
+    const root = this.parent ?? this;
+    return root.pauseOrg === undefined || root.pauseOrg === this.connections.current?.orgUrl ? root.pauseUntil : 0;
   }
 
-  /** `Retry-After` can come with any status, also 200; a 429 without it pauses for a minute. */
+  /**
+   * `Retry-After` can come with any status, also 200; a 429 without a usable value pauses for a minute. A pause is at
+   * most 15 minutes: a larger value (or a typo) must not silence the background work for a day.
+   */
   private noteThrottling(res: Response): void {
-    const header = res.headers.get('retry-after');
-    let waitMs = res.status === 429 ? 60_000 : 0;
+    const header = res.headers.get('retry-after')?.trim();
+    const throttled = res.status === 429;
+    let waitMs = 0;
     if (header) {
       const seconds = Number(header);
       waitMs = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header) - Date.now();
     }
+    if (Number.isNaN(waitMs) || (!header && throttled)) {
+      waitMs = throttled ? DEFAULT_PAUSE_MS : 0; // unreadable value
+    }
     if (waitMs > 0) {
       const root = this.parent ?? this;
-      root.pauseUntil = Math.max(root.pauseUntil, Date.now() + waitMs);
+      const until = Date.now() + Math.min(waitMs, MAX_PAUSE_MS);
+      const org = this.connections.current?.orgUrl;
+      root.pauseUntil = root.pauseOrg === org ? Math.max(root.pauseUntil, until) : until;
+      root.pauseOrg = org;
     }
   }
 
+  /** Sends a request with credentials; only to Azure DevOps hosts. Non-2xx answers become AdoErrors. */
   private async send(method: string, url: string, body?: unknown,
     opts: { contentType?: string; raw?: boolean; binary?: boolean; headers?: Record<string, string>; timeoutMs?: number } = {}): Promise<Response> {
     if (!isAzureDevOpsUrl(url)) {
@@ -746,7 +766,6 @@ export class AdoClient {
     return r.daysOff ?? [];
   }
 
-  /** Iteration or area paths of the project, e.g. "Fabrikam\\Sprint 1". */
   /** Iterations of the project with their end dates. */
   async listIterationDates(): Promise<T.ClassificationIteration[]> {
     const root = await this.get<T.ClassificationNode>('project', 'wit/classificationnodes/Iterations', { $depth: 10 });
@@ -761,6 +780,7 @@ export class AdoClient {
     return out;
   }
 
+  /** Iteration or area paths of the project, e.g. "Fabrikam\\Sprint 1". */
   async listClassificationPaths(group: 'Iterations' | 'Areas'): Promise<string[]> {
     const root = await this.get<T.ClassificationNode>('project', `wit/classificationnodes/${group}`, { $depth: 10 });
     const out: string[] = [];

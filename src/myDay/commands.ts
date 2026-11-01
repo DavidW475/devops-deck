@@ -55,9 +55,9 @@ export async function voteOnPullRequest(client: Pick<AdoClient, 'vote'>, repoId:
     return false;
   }
   const pick = await vscode.window.showQuickPick(
-    VOTES.map(v => ({ label: v.label, vote: v.vote })),
+    VOTES,
     { title: `Vote on pull request ${prId}`, placeHolder: 'Your vote' });
-  if (!pick || !Object.hasOwn(VOTE_LABELS, String(pick.vote))) {
+  if (!pick) {
     return false;
   }
   await client.vote(repoId, prId, pick.vote);

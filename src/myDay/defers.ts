@@ -88,6 +88,16 @@ export class MyDayDefers {
     await this.save(entries);
   }
 
+  /** Removes several entries with one write. */
+  async removeMany(keys: string[]): Promise<void> {
+    const entries = this.all();
+    const present = keys.filter(k => k in entries);
+    if (present.length > 0) {
+      present.forEach(k => delete entries[k]);
+      await this.save(entries);
+    }
+  }
+
   async remove(key: string): Promise<void> {
     const entries = this.all();
     if (key in entries) {

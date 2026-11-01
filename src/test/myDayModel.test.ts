@@ -169,6 +169,13 @@ describe('approvalItem', () => {
       steps: [{ assignedApprover: ME, status: 'pending' }, { assignedApprover: LENA, status: 'pending' }],
     });
     assert.equal(approvalItem(unknown, ME, PROJECT, NOW)!.score, 90);
+    // 0 means that every approver has to approve: two open steps are both still needed.
+    const everyone = approval({
+      minRequiredApprovers: 0,
+      steps: [{ assignedApprover: ME, status: 'pending' }, { assignedApprover: LENA, status: 'pending' }],
+    });
+    assert.ok(approvalItem(everyone, ME, PROJECT, NOW)!.reasons.some(r => r.rule === 'A3'), 'A3: your approval is required');
+    assert.equal(approvalItem(everyone, ME, PROJECT, NOW)!.score, 90);
   });
 
   it('filters', () => {

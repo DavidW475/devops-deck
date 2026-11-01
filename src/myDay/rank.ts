@@ -23,9 +23,9 @@ export const RULES: Readonly<Record<string, RankRule>> = {
   'R3:old': { points: -15, label: 'Older failure' },
   P1: { points: 40, label: 'Waiting for your review' },
   P2: { points: 15, label: 'You are a required reviewer' },
-  'P3:1': { points: 5, label: 'Open for {n} working days' },
-  'P3:3': { points: 10, label: 'Open for {n} working days' },
-  'P3:7': { points: 20, label: 'Open for {n} working days' },
+  'P3:1': { points: 5, label: 'Open for {n} working {days}' },
+  'P3:3': { points: 10, label: 'Open for {n} working {days}' },
+  'P3:7': { points: 20, label: 'Open for {n} working {days}' },
   P4: { points: -10, label: 'Has conflicts, author goes first' },
   W1: { points: 10, label: 'Assigned to you' },
   'W2:InProgress': { points: 20, label: 'In progress' },
@@ -33,17 +33,25 @@ export const RULES: Readonly<Record<string, RankRule>> = {
   'W3:1': { points: 30, label: 'Priority 1' },
   'W3:2': { points: 10, label: 'Priority 2' },
   'W4:over': { points: 30, label: 'Sprint is over' },
-  'W4:2': { points: 25, label: 'Sprint ends in {n} working days' },
-  'W4:5': { points: 10, label: 'Sprint ends in {n} working days' },
+  'W4:2': { points: 25, label: 'Sprint ends in {n} working {days}' },
+  'W4:5': { points: 10, label: 'Sprint ends in {n} working {days}' },
   W5: { points: 5, label: 'Bug' },
 };
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 
-function reason(id: string, n?: number): RankReason {
+/** Labels for a run that only partially succeeded: "failed" would be wrong. */
+const PARTIAL_LABELS: Readonly<Record<string, string>> = {
+  R2: 'Partly failed on an important branch',
+  'R3:recent': 'Just finished with problems',
+  'R3:old': 'Older partial failure',
+};
+
+function reason(id: string, n?: number, partial = false): RankReason {
   const r = RULES[id];
-  return { rule: id.split(':')[0], label: r.label.replace('{n}', String(n ?? '')), points: r.points };
+  const label = (partial ? PARTIAL_LABELS[id] : undefined) ?? r.label;
+  return { rule: id.split(':')[0], label: label.replace('{n}', String(n ?? '')).replace('{days}', n === 1 ? 'day' : 'days'), points: r.points };
 }
 
 function parse(iso: string | undefined): number | undefined {
@@ -71,15 +79,16 @@ function runReasons(f: Extract<RankFacts, { kind: 'run' }>, now: number): RankRe
   if (f.result === 'failed' || f.result === 'partiallySucceeded') {
     out.push(reason(`R1:${f.result}`));
   }
+  const partial = f.result === 'partiallySucceeded';
   if (f.important) {
-    out.push(reason('R2'));
+    out.push(reason('R2', undefined, partial));
   }
   const finished = parse(f.finishTime);
   if (finished !== undefined) {
     if (now - finished < DAY) {
-      out.push(reason('R3:recent'));
+      out.push(reason('R3:recent', undefined, partial));
     } else if (now - finished > 3 * DAY) {
-      out.push(reason('R3:old'));
+      out.push(reason('R3:old', undefined, partial));
     }
   }
   return out;

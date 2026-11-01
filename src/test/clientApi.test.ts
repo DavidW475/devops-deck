@@ -420,6 +420,38 @@ describe('AdoClient API calls', () => {
       near(client.throttledUntil, 60_000);
     });
 
+    it('falls back to 60 seconds for a 429 whose Retry-After cannot be read', async () => {
+      answerWith({ 'Retry-After': 'soon' }, 429);
+      const client = newClient();
+      await assert.rejects(client.listWikis(), (e: unknown) => e instanceof AdoError && e.status === 429);
+      near(client.throttledUntil, 60_000);
+      assert.ok(Number.isFinite(client.throttledUntil));
+    });
+
+    it('caps a very long pause at 15 minutes', async () => {
+      answerWith({ 'Retry-After': '86400' });
+      const client = newClient();
+      await client.listWikis();
+      near(client.throttledUntil, 15 * 60_000);
+    });
+
+    it('forgets the pause on reset and does not apply it to another organization', async () => {
+      answerWith({ 'Retry-After': '30' });
+      const client = newClient();
+      await client.listWikis();
+      near(client.throttledUntil, 30_000);
+      const first = conn;
+      conn = { ...conn!, orgUrl: 'https://dev.azure.com/fabrikam' };
+      assert.equal(client.throttledUntil, 0, 'another organization is not paused');
+      conn = first;
+      near(client.throttledUntil, 30_000);
+      client.reset();
+      assert.equal(client.throttledUntil, 0);
+      await client.listWikis();
+      client.forProject('Contoso Web').reset();
+      assert.equal(client.throttledUntil, 0, 'a project client resets the shared pause');
+    });
+
     it('is shared between the root client and its project children', async () => {
       answerWith({ 'Retry-After': '30' });
       const root = newClient();
