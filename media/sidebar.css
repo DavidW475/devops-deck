@@ -523,14 +523,14 @@ button.crumb:hover { background: var(--card-hover); color: var(--fg); }
 .md-reasons { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
 .md-reasons li { display: flex; gap: 8px; }
 .md-pts { flex: none; min-width: 28px; text-align: right; font-variant-numeric: tabular-nums; font-family: var(--vscode-editor-font-family, monospace); color: var(--muted); }
-.md-instructions { margin: 0; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+.md-instructions { margin: 0; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .md-buttons .btn { height: 26px; padding: 0 10px; }
 .md-failures {
   padding: 8px 10px; border-radius: var(--radius); font-size: 12px;
   border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent); background: color-mix(in srgb, var(--warn) 8%, var(--bg));
 }
 .md-failures-head { display: flex; align-items: center; gap: 6px; color: var(--warn); }
-.md-failures ul { margin: 4px 0 0; padding: 0; list-style: none; color: var(--muted); word-break: break-word; }
+.md-failures ul { margin: 4px 0 0; padding: 0; list-style: none; color: var(--muted); overflow-wrap: anywhere; }
 .md-deferred { display: flex; align-items: center; gap: 8px; padding: 4px 6px 4px 20px; }
 .md-def-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .md-def-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

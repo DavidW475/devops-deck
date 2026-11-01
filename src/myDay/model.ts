@@ -40,7 +40,7 @@ function rank(item: Omit<MyDayItem, 'score' | 'tier' | 'reasons'>, facts: RankFa
 
 export function reviewItem(pr: PullRequest, me: IdentityRef, project: string, now: number): MyDayItem | undefined {
   const own = pr.reviewers.find(r => r.id === me.id);
-  if (pr.isDraft || pr.createdBy.id === me.id || !own || own.vote !== 0 || own.hasDeclined) {
+  if (pr.isDraft || pr.createdBy.id === me.id || own?.vote !== 0 || own.hasDeclined) {
     return undefined;
   }
   const required = own.isRequired === true;
