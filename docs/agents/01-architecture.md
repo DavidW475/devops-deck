@@ -27,10 +27,10 @@
 Activation event is `onStartupFinished`.
 
 1. Creates one instance each of `ConnectionManager`, `AdoClient`, `ReviewedFiles`, `SidebarProvider`, `PrCommentController`, `Watchers`, `PrStatusBar`, `LogDocumentProvider`, `BlameUi` (around a `BlameService`), `MyDayService` (with `MyDayDefers`; `sidebar.useMyDay(myDay)` connects it and `invalidate()` runs inside `refresh()`); `PullRequestPanel.useStore(globalState)`.
-2. Registers disposables: the code action provider, the `azureDevOps.dashboard` webview view (`retainContextWhenHidden`), content providers for `ado-pr`, `ado-git`, `ado-log`, `ado-template` (via `YamlTemplateSupport.register()`, which also adds the YAML language providers; `YamlTaskSupport.register()` adds the task providers and `TaskCatalog` is reset where the connection changes; `blame.reset()` and `myDay.reset()` run at the same places and drop the blame and My Day caches), the `ado-wiki` file system provider.
+2. Registers disposables: the code action provider, the `azureDevOps.dashboard` webview view (`retainContextWhenHidden`), content providers for `ado-pr`, `ado-git`, `ado-log`, `ado-template` (via `YamlTemplateSupport.register()`, which also adds the YAML language providers; `YamlTaskSupport.register()` adds the task providers and `TaskCatalog` is reset where the connection changes; `blame.reset()` and `myDay.reset()` run at the same places through one helper (`resetState` in `extension.ts`; a settings change skips the task catalog) and drop the blame and My Day caches; `BlameUi` does not listen to the connection itself), the `ado-wiki` file system provider.
 3. Listeners: connection change, `azureDevOps.*` configuration change and Microsoft session change call `client.reset()` and `refresh()` (sidebar + PR status bar).
 4. Registers all commands (below), among them `azureDevOps.myDay.defer`, `.restore` and `azureDevOps.pr.vote`.
-5. `await connections.resolve()`, then `connections.watchGit()` (re-resolves when the git extension opens repositories), then `blame.start()`, which registers the blame hover provider with the git extension and the annotation listeners (it needs the git API, so it runs after `watchGit`).
+5. `await connections.resolve()`, then `connections.watchGit()` (re-resolves when the git extension opens repositories), then `blame.start()` (also when `watchGit` failed, which is then shown as a warning), which registers the blame hover provider with the git extension and the annotation listeners (it needs the git API, so it runs after `watchGit`).
 
 ## Registering commands
 
@@ -38,7 +38,7 @@ Every command must also be declared in `package.json` (`contributes.commands`, m
 
 - `command(id, fn)` registers `fn` wrapped in `guarded()`: any thrown error becomes a notification (auth errors offer "Sign In" / "Use PAT").
 - `mutation(id, fn)` is for commands that change server data: after `fn` it calls `refresh()`, unless `fn` returned `false` (e.g. the user cancelled).
-- `AdoClient.throttledUntil` is the time (ms since epoch) until which Azure DevOps asked for a pause (`Retry-After`, or 60 s after a 429); the root client holds it for all project clients. Background pollers (My Day) read it through their deps and start nothing before it passes.
+- `AdoClient.throttledUntil` is the time (ms since epoch) until which Azure DevOps asked for a pause (`Retry-After`, or 60 s after a 429); the root client holds it for all project clients. Background pollers (My Day) read it through their deps and start nothing before it passes; direct user actions are not blocked. It is capped at 15 minutes, falls back to 60 s for an unreadable header, and is dropped by `AdoClient.reset()` and for another organization.
 - `at(project)` returns `client.forProject(project)` when `project` is a non-empty string, else the primary client. Use it for every project-bound command.
 
 ```ts
