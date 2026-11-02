@@ -183,7 +183,7 @@
   const usesDefinitions = () => S.buildFilter === 'defs' || S.buildFilter === 'folders';
 
   // ---------- data loading ----------
-  async function load(tab, silent = false, force = false) {
+  async function load(tab, silent = false, force = false, user = false) {
     if (!S.ctx?.configured) return;
     const req = ++S.req[tab];
     if (!silent) {
@@ -191,8 +191,15 @@
       if (tab === S.tab) renderList();
     }
     try {
-      const data = await fetchTab(tab, force);
+      const data = await fetchTab(tab, force, user);
       if (req !== S.req[tab]) return;
+      // A result the host pushed meanwhile may be newer than this answer (it was computed from older loads).
+      if (tab === 'myday' && olderMyDay(data)) {
+        S.loading[tab] = false;
+        renderTabs();
+        if (tab === S.tab) renderList();
+        return;
+      }
       S.data[tab] = data;
       if (!silent) S.animate = true;
       S.errors[tab] = null;
@@ -216,13 +223,16 @@
     return data.length;
   }
 
-  /** The data of a tab for its current filter; `force` makes My Day skip its cache. */
-  function fetchTab(tab, force = false) {
-    if (tab === 'myday') return rpc('myDay', { force });
-    if (tab === 'prs') return rpc('prs', { filter: S.prFilter, force });
+  /**
+   * The data of a tab for its current filter. `force` reloads although the data is fresh (a change was made); `user` is
+   * a click on Refresh or Retry, the only thing that loads although Azure DevOps asked for a pause.
+   */
+  function fetchTab(tab, force = false, user = false) {
+    if (tab === 'myday') return rpc('myDay', { force, user });
+    if (tab === 'prs') return rpc('prs', { filter: S.prFilter, force, user });
     if (tab === 'wis') return rpc('workItems', { query: S.wiQuery });
     if (tab === 'sprint') return loadSprint();
-    if (S.buildFilter === 'approvals') return rpc('approvals');
+    if (S.buildFilter === 'approvals') return rpc('approvals', { force, user });
     return usesDefinitions() ? rpc('definitions') : rpc('builds', { filter: S.buildFilter });
   }
 
@@ -1218,9 +1228,12 @@
   const MD_SOURCES = { reviews: 'Reviews', approvals: 'Approvals', runs: 'Runs', workItems: 'Work items' };
   const MD_TIERS = [['now', 'NOW'], ['today', 'TODAY']];
 
-  /** A result pushed by the host (polling, defer, restore) replaces the data in place. */
+  /** True when the result holds older data than what is shown: an answer that arrives late must not replace a newer one. */
+  const olderMyDay = (result) => !!S.data.myday && (result.loadedAt || 0) < (S.data.myday.loadedAt || 0);
+
+  /** A result pushed by the host (polling, defer, restore) replaces the data in place, unless it is older than what is shown. */
   function setMyDay(result) {
-    if (!result || !Array.isArray(result.items)) return;
+    if (!result || !Array.isArray(result.items) || olderMyDay(result)) return;
     S.data.myday = result;
     S.errors.myday = null;
     S.counts.myday = result.count;
@@ -1261,8 +1274,8 @@
       if (!list.length) continue;
       html += `<div class="md-tier" data-key="md-tier:${tier}">${label} · ${list.length}</div>` + win.take(list, card, mdKey);
     }
-    // A source that never loaded (a failure without older data) means nothing is known: no claim that all is done.
-    const unknown = (r.failures || []).some((f) => !f.staleSince);
+    // Any failed source (also one with older data, which may be out of date) means we do not know: no claim that all is done.
+    const unknown = (r.failures || []).length > 0;
     if (!top.length && !S.search && !unknown) {
       html += `<div class="empty md-empty" data-key="md-empty">${icon('check')}<p>All done for today.<br>Nothing needs you right now.</p></div>`;
     }
@@ -1385,9 +1398,9 @@
       document.getElementById('list')?.scrollTo({ top: 0 });
     },
     reviewed: (el) => { rpc('setReviewed', JSON.parse(el.dataset.args || '{}')).catch(() => undefined); },
-    refresh: () => refreshAll(),
+    refresh: () => refreshAll(true),
     more: () => { S.shown += PAGE; renderList(); },
-    mdRetry: () => load('myday', false, true),
+    mdRetry: () => load('myday', false, true, true),
     mdLater: () => { S.mdLater = !S.mdLater; renderList(); },
     mdDeferred: () => { S.mdDeferred = !S.mdDeferred; renderList(); },
   };
@@ -1461,7 +1474,8 @@
     }
   });
 
-  function refreshAll() {
+  /** Reloads everything. `user` = the click on Refresh or Retry; the host's refresh after a change or a sign-in is not. */
+  function refreshAll(user = false) {
     rpc('context').then((ctx) => {
       const changed = !S.ctx || ctx.configured !== S.ctx.configured || ctx.project !== S.ctx.project || ctx.orgUrl !== S.ctx.orgUrl
         || (ctx.projects || []).join('\n') !== (S.ctx.projects || []).join('\n');
@@ -1471,7 +1485,7 @@
       // (no collapse and "Loading…" flash); cached details of closed cards are dropped.
       for (const key of [...S.details.keys()]) if (!S.expanded.has(key)) S.details.delete(key);
       for (const key of S.expanded) loadDetail(key);
-      for (const t of TABS) if (t.id === S.tab || t.id !== 'sprint' || S.data.sprint) load(t.id, t.id !== S.tab, true);
+      for (const t of TABS) if (t.id === S.tab || t.id !== 'sprint' || S.data.sprint) load(t.id, t.id !== S.tab, true, user);
     }).catch(() => undefined);
   }
 
@@ -1521,7 +1535,7 @@
       S.focused = m.focused;
       if (S.focused && !document.hidden && isStale(S.tab)) refreshVisible();
     } else if (m.type === 'refresh') {
-      refreshAll();
+      refreshAll(false);
     } else if (m.type === 'myDay') {
       setMyDay(m.result);
     } else if (m.type === 'reviewed') {

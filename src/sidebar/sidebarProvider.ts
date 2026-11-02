@@ -5,7 +5,7 @@ import { buildDto, timelineTree } from '../pipelines/timeline';
 import { ChecksSummary, summarizeChecks } from '../pullRequests/checks';
 import { changeVersion, ReviewedFiles } from '../pullRequests/reviewed';
 import { Approval, PullRequest, TeamIteration, WorkItem, WorkItemState } from '../types';
-import type { MyDayService } from '../myDay/service';
+import type { MyDayService, RequestOptions } from '../myDay/service';
 import type { MyDayResult } from '../myDay/types';
 import { errorMessage, mapLimit, nonce, plural, shortRef } from '../util';
 import { loadByPerson, sprintStructure, workingDays } from '../workItems/sprint';
@@ -32,6 +32,8 @@ const CHECKS_TTL_MS = 15_000;
 /** Entries kept at most: the cache is bounded in a long session that sees many pull requests. */
 export const CHECKS_CACHE_MAX = 200;
 
+/** What the page says about a load: `force` = reload (a change was made), `user` = the user clicked Refresh or Retry. */
+const requestOf = (p: { force?: unknown; user?: unknown }): RequestOptions => ({ force: !!p.force, user: !!p.user });
 const badgeTooltip = (count: number): string => (count === 1 ? '1 item needs you in My Day' : `${plural(count, 'item')} need you in My Day`);
 
 /** The sidebar dashboard: a single webview with tabs for pull requests, work items and pipelines. */
@@ -134,11 +136,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async myDayResult(force: boolean): Promise<MyDayResult> {
+  private async myDayResult(request: RequestOptions): Promise<MyDayResult> {
     if (!this.myDay) {
       throw new Error('My Day is not available');
     }
-    const result = await this.myDay.get({ force });
+    const result = await this.myDay.get(request);
     this.setBadge(result.count);
     return result;
   }
@@ -156,7 +158,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       case 'me':
         return c.getMe();
       case 'prs':
-        return this.pullRequests(String(p.filter), !!p.force);
+        return this.pullRequests(String(p.filter), requestOf(p));
       case 'prFiles':
         return this.prFiles(String(p.repoId), Number(p.prId));
       case 'setReviewed':
@@ -206,9 +208,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       case 'sprint':
         return this.sprint(c.forProject(optText(p.project)), String(p.team), p.iteration ? String(p.iteration) : undefined);
       case 'approvals':
-        return this.perProject((x, project) => this.approvals(x, project));
+        return this.perProject((x, project) => this.approvals(x, project, requestOf(p)));
       case 'myDay':
-        return this.myDayResult(!!p.force);
+        return this.myDayResult(requestOf(p));
       case 'tab':
         this.lastTab = typeof p.tab === 'string' ? p.tab : '';
         this.syncVisible();
@@ -265,8 +267,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   }
 
   /** Pending approvals of pipeline runs; `mine` marks the ones the signed-in user may answer. */
-  private async approvals(c: AdoClient, project: string) {
-    const pending = this.myDay ? this.myDay.rawApprovals(this.projectName(project)) : c.listPendingApprovals();
+  private async approvals(c: AdoClient, project: string, request: RequestOptions) {
+    const pending = this.myDay ? this.myDay.rawApprovals(this.projectName(project), request) : c.listPendingApprovals();
     const [list, me] = await Promise.all([pending, c.getMe()]);
     return list.map((a: Approval) => ({
       id: a.id,
@@ -309,12 +311,13 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   }
 
   /** Pull requests of the selected projects, newest first, with the state of their required checks. */
-  private async pullRequests(filter: string, force: boolean) {
+  private async pullRequests(filter: string, request: RequestOptions) {
+    const force = !!(request.force || request.user);
     const c = this.client;
     const me = await c.getMe();
     const criteria: Record<string, { creatorId?: string; reviewerId?: string }> = { mine: { creatorId: me.id }, review: { reviewerId: me.id } };
     const list = (x: AdoClient, project: string) => filter === 'review' && this.myDay
-      ? this.myDay.rawReviews(this.projectName(project))
+      ? this.myDay.rawReviews(this.projectName(project), request)
       : x.listPullRequests(criteria[filter] ?? {});
     const prs = (await this.perProject<PullRequest>(list)).toSorted((a, b) => b.creationDate.localeCompare(a.creationDate));
     // Policy status per PR (at most 6 requests at a time); a PR whose policies cannot be read just shows no checks.

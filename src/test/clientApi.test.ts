@@ -428,6 +428,15 @@ describe('AdoClient API calls', () => {
       assert.ok(Number.isFinite(client.throttledUntil));
     });
 
+    it('pauses for 60 seconds on a 429 whose Retry-After is zero, negative or in the past', async () => {
+      for (const value of ['0', '-5', new Date(Date.now() - 60_000).toUTCString()]) {
+        answerWith({ 'Retry-After': value }, 429);
+        const client = newClient();
+        await assert.rejects(client.listWikis(), (e: unknown) => e instanceof AdoError && e.status === 429, value);
+        near(client.throttledUntil, 60_000);
+      }
+    });
+
     it('caps a very long pause at 15 minutes', async () => {
       answerWith({ 'Retry-After': '86400' });
       const client = newClient();

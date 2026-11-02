@@ -508,9 +508,11 @@ describe('MyDayService failures', () => {
     h.state.now += 21 * MINUTE;
     await h.service.get();
     assert.equal(h.count('listBuildsSince'), 2);
-    h.overrides[SHOP] = {};
     await h.service.get({ force: true });
-    assert.equal(h.count('listBuildsSince'), 3);
+    assert.equal(h.count('listBuildsSince'), 2, 'a reload after a change does not skip the 403 backoff');
+    h.overrides[SHOP] = {};
+    await h.service.get({ user: true });
+    assert.equal(h.count('listBuildsSince'), 3, 'a click on Refresh or Retry does');
     r = await h.service.get();
     assert.deepEqual(r.failures, []);
   });
@@ -527,7 +529,9 @@ describe('MyDayService failures', () => {
     h.service.start();
     await h.advance(15 * SECOND);
     assert.equal(total(h), 6, 'the timer honours the pause');
-    const forced = await h.service.get({ force: true });
+    await h.service.get({ force: true });
+    assert.equal(h.count('listPullRequests'), 1, 'a reload after a change honours the pause');
+    const forced = await h.service.get({ user: true });
     assert.equal(h.count('listPullRequests'), 2, 'Retry is a user action: not blocked');
     assert.deepEqual(forced.failures, []);
     h.state.now = START + 6 * MINUTE;
@@ -543,7 +547,10 @@ describe('MyDayService failures', () => {
     assert.deepEqual(r.items, []);
     assert.equal(r.failures.length, 4, 'one per source: the page must not say "all done"');
     assert.ok(r.failures.every(f => f.kind === 'throttled' && f.project === SHOP));
-    const retried = await h.service.get({ force: true });
+    assert.equal(total(h), 0);
+    await h.service.get({ force: true });
+    assert.equal(total(h), 0, 'a reload after a change does not break the pause');
+    const retried = await h.service.get({ user: true });
     assert.ok(retried.items.length > 0);
     assert.deepEqual(retried.failures, []);
   });
@@ -684,9 +691,13 @@ describe('MyDayService reset and raw lists', () => {
     await flush();
     h.service.reset();
     release([pr(1)]);
+    await flush();
+    const events = h.events.length;
+    // The answer of the old generation was dropped: the call starts over instead of claiming that nothing is waiting.
+    release([pr(2)]);
     const r = await pending;
-    assert.ok(!r.items.some(i => i.source === 'reviews'));
-    assert.equal(h.events.length, 0);
+    assert.deepEqual(r.items.filter(i => i.source === 'reviews').map(i => i.key.split(':').at(-1)), ['2']);
+    assert.equal(h.events.length, events);
     h.overrides[SHOP] = {};
     const again = await h.service.get();
     assert.ok(again.items.some(i => i.source === 'reviews'));
@@ -721,14 +732,26 @@ describe('MyDayService reset and raw lists', () => {
     assert.deepEqual(await h.service.rawReviews('Unknown'), []);
   });
 
-  it('raw lists load for the user although Azure DevOps asked for a pause, and the error comes from the server', async () => {
+  it('raw lists load during a pause only for a click, and say "not loaded" instead of an empty list', async () => {
     const h = make();
     h.state.throttledUntil = START + HOUR;
-    assert.equal((await h.service.rawApprovals(SHOP)).length, 1);
+    await assert.rejects(h.service.rawApprovals(SHOP), (e: unknown) => e instanceof AdoError && e.status === 429);
+    assert.equal(h.count('listPendingApprovals'), 0, 'a tab that is merely open does not request');
+    assert.equal((await h.service.rawApprovals(SHOP, { user: true })).length, 1);
     assert.equal(h.count('listPendingApprovals'), 1);
     h.overrides[SHOP] = { listPendingApprovals: async () => { throw new AdoError('Too many', 429); } };
     h.state.now += MINUTE;
-    await assert.rejects(h.service.rawApprovals(SHOP), (e: unknown) => e instanceof AdoError && e.status === 429);
+    await assert.rejects(h.service.rawApprovals(SHOP, { user: true }), (e: unknown) => e instanceof AdoError && e.status === 429);
+  });
+
+  it('raw lists reload on force although they are fresh', async () => {
+    const h = make();
+    await h.service.rawReviews(SHOP);
+    h.state.now += 5 * SECOND;
+    await h.service.rawReviews(SHOP);
+    assert.equal(h.count('listPullRequests'), 1);
+    await h.service.rawReviews(SHOP, { force: true });
+    assert.equal(h.count('listPullRequests'), 2);
   });
 
   it('raw lists do not serve a cached list after invalidate', async () => {
@@ -756,6 +779,21 @@ describe('MyDayService reset and raw lists', () => {
     const again = await h.service.get();
     assert.ok(again.items.some(i => i.source === 'reviews'), 'and later callers see the data');
     assert.equal(h.count('listPullRequests'), 1);
+  });
+
+  it('get with force reloads when a change came in while it joined a running load', async () => {
+    const h = make();
+    let release: (v: PullRequest[]) => void = (_v: PullRequest[]) => undefined;
+    h.overrides[SHOP] = { listPullRequests: () => new Promise<PullRequest[]>(r => { release = r; }) };
+    const first = h.service.get();
+    await flush();
+    h.overrides[SHOP] = { listPullRequests: async () => [] };
+    const forced = h.service.get({ force: true }); // the user acted: the answered PR is gone on the server
+    h.service.invalidate();
+    release([pr(1)]);
+    await first;
+    const r = await forced;
+    assert.ok(!r.items.some(i => i.source === 'reviews'), 'the answered item does not stay until the next tick');
   });
 
   it('an invalidate during a flight keeps the slot due', async () => {

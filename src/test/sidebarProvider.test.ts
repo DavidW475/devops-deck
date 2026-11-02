@@ -158,10 +158,10 @@ function fakeService() {
   const service = {
     start: () => { log.push(['start']); },
     setVisible: (on: boolean) => { log.push(['visible', on]); },
-    get: async (o?: { force?: boolean }) => { log.push(['get', o]); return myDayResult(3); },
+    get: async (o?: { force?: boolean; user?: boolean }) => { log.push(['get', o]); return myDayResult(3); },
     onDidChange: (l: (r: MyDayResult) => void) => { listeners.push(l); return { dispose() { /* nothing */ } }; },
-    rawReviews: async (project: string) => { log.push(['reviews', project]); return reviews; },
-    rawApprovals: async (project: string) => { log.push(['approvals', project]); return approvals; },
+    rawReviews: async (project: string, o?: unknown) => { log.push(['reviews', project]); log.push(['reviewsAsked', o]); return reviews; },
+    rawApprovals: async (project: string, o?: unknown) => { log.push(['approvals', project]); log.push(['approvalsAsked', o]); return approvals; },
   };
   return { service: service as unknown as MyDayService, log, fire: (r: MyDayResult) => listeners.forEach(l => l(r)), listeners };
 }
@@ -465,8 +465,21 @@ describe('SidebarProvider', () => {
       const { rpc, view } = resolve({ service: f.service });
       assert.equal(((await rpc('myDay')) as MyDayResult).count, 3);
       await rpc('myDay', { force: true });
-      assert.deepEqual(f.log.filter(l => l[0] === 'get'), [['get', { force: false }], ['get', { force: true }]]);
+      await rpc('myDay', { force: true, user: true });
+      assert.deepEqual(f.log.filter(l => l[0] === 'get'), [
+        ['get', { force: false, user: false }], ['get', { force: true, user: false }], ['get', { force: true, user: true }],
+      ]);
       assert.deepEqual(view.badge, { value: 3, tooltip: '3 items need you in My Day' });
+    });
+
+    it('forwards force and user to the shared PR and approval lists', async () => {
+      const f = fakeService();
+      const { rpc } = resolve({ service: f.service });
+      await rpc('prs', { filter: 'review', force: true, user: true });
+      await rpc('approvals', { force: true });
+      assert.deepEqual(f.log.filter(l => l[0] === 'reviewsAsked' || l[0] === 'approvalsAsked'), [
+        ['reviewsAsked', { force: true, user: true }], ['approvalsAsked', { force: true, user: false }],
+      ]);
     });
 
     it('fails clearly without a service', async () => {

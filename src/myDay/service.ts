@@ -35,18 +35,25 @@ interface Slot {
   /** marked due by `invalidate` */
   stale?: boolean;
   error?: { err: unknown; kind: SourceFailure['kind'] };
-  /** 403: no new attempt before this time unless forced */
+  /** 403: no new attempt before this time unless the user asked */
   blockedUntil?: number;
 }
 
 interface LoadOptions {
+  /** reload although the data is fresh (a change was made, or the user asked); neither the pause nor the 403 backoff is skipped */
   force?: boolean;
   /** load only this source */
   only?: MyDaySource;
   /** ignore the TTL (not the backoff, focus-free) */
   ignoreTtl?: boolean;
-  /** a direct user action: load although Azure DevOps asked for a pause (the timer never does) */
-  ignoreThrottle?: boolean;
+  /** the user clicked Refresh or Retry: load although Azure DevOps asked for a pause or the source is blocked after a 403 (timers and reloads after a change never do) */
+  user?: boolean;
+}
+
+/** What a caller says about a request: `force` reloads, `user` is a real click on Refresh or Retry. */
+export interface RequestOptions {
+  force?: boolean;
+  user?: boolean;
 }
 
 interface Computed {
@@ -98,8 +105,12 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
 
   // ---------- public API ----------
 
-  async get(options: { force?: boolean } = {}): Promise<MyDayResult> {
-    await this.ensureLoaded({ force: options.force, ignoreThrottle: options.force });
+  async get(options: RequestOptions = {}): Promise<MyDayResult> {
+    const load: LoadOptions = { force: options.force || options.user, user: options.user };
+    await this.ensureLoaded(load);
+    if (load.force && this.anyStale()) {
+      await this.ensureLoaded(load); // a change came in while the first request ran: its answer may be outdated
+    }
     const { result } = this.compute();
     this.lastSignature = this.signature(result);
     const authError = this.authOnlyError();
@@ -162,12 +173,12 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
     this.publish();
   }
 
-  rawReviews(project: string): Promise<PullRequest[]> {
-    return this.raw<PullRequest[]>('reviews', project);
+  rawReviews(project: string, request: RequestOptions = {}): Promise<PullRequest[]> {
+    return this.raw<PullRequest[]>('reviews', project, request);
   }
 
-  rawApprovals(project: string): Promise<Approval[]> {
-    return this.raw<Approval[]>('approvals', project);
+  rawApprovals(project: string, request: RequestOptions = {}): Promise<Approval[]> {
+    return this.raw<Approval[]>('approvals', project, request);
   }
 
   dispose(): void {
@@ -231,7 +242,7 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
     if (slot?.attemptAt === undefined) {
       return true;
     }
-    if (slot.blockedUntil !== undefined && now < slot.blockedUntil && !opts.force) {
+    if (slot.blockedUntil !== undefined && now < slot.blockedUntil && !opts.user) {
       return false;
     }
     if (opts.force || opts.ignoreTtl) {
@@ -250,6 +261,10 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
     return this.deps.projects().filter(p => this.isDue(source, p, now, opts));
   }
 
+  private anyStale(): boolean {
+    return this.deps.projects().some(p => SOURCES.some(s => this.slots.get(slotKey(s, p))?.stale));
+  }
+
   private anyDue(): boolean {
     const now = this.now();
     return SOURCES.some(s => this.dueProjects(s, now, {}).length > 0);
@@ -260,7 +275,7 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
   /** Starts the due loads (one flight per source) and waits for them. Starts nothing while throttled. */
   private async ensureLoaded(opts: LoadOptions): Promise<void> {
     const now = this.now();
-    if (this.throttled() && !opts.ignoreThrottle) {
+    if (this.throttled() && !opts.user) {
       return;
     }
     const sources = SOURCES.filter(s => (!opts.only || opts.only === s) && (this.flights.has(s) || this.dueProjects(s, now, opts).length > 0));
@@ -274,7 +289,11 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
       return this.ensureLoaded(opts);
     }
     await Promise.all(sources.flatMap(s => this.flights.get(s) ?? []));
-    if (fresh.length > 0 && generation === this.generation) {
+    if (generation !== this.generation) {
+      // `reset` ran while the flights were running: their answers were dropped, and the empty slots must not read as "nothing to do".
+      return this.ensureLoaded(opts);
+    }
+    if (fresh.length > 0) {
       this.afterLoad(now);
     }
   }
@@ -428,18 +447,18 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
 
   // ---------- shared raw lists ----------
 
-  private async raw<T extends unknown[]>(source: 'reviews' | 'approvals', project: string): Promise<T> {
+  private async raw<T extends unknown[]>(source: 'reviews' | 'approvals', project: string, request: RequestOptions): Promise<T> {
     const key = slotKey(source, project);
     const fresh = (): T | undefined => {
       const slot = this.slots.get(key);
       return slot?.loadedAt !== undefined && !slot.error && !slot.stale && this.now() - slot.loadedAt <= RAW_TTL ? slot.data as T : undefined;
     };
-    const cached = fresh();
+    const cached = request.force || request.user ? undefined : fresh();
     if (cached) {
       return cached;
     }
-    // A tab the user opened: loads although Azure DevOps asked for a pause (the answer then carries the error).
-    const options: LoadOptions = { only: source, ignoreTtl: true, ignoreThrottle: true };
+    // Only a click on Refresh or Retry loads although Azure DevOps asked for a pause; a tab that is merely open or a timer does not.
+    const options: LoadOptions = { only: source, ignoreTtl: true, force: request.force || request.user, user: request.user };
     await this.ensureLoaded(options);
     if (this.slots.get(key)?.stale) {
       await this.ensureLoaded(options); // invalidated while the first request ran
@@ -447,6 +466,10 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
     const slot = this.slots.get(key);
     if (slot?.error) {
       throw slot.error.err;
+    }
+    if (slot?.attemptAt === undefined && this.deps.projects().some(p => slotKey(source, p) === key)) {
+      // Nothing was loaded (a pause, or a reset): an empty list would claim that there is nothing.
+      throw new AdoError('Azure DevOps asked to slow down, so this is not loaded yet. Retry loads it anyway.', 429);
     }
     return (slot?.data ?? []) as T;
   }
