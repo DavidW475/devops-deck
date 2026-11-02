@@ -34,8 +34,19 @@
   }
 
   function debounce(key, ms, fn) {
-    clearTimeout(timers.get(key));
-    timers.set(key, setTimeout(() => { timers.delete(key); fn(); }, ms));
+    const old = timers.get(key);
+    if (old) clearTimeout(old.id);
+    timers.set(key, { fn, id: setTimeout(() => { timers.delete(key); fn(); }, ms) });
+  }
+
+  /** Runs the waiting debounced sends now, in typing order: a click must act on what was typed, not on an older value. */
+  function flushPending() {
+    const waiting = [...timers.values()];
+    timers.clear();
+    for (const t of waiting) {
+      clearTimeout(t.id);
+      t.fn();
+    }
   }
 
   const badge = (text, cls) => `<span class="pd-badge ${cls || ''}">${esc(text)}</span>`;
@@ -627,7 +638,8 @@
   }
 
   function sendTree(p) {
-    clearTimeout(timers.get('tree:' + p.name));
+    const waiting = timers.get('tree:' + p.name);
+    if (waiting) clearTimeout(waiting.id);
     timers.delete('tree:' + p.name);
     post('value', { name: p.name, tree: p.tree });
   }
@@ -747,6 +759,7 @@
 
   document.addEventListener('click', (e) => {
     const t = /** @type {HTMLElement} */ (e.target);
+    flushPending();
     for (const attr of Object.keys(clicks)) {
       const el = /** @type {HTMLElement | null} */ (t.closest(`[${attr}]`));
       if (el && !(/** @type {HTMLButtonElement} */ (el).disabled)) {
@@ -782,6 +795,7 @@
 
   document.addEventListener('change', (e) => {
     const t = /** @type {HTMLInputElement} */ (e.target);
+    flushPending();
     if (t.id === 'repo') post('repo', { alias: t.value });
     else if (t.id === 'ref') post('ref', { ref: t.value });
     else if (t.id === 'target') post('target', { index: Number(t.value) });
