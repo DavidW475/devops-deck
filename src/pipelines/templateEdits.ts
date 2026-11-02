@@ -401,7 +401,10 @@ export function scalarOf(lines: string[], scanned: YLine[], entry: ParamEntry): 
   const content = body.filter(x => x.trim());
   // An indentation indicator (`|2`) fixes the body's column: more spaces than that are text. Else the least indented line sets it.
   const indicator = /[1-9]/.exec(l.rest)?.[0];
-  const childCol = indicator === undefined ? (content.length ? Math.min(...content.map(indentOf)) : undefined) : entry.start + Number(indicator);
+  let childCol = indicator === undefined ? undefined : entry.start + Number(indicator);
+  if (indicator === undefined && content.length) {
+    childCol = Math.min(...content.map(indentOf));
+  }
   const cut = childCol ?? 0;
   // Spaces at the end of a line belong to a literal block's text.
   return { header: l.rest, text: trimNewlines(body.map(x => x.slice(Math.min(cut, indentOf(x)))).join('\n')), end, childCol };

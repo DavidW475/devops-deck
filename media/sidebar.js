@@ -191,15 +191,8 @@
       if (tab === S.tab) renderList();
     }
     try {
-      const data = await fetchTab(tab, force, user);
+      const data = newest(tab, await fetchTab(tab, force, user));
       if (req !== S.req[tab]) return;
-      // A result the host pushed meanwhile may be newer than this answer (it was computed from older loads).
-      if (tab === 'myday' && olderMyDay(data)) {
-        S.loading[tab] = false;
-        renderTabs();
-        if (tab === S.tab) renderList();
-        return;
-      }
       S.data[tab] = data;
       if (!silent) S.animate = true;
       S.errors[tab] = null;
@@ -1227,6 +1220,9 @@
   // ----- My Day -----
   const MD_SOURCES = { reviews: 'Reviews', approvals: 'Approvals', runs: 'Runs', workItems: 'Work items' };
   const MD_TIERS = [['now', 'NOW'], ['today', 'TODAY']];
+
+  /** A My Day answer that is older than the data shown (a result the host pushed meanwhile) is dropped for the shown data. */
+  const newest = (tab, data) => (tab === 'myday' && olderMyDay(data) ? S.data.myday : data);
 
   /** True when the result holds older data than what is shown: an answer that arrives late must not replace a newer one. */
   const olderMyDay = (result) => !!S.data.myday && (result.loadedAt || 0) < (S.data.myday.loadedAt || 0);

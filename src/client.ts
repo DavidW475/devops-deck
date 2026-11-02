@@ -196,7 +196,7 @@ export class AdoClient {
       const seconds = Number(header);
       waitMs = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header) - Date.now();
     }
-    if (!(waitMs > 0) && throttled) {
+    if ((Number.isNaN(waitMs) || waitMs <= 0) && throttled) {
       waitMs = DEFAULT_PAUSE_MS; // no value, unreadable, zero, negative or a date in the past: a 429 still means "back off"
     }
     if (waitMs > 0) {
