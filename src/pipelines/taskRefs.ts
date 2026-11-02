@@ -8,6 +8,8 @@ import { findInput, inputVisibility, ruleOf } from './taskRules';
 import { blockParams, flowParams, isExpression, mappingOf, ParamEntry, parentOf, scanYaml, TemplateRef, YLine } from './templateRefs';
 import { isBlockHeader, PipelineParameter, unquote } from './yamlParameters';
 
+export { findDisplayName } from './templateEdits';
+
 const isDigits = (s: string) => s.length > 0 && [...s].every(c => c >= '0' && c <= '9');
 
 /** `AzureCLI@2`, `GoTool@0.3.1` or `<guid>@1`; undefined for expressions and anything without `Name@Version`. */
@@ -350,11 +352,4 @@ export function asTemplateRef(step: TaskStepRef, task?: TaskInfo): TemplateRef {
     target: step.name === undefined ? undefined : { path: step.raw }, paramsLine: step.inputsLine, params, dynamicParams: step.dynamicInputs,
     end: step.end - 1,
   };
-}
-
-/** The `displayName:` line of a step, if it has one. */
-export function findDisplayName(text: string, step: TaskStepRef): { line: number; keyCol: number; value: string } | undefined {
-  const lines = scanYaml(text);
-  const hit = mappingOf(lines, step.line).siblings.find(l => l.key === 'displayName');
-  return hit ? { line: hit.n, keyCol: hit.keyCol, value: unquote(hit.rest) } : undefined;
 }

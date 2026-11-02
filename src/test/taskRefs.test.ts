@@ -504,7 +504,7 @@ describe('designer mapping: toParameter, asTemplateRef, findDisplayName', () => 
   it('finds the display name beside the task', () => {
     const text = '- task: A@1\n  inputs:\n    a: b\n  displayName: "Deploy: web"\n- task: B@1\n';
     const steps = findTaskSteps(text);
-    assert.deepEqual(findDisplayName(text, steps[0]), { line: 3, keyCol: 2, value: 'Deploy: web' });
+    assert.deepEqual(findDisplayName(text, steps[0]), { line: 3, keyCol: 2, value: 'Deploy: web', end: 3 });
     assert.equal(findDisplayName(text, steps[1]), undefined);
   });
 

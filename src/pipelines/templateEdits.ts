@@ -9,8 +9,7 @@ import {
   yamlScalar,
 } from './objectParams';
 import { TaskStepRef } from './taskModel';
-import { findDisplayName } from './taskRefs';
-import { ParamEntry, scanYaml, TemplateRef, YLine } from './templateRefs';
+import { isExpression, mappingOf, ParamEntry, scanYaml, TemplateRef, YLine } from './templateRefs';
 import { isBlockHeader, PipelineParameter, stripComment, unquote } from './yamlParameters';
 
 export { yamlScalar } from './objectParams';
@@ -78,6 +77,22 @@ const pad = (n: number) => ' '.repeat(Math.max(n, 0));
 const splitLines = (text: string) => text.split(/\r?\n/);
 const isOwn = (o: object, k: string) => Object.hasOwn(o, k);
 const indentOf = (s: string) => s.length - s.trimStart().length;
+
+interface Scanned {
+  text: string;
+  raw: string[];
+  lines: YLine[];
+}
+
+let lastScan: Scanned | undefined;
+
+/** The raw and scanned lines of a document. The last one is kept: the form asks for every input of one text in turn. */
+function scanDoc(text: string): Scanned {
+  if (lastScan?.text !== text) {
+    lastScan = { text, raw: splitLines(text), lines: scanYaml(text) };
+  }
+  return lastScan;
+}
 
 /** Text without line breaks at its end (a loop: no regex on user text). */
 export function trimNewlines(text: string): string {
@@ -201,16 +216,20 @@ export function withValue(text: string, keyCol: number, value: string): string {
 /** True when the entry's value continues on the following lines (block scalar or nested collection). */
 function isBlockValue(lines: YLine[], line: number, keyCol: number): boolean {
   const own = lines[line];
-  if (own.rest && !isBlockScalarText(own.rest)) {
+  if (isBlockScalarText(own.rest)) {
+    // The body of a block scalar reads as blank lines, so it can be the end of the file with nothing after it.
+    return true;
+  }
+  if (own.rest) {
     return false;
   }
   const next = lines.slice(line + 1).find(l => !l.blank);
-  return !!next && (next.indent > keyCol || own.rest !== '');
+  return !!next && next.indent > keyCol;
 }
 
 /** True when the passed parameter at (line, keyCol) has a block value (`|`, `>` or a nested collection). */
 export function isBlockEntry(text: string, line: number, keyCol: number): boolean {
-  const lines = scanYaml(text);
+  const { lines } = scanDoc(text);
   return !!lines[line] && isBlockValue(lines, line, keyCol);
 }
 
@@ -238,8 +257,8 @@ export function blockEnd(lines: YLine[], at: number): number {
 
 /** The passed value of an object/list parameter as YAML text, with the lines it spans. */
 export function passedValue(text: string, entry: ParamEntry): PassedValue {
-  const scanned = scanYaml(text);
-  return passedText(splitLines(text), entry.line, scanned[entry.line].rest, blockEnd(scanned, entry.line));
+  const { lines, raw } = scanDoc(text);
+  return passedText(raw, entry.line, lines[entry.line].rest, blockEnd(lines, entry.line));
 }
 
 export type LineMark = '+' | '~';
@@ -362,7 +381,8 @@ export interface ScalarText {
 
 /** The value of a passed key as text; undefined when it is a nested collection (not a scalar). */
 export function scalarValue(text: string, entry: ParamEntry): ScalarText | undefined {
-  return scalarOf(splitLines(text), scanYaml(text), entry);
+  const { raw, lines } = scanDoc(text);
+  return scalarOf(raw, lines, entry);
 }
 
 function scalarOf(lines: string[], scanned: YLine[], entry: ParamEntry): ScalarText | undefined {
@@ -379,9 +399,12 @@ function scalarOf(lines: string[], scanned: YLine[], entry: ParamEntry): ScalarT
   }
   const body = lines.slice(entry.line + 1, end + 1);
   const content = body.filter(x => x.trim());
-  const childCol = content.length ? Math.min(...content.map(indentOf)) : undefined;
+  // An indentation indicator (`|2`) fixes the body's column: more spaces than that are text. Else the least indented line sets it.
+  const indicator = /[1-9]/.exec(l.rest)?.[0];
+  const childCol = indicator === undefined ? (content.length ? Math.min(...content.map(indentOf)) : undefined) : entry.start + Number(indicator);
   const cut = childCol ?? 0;
-  return { header: l.rest, text: trimNewlines(body.map(x => x.slice(Math.min(cut, indentOf(x))).trimEnd()).join('\n')), end, childCol };
+  // Spaces at the end of a line belong to a literal block's text.
+  return { header: l.rest, text: trimNewlines(body.map(x => x.slice(Math.min(cut, indentOf(x)))).join('\n')), end, childCol };
 }
 
 /**
@@ -529,12 +552,21 @@ function planStructured(s: CallScope, p: PipelineParameter, entry: ParamEntry | 
   }
 }
 
+/** Why a call or step has no target: an expression, or (steps) a reference without `Name@Major`. */
+function noTargetReason(ref: TemplateRef, blockKey: BlockKey): string {
+  if (blockKey !== 'inputs') {
+    return 'The template path is an expression: it is only known when the pipeline runs.';
+  }
+  if (isExpression(ref.raw)) {
+    return 'The task name is an expression: it is only known when the pipeline runs.';
+  }
+  return ref.raw.trim() ? 'The task reference has no version: write it as Name@Major, e.g. AzureCLI@2.' : 'The task reference is empty: write it as Name@Major, e.g. AzureCLI@2.';
+}
+
 /** Why the designer can't edit the parameters (`inputs` of a task step) of this call, if it can't. */
 export function callReadOnlyReason(text: string, ref: TemplateRef, blockKey: BlockKey = 'parameters'): string | undefined {
   if (!ref.target) {
-    return blockKey === 'inputs'
-      ? 'The task name is an expression: it is only known when the pipeline runs.'
-      : 'The template path is an expression: it is only known when the pipeline runs.';
+    return noTargetReason(ref, blockKey);
   }
   const lines = scanYaml(text);
   const paramsLine = ref.paramsLine === undefined ? undefined : lines[ref.paramsLine];
@@ -667,7 +699,37 @@ export function planTaskVersion(text: string, step: TaskStepRef, major: number):
   return [{ line: step.line, deleteCount: 1, insert: [line.slice(0, step.valueStart) + next + line.slice(step.valueEnd)] }];
 }
 
-/** Edit for the `displayName:` of a step: set, change or (empty value) remove it. */
+/** The `displayName:` of a step: its line, the last line of its value (a block scalar spans several) and its text. */
+export interface DisplayName {
+  line: number;
+  keyCol: number;
+  value: string;
+  /** last line of the value */
+  end: number;
+}
+
+/** A folded block scalar (`>`) reads its lines as one: line breaks between text become spaces. */
+function foldedText(text: string): string {
+  return text.split('\n\n').map(part => part.split('\n').join(' ')).join('\n');
+}
+
+/** The `displayName:` line of a step, if it has one. A block scalar value (`>-`) is read as its text. */
+export function findDisplayName(text: string, step: TaskStepRef): DisplayName | undefined {
+  const { raw, lines } = scanDoc(text);
+  const hit = mappingOf(lines, step.line).siblings.find(l => l.key === 'displayName');
+  if (!hit) {
+    return undefined;
+  }
+  if (!isBlockScalarText(hit.rest)) {
+    return { line: hit.n, keyCol: hit.keyCol, value: unquote(hit.rest), end: hit.n };
+  }
+  const entry: ParamEntry = { name: 'displayName', line: hit.n, start: hit.keyCol, end: hit.keyCol + 'displayName'.length, value: hit.rest, conditional: false };
+  const scalar = scalarOf(raw, lines, entry);
+  const body = scalar?.text ?? '';
+  return { line: hit.n, keyCol: hit.keyCol, value: hit.rest.startsWith('>') ? foldedText(body) : body, end: scalar?.end ?? hit.n };
+}
+
+/** Edit for the `displayName:` of a step: set, change or (empty value) remove it. The lines of a block scalar value go with it. */
 export function planDisplayName(text: string, step: TaskStepRef, value: string): LineEdit[] {
   const next = value.trim();
   const found = findDisplayName(text, step);
@@ -678,7 +740,7 @@ export function planDisplayName(text: string, step: TaskStepRef, value: string):
     return [];
   }
   const insert = next ? [withValue(splitLines(text)[found.line], found.keyCol, yamlScalar(next))] : [];
-  return [{ line: found.line, deleteCount: 1, insert }];
+  return [{ line: found.line, deleteCount: found.end - found.line + 1, insert }];
 }
 
 interface Where {

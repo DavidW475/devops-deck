@@ -1,7 +1,7 @@
 import * as assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
-  applyLineEdits, callReadOnlyReason, controlOf, findInsertionPoints, formatValue, indentUnit, isBranchRef, locationOf, newCallLines, newTaskLines,
+  applyLineEdits, callReadOnlyReason, controlOf, findDisplayName, findInsertionPoints, formatValue, indentUnit, isBlockEntry, isBranchRef, locationOf, newCallLines, newTaskLines,
   normalizeEdits, planCallEdits, planDisplayName, planRepositoryEdits, planTaskVersion, sameValue, scalarValue, stageNames, templateKind,
   toRangeEdits, trimNewlines, yamlScalar,
 } from '../pipelines/templateEdits';
@@ -756,5 +756,56 @@ describe('planTaskVersion and planDisplayName', () => {
   it('finds the insertion points of steps lists for task steps', () => {
     const points = findInsertionPoints('stages:\n- stage: Deploy\n  jobs:\n  - job: Web\n    steps:\n    - task: A@1\n      inputs:\n        a: b\n    - script: x\n', 'steps');
     assert.deepEqual(points.map(p => [p.label, p.line, p.indent, p.stage]), [['Stage Deploy › Job Web › steps', 9, 4, 'Deploy']]);
+  });
+});
+
+describe('block scalars at the end of a file and in display names', () => {
+  const rows = (text: string) => text.split('\n');
+
+  it('treats a block scalar input at the end of the file as a block value', () => {
+    const text = '- task: ContosoDeploy@2\n  inputs:\n    notes: |\n      --a\n      --b';
+    const entry = findTaskSteps(text)[0].inputs[0];
+    assert.equal(isBlockEntry(text, entry.line, entry.start), true);
+    // Setting a one-line value must not write a quoted scalar in front of the old body lines.
+    const out = planTask(text, { notes: '--c' });
+    assert.equal(out.text, text, 'a multi-line value is only edited in the text');
+    const call = [
+      '- template: build/dotnet.yml@templates', '  parameters:', '    note: |', '      --a', '      --b',
+    ].join('\n');
+    const ref = findTemplateRefs(call)[0];
+    assert.equal(isBlockEntry(call, ref.params[0].line, ref.params[0].start), true);
+  });
+
+  it('renames a display name written as a block scalar, body lines included', () => {
+    const text = '- task: A@1\n  displayName: >-\n    long\n    name\n  inputs:\n    a: b';
+    const step = findTaskSteps(text)[0];
+    assert.deepEqual(findDisplayName(text, step), { line: 1, keyCol: 2, value: 'long name', end: 3 });
+    const renamed = applyLineEdits(text, planDisplayName(text, step, 'Short')).text;
+    assert.equal(renamed, '- task: A@1\n  displayName: Short\n  inputs:\n    a: b');
+    assert.equal(applyLineEdits(text, planDisplayName(text, step, '')).text, '- task: A@1\n  inputs:\n    a: b');
+    assert.deepEqual(planDisplayName(text, step, 'long name'), [], 'the folded text is the name');
+    const last = '- task: A@1\n  displayName: |\n    one\n    two';
+    assert.equal(applyLineEdits(last, planDisplayName(last, findTaskSteps(last)[0], 'X')).text, '- task: A@1\n  displayName: X');
+  });
+
+  it('reads the text of a block scalar with an indentation indicator and trailing spaces as written', () => {
+    const text = '- task: ContosoDeploy@2\n  inputs:\n    script: |2\n        x\n        y  \n    retries: 5';
+    // The indicator puts the body at column 6: two more spaces are text, and so are the spaces at the end of a line.
+    assert.equal(scalarValue(text, findTaskSteps(text)[0].inputs[0])?.text, '  x\n  y  ');
+    const edited = planTask(text, { script: '  x\n  y  \nz' });
+    assert.deepEqual(rows(edited.text).slice(2, 6), ['    script: |2', '        x', '        y  ', '      z']);
+    assert.equal(planTask(text, { script: '  x\n  y  ' }).text, text, 'unchanged text writes nothing');
+  });
+});
+
+describe('the reason a step has no form', () => {
+  const reason = (yaml: string) => callReadOnlyReason(yaml, asTemplateRef(findTaskSteps(yaml)[0]), 'inputs');
+
+  it('names a missing version, an empty reference or an expression', () => {
+    assert.match(reason('- task: ${{ parameters.t }}\n') ?? '', /expression/);
+    assert.match(reason('- task: AzureCLI\n') ?? '', /no version.*Name@Major/);
+    assert.match(reason('- task: AzureCLI@\n') ?? '', /no version/);
+    assert.match(reason('- task:\n') ?? '', /empty/);
+    assert.equal(reason('- task: AzureCLI@2\n'), undefined);
   });
 });
