@@ -2,7 +2,7 @@ import * as assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { TaskInfo, TaskInput } from '../pipelines/taskModel';
 import { asTemplateRef, findTaskSteps, toParameter } from '../pipelines/taskRefs';
-import { applyLineEdits, deleteLines, planCallEdits, planDisplayName } from '../pipelines/templateEdits';
+import { applyLineEdits, callReadOnlyReason, deleteLines, planCallEdits, planDisplayName } from '../pipelines/templateEdits';
 import { scanYaml } from '../pipelines/templateRefs';
 
 const field: TaskInput = {
@@ -48,5 +48,22 @@ describe('deleting the first key of a list item keeps the dash', () => {
 
   it('still deletes a plain key line', () => {
     assert.equal(clearName('steps:\n- task: T@1\n  displayName: Build\n  inputs:\n    a: b'), 'steps:\n- task: T@1\n  inputs:\n    a: b');
+  });
+});
+
+describe('callReadOnlyReason', () => {
+  const reason = (body: string) => {
+    const yaml = `steps:\n- task: T@1\n  inputs:\n${body}`;
+    return callReadOnlyReason(yaml, asTemplateRef(findTaskSteps(yaml)[0], task), 'inputs');
+  };
+
+  it('keeps inputs under an if editable', () => {
+    assert.equal(reason('    ${{ if eq(1, 1) }}:\n      a: b'), undefined);
+  });
+
+  it('is read-only for an each nested in an if, like dynamicInputs of the step', () => {
+    const yaml = 'steps:\n- task: T@1\n  inputs:\n    ${{ if eq(1, 1) }}:\n      ${{ each k in params.m }}:\n        a: b';
+    assert.equal(findTaskSteps(yaml)[0].dynamicInputs, true);
+    assert.match(reason('    ${{ if eq(1, 1) }}:\n      ${{ each k in params.m }}:\n        a: b') ?? '', /built with expressions/);
   });
 });

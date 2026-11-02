@@ -9,7 +9,7 @@ import {
   yamlScalar,
 } from './objectParams';
 import { TaskStepRef } from './taskModel';
-import { isExpression, mappingOf, ParamEntry, scanYaml, TemplateRef, YLine } from './templateRefs';
+import { blockParams, isExpression, mappingOf, ParamEntry, scanYaml, TemplateRef, YLine } from './templateRefs';
 import { isBlockHeader, PipelineParameter, stripComment, unquote } from './yamlParameters';
 
 export { yamlScalar } from './objectParams';
@@ -591,24 +591,14 @@ export function callReadOnlyReason(text: string, ref: TemplateRef, blockKey: Blo
   }
   const lines = scanYaml(text);
   const paramsLine = ref.paramsLine === undefined ? undefined : lines[ref.paramsLine];
-  const expressionKeys = paramsLine ? expressionKeysOf(lines, paramsLine) : [];
-  if (paramsLine?.rest.startsWith('${{') || expressionKeys.some(k => !CONDITION_KEY.test(k))) {
+  // The same rule as the task steps' `dynamicInputs`: `if`/`elseif`/`else` keys stay editable, other expressions (also nested) do not.
+  if (paramsLine?.rest.startsWith('${{') || (paramsLine && blockParams(lines, paramsLine, true).dynamic)) {
     return `The ${blockKey} are built with expressions (\${{ }}): edit them in the text.`;
   }
   if (paramsLine?.rest) {
     return `The ${blockKey} are written as one flow mapping ({ … }): edit them in the text.`;
   }
   return undefined;
-}
-
-/** `${{ if … }}`, `${{ elseif … }}` and `${{ else }}`: the parameters under them are read-only, the others stay editable. */
-const CONDITION_KEY = /^\$\{\{\s*(if|elseif|else)\b/;
-
-/** Expression keys (`${{ … }}:`) directly under a `parameters:` key. */
-function expressionKeysOf(lines: YLine[], paramsLine: YLine): string[] {
-  const col = childCol(lines, paramsLine.n);
-  const end = blockEnd(lines, paramsLine.n);
-  return lines.slice(paramsLine.n + 1, end + 1).filter(l => !l.blank && l.keyCol === col && l.key?.includes('${{')).map(l => l.key!);
 }
 
 /**
