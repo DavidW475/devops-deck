@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import {
   GitError, ZERO_SHA, blameArgs, blameWindow, isFullSha, isPastEndError, isUntrackedError, makeGitRunner,
-  parsePorcelain, shallowArgs,
+  parsePorcelain, remoteContainsArgs, shallowArgs,
 } from '../blame/blameGit';
 import type { CommitLine } from '../blame/blameTypes';
 
@@ -180,6 +180,36 @@ describe('makeGitRunner with real git', () => {
       assert.equal(shaOf(windowed, 33), first);
       const single = await run(d, ['blame', '--porcelain', '-M', '-L', '33,33', '--', 'f.txt']);
       assert.equal(shaOf(single, 33), second);
+    } finally {
+      fs.rmSync(d, { recursive: true, force: true });
+    }
+  });
+  it('remoteContainsArgs finds a remote branch with the commit, and ignores local branches and tags', async () => {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'blameremote-'));
+    try {
+      const g = (...args: string[]): string =>
+        execFileSync('git', ['-c', 'user.name=Erika Muster', '-c', 'user.email=erika@contoso.example', ...args], { cwd: d, encoding: 'utf8' }); // NOSONAR: test helper, runs git from PATH only in a temporary repository
+      g('init', '-q', '-b', 'main', 'work');
+      g('init', '-q', '--bare', 'remote.git');
+      const w = path.join(d, 'work');
+      const gw = (...args: string[]): string =>
+        execFileSync('git', ['-c', 'user.name=Erika Muster', '-c', 'user.email=erika@contoso.example', ...args], { cwd: w, encoding: 'utf8' }); // NOSONAR: test helper, runs git from PATH only in a temporary repository
+      gw('remote', 'add', 'origin', path.join(d, 'remote.git'));
+      fs.writeFileSync(path.join(w, 'f.txt'), 'one\n');
+      gw('add', '.');
+      gw('commit', '-q', '-m', 'pushed');
+      const pushed = gw('rev-parse', 'HEAD').trim();
+      gw('push', '-q', '-u', 'origin', 'main');
+      gw('tag', 'aaa-pushed', pushed);
+      fs.writeFileSync(path.join(w, 'f.txt'), 'two\n');
+      gw('commit', '-q', '-am', 'local only');
+      const local = gw('rev-parse', 'HEAD').trim();
+      gw('tag', 'aaa-local', local);
+      gw('branch', 'feature-local');
+      assert.match(await run(w, remoteContainsArgs(pushed)), /^refs\/remotes\/origin\/\S+\n$/);
+      assert.equal((await run(w, remoteContainsArgs(local))).trim(), '', 'tags and local branches that contain it are no push');
+      assert.throws(() => remoteContainsArgs('abc'), RangeError);
+      await assert.rejects(run(w, remoteContainsArgs('1'.repeat(40))), GitError);
     } finally {
       fs.rmSync(d, { recursive: true, force: true });
     }

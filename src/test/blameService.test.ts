@@ -57,6 +57,8 @@ interface Env {
     gate?: Promise<void>; settings: BlameSettings;
     byMerge: PullRequest[]; byCommit: PullRequest[]; byId: Map<number, PullRequest | Error>; repoError?: Error;
     prWi: number[] | Error; commitWi: number[] | Error; items: WorkItem[]; queryError?: Error;
+    /** commits no remote branch contains (the fake git answers like `for-each-ref --contains refs/remotes`) */
+    notOnRemote: Set<string>; remoteError?: Error; shallowError?: Error;
   };
 }
 
@@ -69,7 +71,7 @@ function setup(): Env {
   const state: Env['state'] = {
     output: porcelain(range(1, 41)), shallow: 'false', trusted: true, runner: true, foreignRoot: false,
     settings: { ignoreWhitespace: true, detectCopies: false },
-    byMerge: [], byCommit: [], byId: new Map(), prWi: [], commitWi: [], items: [],
+    byMerge: [], byCommit: [], byId: new Map(), prWi: [], commitWi: [], items: [], notOnRemote: new Set(),
   };
   const client: BlameClient = {
     async getRepository(name) {
@@ -118,6 +120,12 @@ function setup(): Env {
       gitCalls.push({ args, options });
       if (state.gate) await state.gate;
       if (state.gitError) throw state.gitError;
+      if (args[0] === 'for-each-ref') {
+        if (state.remoteError) throw state.remoteError;
+        // Like git: only refs/remotes are looked at, local branches and tags that contain the commit do not count.
+        return state.notOnRemote.has(args[args.indexOf('--contains') + 1]) ? '' : 'refs/remotes/origin/main\n';
+      }
+      if (args[0] === 'rev-parse' && state.shallowError) throw state.shallowError;
       return args[0] === 'rev-parse' ? state.shallow : state.output;
     } : undefined),
     isTrusted: () => state.trusted,
@@ -351,17 +359,60 @@ describe('BlameService.lookupLine', () => {
 
   it('without an upstream a commit is unpublished when no remote branch contains it', async () => {
     (e.repo.state as any).HEAD = { commit: C, ahead: 2 };
-    const asked: unknown[] = [];
-    (e.repo as any).getBranches = async (q: unknown) => { asked.push(q); return []; };
-    assert.equal((await e.svc.lookupLine(doc(), 10)).state, 'unpublished');
-    assert.deepEqual(asked[0], { remote: true, contains: A, count: 1 });
-    (e.repo as any).getBranches = async () => [{ name: 'origin/main' }];
-    assert.equal((await e.svc.lookupLine(doc({ version: 2 }), 10)).state, 'commit');
+    // The git extension's getBranches also lists local branches (and cuts by count before it drops tags): it must not be trusted.
+    (e.repo as any).getBranches = async () => [{ name: 'main', type: 0 }];
+    e.state.notOnRemote.add(A);
+    assert.equal((await e.svc.lookupLine(doc(), 10)).state, 'unpublished', 'a local branch containing it is no push');
+    const asked = e.gitCalls.filter(c => c.args[0] === 'for-each-ref');
+    assert.deepEqual(asked[0].args, ['for-each-ref', '--count=1', '--format=%(refname)', '--contains', A, 'refs/remotes']);
+    e.state.notOnRemote.clear();
+    (e.repo as any).getBranches = async () => [];
+    e.clock.t += 31_000;
+    assert.equal((await e.svc.lookupLine(doc({ version: 2 }), 10)).state, 'commit', 'a remote branch has it, whatever getBranches says');
     assert.equal((await e.svc.lookupLine(doc({ version: 3 }), 10)).state, 'commit');
-    assert.equal(asked.length, 1);
-    (e.repo as any).getBranches = async () => { throw new Error('old git'); };
-    e.state.output = porcelain(range(1, 41, B));
-    assert.equal((await e.svc.lookupLine(doc({ version: 4 }), 10)).state, 'commit', 'no claim without evidence');
+    assert.equal(e.gitCalls.filter(c => c.args[0] === 'for-each-ref').length, 2, 'published is kept');
+  });
+
+  it('asks git again later for an unpublished commit, not on every rest of the cursor', async () => {
+    (e.repo.state as any).HEAD = { commit: C, ahead: 2 };
+    e.state.notOnRemote.add(A);
+    const asks = () => e.gitCalls.filter(c => c.args[0] === 'for-each-ref').length;
+    assert.equal((await e.svc.lookupLine(doc(), 10)).state, 'unpublished');
+    assert.equal((await e.svc.lookupLine(doc({ version: 2 }), 10)).state, 'unpublished');
+    assert.equal(asks(), 1, 'the negative answer is remembered for a short time');
+    e.state.notOnRemote.clear();
+    e.clock.t += 31_000;
+    assert.equal((await e.svc.lookupLine(doc({ version: 3 }), 10)).state, 'commit', 'it was pushed meanwhile');
+    assert.equal(asks(), 2);
+  });
+
+  it('makes no claim when git cannot say whether a remote branch has the commit', async () => {
+    (e.repo.state as any).HEAD = { commit: C, ahead: 2 };
+    e.state.remoteError = new GitError('fatal: not a git repository', 128);
+    assert.equal((await e.svc.lookupLine(doc(), 10)).state, 'commit');
+    e.state.remoteError = undefined;
+    e.state.notOnRemote.add(A);
+    assert.equal((await e.svc.lookupLine(doc({ version: 2 }), 10)).state, 'unpublished', 'the failure was not cached');
+  });
+
+  it('does not remember a failed upstream log as an empty set of unpublished commits', async () => {
+    (e.repo.state as any).HEAD = { commit: C, ahead: 1, upstream: { remote: 'origin', name: 'main' } };
+    let fails = true;
+    e.repo.logEntries = [{ hash: A, message: 'm' }];
+    const log = e.repo.log;
+    e.repo.log = async (...a: any[]) => { if (fails) throw new Error('busy'); return (log as any).apply(e.repo, a); };
+    assert.equal((await e.svc.lookupLine(doc(), 10)).state, 'commit', 'no claim while the log fails');
+    fails = false;
+    assert.equal((await e.svc.lookupLine(doc({ version: 2 }), 10)).state, 'unpublished', 'the next lookup asks again');
+  });
+
+  it('does not remember a failed shallow check as "not shallow"', async () => {
+    e.state.output = porcelain(range(1, 41, A).map(x => ({ ...x, boundary: true })));
+    e.state.shallowError = new GitError('timed out', undefined, true);
+    assert.equal((await e.svc.lookupLine(doc(), 10)).state, 'commit');
+    e.state.shallowError = undefined;
+    e.state.shallow = 'true';
+    assert.equal((await e.svc.lookupLine(doc({ version: 2 }), 10)).state, 'shallow');
   });
 
   it('continues as commit without upstream or when the log fails', async () => {

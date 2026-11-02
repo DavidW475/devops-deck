@@ -45,6 +45,17 @@ export function shallowArgs(): string[] {
   return ['rev-parse', '--is-shallow-repository'];
 }
 
+/**
+ * Names one remote-tracking ref that contains the commit (`--count` applies after `--contains`, tags and local branches are
+ * not listed because only `refs/remotes` is asked). No output means no remote branch has it. `sha` must be a full SHA.
+ */
+export function remoteContainsArgs(sha: string): string[] {
+  if (!isFullSha(sha)) {
+    throw new RangeError('not a full SHA');
+  }
+  return ['for-each-ref', '--count=1', '--format=%(refname)', '--contains', sha, 'refs/remotes'];
+}
+
 interface Header {
   sha: string;
   orig: number;

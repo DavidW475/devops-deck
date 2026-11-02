@@ -6,7 +6,7 @@ import { LocalRepo, adoRemoteOf, adoRepoForFile, workItemIdsFromText } from '../
 import type { PullRequest, WorkItem } from '../types';
 import { mapLimit } from '../util';
 import {
-  GitError, blameArgs, blameWindow, isFullSha, isPastEndError, isUntrackedError, makeGitRunner, parsePorcelain, shallowArgs,
+  GitError, blameArgs, blameWindow, isFullSha, isPastEndError, isUntrackedError, makeGitRunner, parsePorcelain, remoteContainsArgs, shallowArgs,
 } from './blameGit';
 import { mergeWorkItems, pickPullRequest, prIdFromMessage } from './blameModel';
 import type {
@@ -29,6 +29,8 @@ const HYDRATE_MAX = 5;
 const HYDRATE_PARALLEL = 3;
 const UNPUBLISHED_LOG_MAX = 1000;
 const UNPUBLISHED_LIMIT = 50;
+/** An unpublished commit may be pushed any time: the answer is only kept for a short while. */
+const REMOTE_NEGATIVE_TTL_MS = 30 * 1000;
 
 interface BlameFlight {
   promise: Promise<Map<number, BlameLine>>;
@@ -139,6 +141,7 @@ export class BlameService implements BlameLookups {
   /** Running blame processes by line: callers join one only when its signal and timeout fit them. */
   private readonly blameFlights = new Map<string, BlameFlight>();
   private readonly remotePublished: Cache<boolean>;
+  private readonly remoteMissing: Cache<boolean>;
   private searchTimes: number[] = [];
 
   constructor(private readonly deps: BlameDeps) {
@@ -150,6 +153,7 @@ export class BlameService implements BlameLookups {
     this.items = new Cache(WI_LIMIT, WI_TTL_MS, now);
     this.unpublishedSets = new Cache(UNPUBLISHED_LIMIT, undefined, now);
     this.remotePublished = new Cache(BLAME_LINE_LIMIT, undefined, now);
+    this.remoteMissing = new Cache(BLAME_LINE_LIMIT, REMOTE_NEGATIVE_TTL_MS, now);
   }
 
   private now(): number {
@@ -184,6 +188,7 @@ export class BlameService implements BlameLookups {
     this.inflight.clear();
     this.blameFlights.clear();
     this.remotePublished.clear();
+    this.remoteMissing.clear();
     this.searchTimes = [];
   }
 
@@ -334,11 +339,11 @@ export class BlameService implements BlameLookups {
     }
     return this.share(`shallow|${root}`, async () => {
       const gen = this.gen;
-      let shallow = false;
+      let shallow: boolean;
       try {
         shallow = (await run(root, shallowArgs())).trim() === 'true';
       } catch {
-        shallow = false;
+        return false; // not cached: a failed or timed out call says nothing about the repository
       }
       if (gen === this.gen) {
         this.shallowRoots.set(root, shallow);
@@ -371,7 +376,7 @@ export class BlameService implements BlameLookups {
         });
         commits.forEach(c => hashes.add(c.hash));
       } catch {
-        hashes.clear();
+        return hashes; // empty and not cached: the next lookup tries again
       }
       if (gen === this.gen) {
         this.unpublishedSets.set(key, hashes);
@@ -381,30 +386,36 @@ export class BlameService implements BlameLookups {
     return set.has(sha);
   }
 
-  /** True when a remote branch contains the commit, and also when that cannot be found out (no claim without evidence). */
+  /**
+   * True when a remote-tracking branch contains the commit, and also when that cannot be found out (no claim without
+   * evidence). Asks git directly: the git extension's `getBranches` lists local branches and tags as well, and applies
+   * its `count` before it drops the tags.
+   */
   private async isOnRemote(repo: LocalRepo, sha: string): Promise<boolean> {
     const key = `${this.rootOf(repo)}|${sha}`;
-    const known = this.remotePublished.get(key);
-    if (known !== undefined) {
-      return known;
-    }
-    const getBranches = repo.repo.getBranches;
-    if (typeof getBranches !== 'function') {
+    if (this.remotePublished.get(key) !== undefined) {
       return true;
     }
-    const gen = this.gen;
-    let published = true;
-    try {
-      const branches: unknown[] = await getBranches.call(repo.repo, { remote: true, contains: sha, count: 1 });
-      published = branches.length > 0;
-    } catch {
-      return true; // not cached: the next lookup may succeed
+    if (this.remoteMissing.get(key) !== undefined) {
+      return false;
     }
-    if (gen === this.gen && published) {
-      // Only "published" is stable; an unpublished commit may be pushed any time.
-      this.remotePublished.set(key, published);
+    const run = this.deps.runner();
+    if (!run) {
+      return true;
     }
-    return published;
+    return this.share(`remote|${key}`, async () => {
+      const gen = this.gen;
+      let published: boolean;
+      try {
+        published = (await run(this.rootOf(repo), remoteContainsArgs(sha))).trim() !== '';
+      } catch {
+        return true; // not cached: the next lookup may succeed
+      }
+      if (gen === this.gen) {
+        (published ? this.remotePublished : this.remoteMissing).set(key, true);
+      }
+      return published;
+    });
   }
 
   // ---- commits ----
