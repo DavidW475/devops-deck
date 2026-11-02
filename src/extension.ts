@@ -134,7 +134,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
    * manager fires `onDidChange`, which resets and refreshes) and how requests are signed (`authMethod`, `tenantId`).
    * Every other setting leaves the pause, My Day and the blame caches alone; blame and YAML settings need no reload.
    */
-  // How requests are signed, as last applied: an event for a change a command already handled resets nothing again.
+  // How requests are signed, as last seen by the settings handler (the only place that updates it).
   const signingKey = (method = vscode.workspace.getConfiguration('azureDevOps').get<string>('authMethod')) =>
     `${method}|${vscode.workspace.getConfiguration('azureDevOps').get<string>('tenantId', '').trim()}`;
   let signing = signingKey();
@@ -205,7 +205,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const first = lastOrg === null;
       const sameOrg = connections.current?.orgUrl === lastOrg;
       lastOrg = connections.current?.orgUrl;
-      if (!first) {
+      if (first) {
+        taskCatalog.clearBackoff(); // nothing to forget, but open pipeline documents were checked without a catalog
+      } else {
         resetState({ pause: sameOrg, catalog: sameOrg });
       }
       refresh();
@@ -220,15 +222,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     refresh(true);
   });
   command('azureDevOps.signIn', async () => {
-    signing = signingKey('microsoft'); // the settings event of this update must not reset a second time
-    await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'microsoft', vscode.ConfigurationTarget.Global);
+    // A changed setting is reset by the settings handler; here only a new account with the same setting needs a reset.
+    const settingChanged = signingKey('microsoft') !== signing;
+    const before = account;
+    let signedIn = false;
     try {
+      await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'microsoft', vscode.ConfigurationTarget.Global);
       await client.signIn();
-      await noteAccount(); // the session event of this very sign-in must not look like a change and reset again
+      signedIn = true;
     } finally {
-      // The setting changed even when the sign-in failed or was cancelled: what was loaded belongs to the old sign-in.
-      resetState();
-      refresh();
+      await noteAccount();
+      if (signedIn && !settingChanged && account !== before) {
+        resetState();
+        refresh();
+      }
     }
   });
   command('azureDevOps.setPat', async () => {
@@ -241,11 +248,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (!pat) {
       return;
     }
+    const settingChanged = signingKey('pat') !== signing;
     await context.secrets.store(PAT_SECRET_KEY, pat.trim());
-    signing = signingKey('pat');
-    await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'pat', vscode.ConfigurationTarget.Global);
-    resetState();
-    refresh();
+    try {
+      await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'pat', vscode.ConfigurationTarget.Global);
+    } finally {
+      await noteAccount();
+      if (!settingChanged) { // a changed setting is reset by the settings handler; a new token under the same setting is not
+        resetState();
+        refresh();
+      }
+    }
   });
   command('azureDevOps.configure', async () => {
     const cfg = vscode.workspace.getConfiguration('azureDevOps');
@@ -310,14 +323,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // ----- pull requests -----
   command('azureDevOps.pr.openOverview', async (repoId: string, prId: number) =>
-    PullRequestPanel.show(client, context.extensionUri, repoId, prId, refresh));
+    PullRequestPanel.show(client, context.extensionUri, repoId, prId, () => refresh(true)));
   command('azureDevOps.pr.openDiff', async (args: PrFileArgs) => openPrDiff(args));
   mutation('azureDevOps.pr.vote', (repoId: unknown, prId: unknown, project?: unknown) => voteOnPullRequest(at(project), repoId, prId));
   command('azureDevOps.pr.checkout', async (repoId: string, prId: number) =>
     checkoutPullRequest(await client.getPullRequest(repoId, prId)));
   command('azureDevOps.pr.create', async (repoName?: string, source?: string) =>
     CreatePullRequestPanel.show(client, connections, context.extensionUri,
-      { repoName: typeof repoName === 'string' ? repoName : undefined, source: typeof source === 'string' ? source : undefined }, refresh));
+      { repoName: typeof repoName === 'string' ? repoName : undefined, source: typeof source === 'string' ? source : undefined }, () => refresh(true)));
   command('azureDevOps.pr.compareIterations', async (repoId: string, prId: number, base?: number, target?: number) =>
     compareIterations(client, repoId, prId, base, target));
   command('azureDevOps.pr.openInBrowser', async (repoName: string, prId: number, project?: string) =>
@@ -356,11 +369,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await writeWatchers(list);
     }
   });
-  command('azureDevOps.wi.open', async (id: number) => WorkItemPanel.show(client, context.extensionUri, id, refresh));
+  command('azureDevOps.wi.open', async (id: number) => WorkItemPanel.show(client, context.extensionUri, id, () => refresh(true)));
   command('azureDevOps.wi.openById', async () => {
     const id = await vscode.window.showInputBox({ title: 'Open work item', prompt: 'Work item ID', validateInput: v => /^\d+$/.test(v.trim().replace(/^#/, '')) ? undefined : 'Enter a number' });
     if (id) {
-      WorkItemPanel.show(client, context.extensionUri, Number(id.trim().replace(/^#/, '')), refresh);
+      WorkItemPanel.show(client, context.extensionUri, Number(id.trim().replace(/^#/, '')), () => refresh(true));
     }
   });
   command('azureDevOps.wi.openInBrowser', async (id: number, project?: string) =>
@@ -376,19 +389,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (id === undefined) {
       return false;
     }
-    WorkItemPanel.show(client, context.extensionUri, id, refresh);
+    WorkItemPanel.show(client, context.extensionUri, id, () => refresh(true));
   });
   command('azureDevOps.wi.createBranch', (id: number) => createBranchForWorkItem(client, connections, id));
   mutation('azureDevOps.wi.createFromCode', async (uri?: vscode.Uri, line?: number) =>
     (await createWorkItemFromCode(client, connections, uri instanceof vscode.Uri ? uri : undefined, typeof line === 'number' ? line : undefined)) !== undefined);
 
   // ----- repositories and wiki -----
-  command('azureDevOps.repos.open', () => ReposPanel.show(client, connections, context.extensionUri, refresh));
+  command('azureDevOps.repos.open', () => ReposPanel.show(client, connections, context.extensionUri, () => refresh(true)));
   command('azureDevOps.wiki.open', () => openWiki(client));
 
   // ----- pipelines -----
   command('azureDevOps.pipelines.run', (definitionId?: number, project?: string) =>
-    RunPipelinePanel.show(at(project), context.extensionUri, typeof definitionId === 'number' ? definitionId : undefined, refresh));
+    RunPipelinePanel.show(at(project), context.extensionUri, typeof definitionId === 'number' ? definitionId : undefined, () => refresh(true)));
   mutation('azureDevOps.pipelines.rerun', async (definitionId: number, branch: string, project?: string) => {
     const def = await at(project).getDefinition(definitionId);
     return queue(at(project), definitionId, def.name, branch);

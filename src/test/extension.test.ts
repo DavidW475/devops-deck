@@ -9,6 +9,7 @@ import { ConnectionManager } from '../connection';
 import { MyDayService } from '../myDay/service';
 import { AdoClient } from '../client';
 import { TaskCatalog } from '../pipelines/taskCatalog';
+import { PullRequestPanel } from '../pullRequests/prPanel';
 import { FakeWebview } from './fakeWebview';
 
 const pkg = require('../../package.json') as { contributes: { commands: { command: string }[] } };
@@ -62,7 +63,7 @@ let inputs: unknown[] = [];
 let taskGate: Promise<void> | undefined;
 let warnings: unknown[] = [];
 let sidebarProvider: { resolveWebviewView(view: unknown): void } | undefined;
-const resetSpy = { calls: 0, invalidates: 0 };
+const resetSpy = { calls: 0, invalidates: 0, directs: [] as unknown[] };
 const realReset = MyDayService.prototype.reset;
 const realInvalidate = MyDayService.prototype.invalidate;
 const blameSpy = { resets: 0 };
@@ -94,7 +95,7 @@ describe('activate', () => {
     (vscode.authentication as any).onDidChangeSessions = (l: typeof sessionListener) => { sessionListener = l; return { dispose() { /* stub */ } }; };
     w.registerWebviewViewProvider = (_id: string, provider: typeof sidebarProvider) => { sidebarProvider = provider; return { dispose() { /* stub */ } }; };
     MyDayService.prototype.reset = function (this: MyDayService) { resetSpy.calls++; realReset.call(this); };
-    MyDayService.prototype.invalidate = function (this: MyDayService) { resetSpy.invalidates++; realInvalidate.call(this); };
+    MyDayService.prototype.invalidate = function (this: MyDayService, direct?: boolean) { resetSpy.invalidates++; resetSpy.directs.push(direct); realInvalidate.call(this, direct); };
     BlameUi.prototype.reset = function (this: BlameUi) { blameSpy.resets++; realBlameReset.call(this); };
     await activate(context as any);
   });
@@ -121,6 +122,24 @@ describe('activate', () => {
 
   it('starts without resetting the pause or the task catalog for the first connection', () => {
     assert.deepEqual(cleared, { pauses: 0, catalogs: 0 });
+  });
+
+  it('tells the task catalog about the first connection, so open documents are checked again', () => {
+    assert.ok(backoffClears >= 1);
+  });
+
+  it('hands a panel a refresh that counts as the user\'s own change', async () => {
+    const real = PullRequestPanel.show;
+    let onChange: (() => void) | undefined;
+    PullRequestPanel.show = ((_c: unknown, _u: unknown, _r: unknown, _p: unknown, cb: () => void) => { onChange = cb; }) as typeof PullRequestPanel.show;
+    try {
+      await run('azureDevOps.pr.openOverview', 'repo-1', 7);
+    } finally {
+      PullRequestPanel.show = real;
+    }
+    resetSpy.directs.length = 0;
+    onChange!();
+    assert.deepEqual(resetSpy.directs, [true]);
   });
 
   it('registers every contributed command', () => {
@@ -239,7 +258,7 @@ describe('activate', () => {
     await run('azureDevOps.signIn');
     assert.equal(vscode.settings['azureDevOps.authMethod'], 'microsoft');
     assert.equal(vscode.messages.length, 1, 'the failed sign-in is reported');
-    vscode.settings['azureDevOps.authMethod'] = 'pat';
+    await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'pat');
   });
 
   it('opens a build log as a document', async () => {
@@ -498,6 +517,76 @@ describe('activate', () => {
       auth.getSession = realGet;
       vscode.settings['azureDevOps.authMethod'] = 'pat';
     }
+  });
+
+  it('a cancelled sign-in with an unchanged setting resets nothing and keeps the pause', async () => {
+    const auth = vscode.authentication as any;
+    const realGet = auth.getSession;
+    try {
+      await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'microsoft');
+      auth.getSession = async () => undefined;
+      const resets = resetSpy.calls;
+      const pauses = cleared.pauses;
+      const invalidates = resetSpy.invalidates;
+      await run('azureDevOps.signIn');
+      assert.equal(resetSpy.calls, resets);
+      assert.equal(cleared.pauses, pauses, 'the 429 pause stays');
+      assert.equal(resetSpy.invalidates, invalidates);
+    } finally {
+      auth.getSession = realGet;
+      await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'pat');
+    }
+  });
+
+  it('a sign-in under the same setting resets only when the account changed, and notes the account even if it failed', async () => {
+    const auth = vscode.authentication as any;
+    const realGet = auth.getSession;
+    try {
+      await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'microsoft');
+      let id = 'acc-1';
+      auth.getSession = async () => ({ account: { id }, accessToken: 't' });
+      await run('azureDevOps.signIn');
+      const resets = resetSpy.calls;
+      await run('azureDevOps.signIn');
+      assert.equal(resetSpy.calls, resets, 'the same account');
+      id = 'acc-2';
+      const invalidates = resetSpy.invalidates;
+      await run('azureDevOps.signIn');
+      assert.equal(resetSpy.calls, resets + 1, 'a new account');
+      assert.equal(resetSpy.invalidates, invalidates + 1);
+      // A failed sign-in still records the account in use, so the session event that follows is not mistaken for a change.
+      id = 'acc-3';
+      const pending = auth.getSession;
+      auth.getSession = async (_p: string, _s: string[], o: { silent?: boolean; createIfNone?: boolean }) => {
+        if (o.silent) { return pending(); }
+        throw new Error('cancelled');
+      };
+      await run('azureDevOps.signIn');
+      const after = resetSpy.calls;
+      sessionListener!({ provider: { id: 'microsoft' } });
+      await flush();
+      assert.equal(resetSpy.calls, after, 'acc-3 was noted by the failed sign-in');
+    } finally {
+      auth.getSession = realGet;
+      await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'pat');
+    }
+  });
+
+  it('a rejected settings update does not stop later changes of the sign-in setting from being seen', async () => {
+    const cfg = vscode.workspace.getConfiguration;
+    const resets = resetSpy.calls;
+    (vscode.workspace as any).getConfiguration = (section?: string) => {
+      const real = cfg(section);
+      return { ...real, update: async () => { throw new Error('read-only settings'); } };
+    };
+    try {
+      await run('azureDevOps.signIn');
+    } finally {
+      (vscode.workspace as any).getConfiguration = cfg;
+    }
+    await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'microsoft');
+    assert.equal(resetSpy.calls, resets + 1, 'the real change is still detected');
+    await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'pat');
   });
 });
 
