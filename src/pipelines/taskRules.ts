@@ -136,9 +136,16 @@ export function parseVisibleRule(rule: string): RuleNode | undefined {
   return node && s.pos >= rule.length ? node : undefined;
 }
 
+/** The text without one pair of matching quotes: a rule may write `mode = "b"` for the value `b`. */
+function unquoted(text: string): string {
+  const t = text.trim();
+  const q = t[0];
+  return t.length >= 2 && (q === '"' || q === "'") && t.endsWith(q) ? t.slice(1, -1) : t;
+}
+
 function compare(op: RuleOp, actual: string, expected: string): boolean {
   const a = actual.trim().toLowerCase();
-  const e = expected.trim().toLowerCase();
+  const e = unquoted(expected).toLowerCase();
   switch (op) {
     case '=':
       return a === e;

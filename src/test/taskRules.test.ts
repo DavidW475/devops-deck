@@ -38,6 +38,12 @@ describe('parseVisibleRule and evalRule', () => {
     assert.equal(rule('a = ', { a: '' }), true);
   });
 
+  it('strips matching quotes around the compared value', () => {
+    assert.equal(rule('mode = "b"', { mode: 'b' }), true);
+    assert.equal(rule("mode != 'b'", { mode: 'b' }), false);
+    assert.equal(rule('mode = "b', { mode: '"b' }), true);
+  });
+
   it('handles && || and parentheses', () => {
     assert.equal(rule('a = 1 && b = 2', { a: '1', b: '2' }), true);
     assert.equal(rule('a = 1 && b = 2', { a: '1', b: '3' }), false);
