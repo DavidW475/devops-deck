@@ -76,8 +76,8 @@ class TraceList {
         return;
       }
       // Assigning the items resets the active row to the first one: put it back, or Enter could open another row.
-      const active = qp.activeItems[0];
-      const activeKey = active && rowKey(active);
+      const active = qp.activeItems.at(0);
+      const activeKey = active ? rowKey(active) : undefined;
       qp.items = traceRows(d, Date.now()).map(r => toItem(r));
       const same = activeKey === undefined ? undefined : qp.items.find(i => rowKey(i) === activeKey);
       if (same) {

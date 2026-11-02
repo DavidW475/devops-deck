@@ -184,7 +184,8 @@
   function enumControl(p, disabled) {
     if (p.values.length > 6) {
       // An optional input without a default can go back to "not set" (the line leaves the file), as in the button list.
-      const unset = p.value === '' || p.clearable ? `<option value=""${p.value === '' ? ' selected' : ''}>(not set)</option>` : '';
+      const unsetSelected = p.value === '' ? ' selected' : '';
+      const unset = p.value === '' || p.clearable ? `<option value=""${unsetSelected}>(not set)</option>` : '';
       const other = p.value !== '' && !p.values.includes(p.value) ? `<option selected>${esc(p.value)}</option>` : '';
       const options = unset + other + p.values.map((v) => `<option${v === p.value ? ' selected' : ''}>${esc(v)}</option>`).join('');
       return `<select class="pd-select" id="p-${esc(p.name)}" data-param="${esc(p.name)}"${disabled}>${options}</select>`;
