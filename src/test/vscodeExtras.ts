@@ -175,6 +175,7 @@ export function setGitRepositories(repos: any[] | undefined): void {
     get repositories() { return repos?.map(wrapRepo); },
     git: { path: 'git' },
     onDidOpenRepository: () => noop,
+    onDidCloseRepository: event('git:close'),
     getRepository: (uri: { fsPath: string }) => wrapRepo(repositoryAt(repos ?? [], uri) as object | null),
     registerSourceControlHistoryItemDetailsProvider: (p: unknown) => {
       historyProviders.push(p);

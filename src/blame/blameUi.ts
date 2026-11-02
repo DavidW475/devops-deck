@@ -122,7 +122,7 @@ class TraceList {
       }
       render({ ...data, error: errorMessage(e) });
       if (isAuth(e)) {
-        await showError(e);
+        void showError(e).catch(() => undefined); // the notification stays until dismissed: the list must not wait for it
       }
     }
   }
@@ -277,7 +277,8 @@ class Annotations {
   private readonly always: vscode.Disposable[] = [];
   private working: vscode.Disposable[] = [];
   /** repositories being watched, by root: the git extension returns a new wrapper object on every access */
-  private readonly hooked = new Set<string>();
+  private readonly hooked = new Map<string, vscode.Disposable>();
+  private closeWatch?: vscode.Disposable;
   private readonly heads = new Map<string, string>();
   private timer?: ReturnType<typeof setTimeout>;
   private abort?: AbortController;
@@ -362,6 +363,7 @@ class Annotations {
     this.working.forEach(d => d.dispose());
     this.working = [];
     this.hooked.clear();
+    this.closeWatch = undefined;
     this.heads.clear();
     this.hoverReg?.dispose();
     this.hoverReg = undefined;
@@ -417,22 +419,35 @@ class Annotations {
     this.timer = setTimeout(() => void this.update(), ms);
   }
 
-  /** Watches HEAD changes of every repository once (by root path). */
+  /** Watches HEAD changes of every repository once (by root path); a closed repository is forgotten, so a reopened one is watched again. */
   private hookRepos(): void {
-    for (const repo of gitApi()?.repositories ?? []) {
+    const api = gitApi();
+    if (!this.closeWatch && api?.onDidCloseRepository) {
+      const watch: vscode.Disposable = api.onDidCloseRepository((repo: any) => this.unhook(repo.rootUri.fsPath));
+      this.closeWatch = watch;
+      this.working.push(watch);
+    }
+    for (const repo of api?.repositories ?? []) {
       const root: string = repo.rootUri.fsPath;
       if (!this.hooked.has(root)) {
-        this.hooked.add(root);
         this.heads.set(root, headKey(repo));
-        this.working.push(repo.state.onDidChange(() => {
+        const watch = repo.state.onDidChange(() => {
           const head = headKey(repo);
           if (head !== this.heads.get(root)) {
             this.heads.set(root, head);
             this.schedule(DEBOUNCE_MS);
           }
-        }));
+        });
+        this.hooked.set(root, watch);
+        this.working.push(watch);
       }
     }
+  }
+
+  private unhook(root: string): void {
+    this.hooked.get(root)?.dispose();
+    this.hooked.delete(root);
+    this.heads.delete(root);
   }
 
   /** The editor to annotate: a file with exactly one selection. */

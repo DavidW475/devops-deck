@@ -215,6 +215,19 @@ describe('BlameUi', () => {
       assert.ok(vscode.executed.some(e => e[0] === 'azureDevOps.signIn'));
     });
 
+    it('stops the spinner after an auth error without waiting for the notification', async () => {
+      editorAt(0);
+      const real = w.window.showErrorMessage;
+      w.window.showErrorMessage = () => new Promise(() => undefined); // never dismissed
+      try {
+        h.workItems = async () => { throw new AdoError('Token expired', 401, true); };
+        await ui.traceLine();
+        assert.equal(list().busy, false);
+      } finally {
+        w.window.showErrorMessage = real;
+      }
+    });
+
     it('stops after the list is hidden', async () => {
       editorAt(0);
       const pr = new Deferred<PrLookup | undefined>();
@@ -813,6 +826,27 @@ describe('BlameUi', () => {
       await fire('repo:/src/web-shop');
       await tick(400);
       assert.equal(count('lookupLine'), 2, 'nothing changed');
+    });
+
+    it('watches a repository again after it was closed and opened anew', async () => {
+      setMode('statusBar');
+      editorAt(0);
+      repo.state.HEAD = { commit: 'c1' } as any;
+      await run();
+      assert.equal(count('lookupLine'), 1);
+      await fire('git:close', repo);
+      assert.equal(listeners['repo:/src/web-shop']?.length ?? 0, 0, 'the closed repository is not watched any more');
+      const reopened = fakeRepo('/src/web-shop', REMOTE, 'main');
+      reopened.state.HEAD = { commit: 'c1' } as any;
+      setGitRepositories([reopened]);
+      await fire('activeEditor');
+      await tick(400);
+      assert.equal(count('lookupLine'), 2);
+      assert.equal(listeners['repo:/src/web-shop']?.length, 1);
+      reopened.state.HEAD = { commit: 'c2' } as any;
+      await fire('repo:/src/web-shop');
+      await tick(400);
+      assert.equal(count('lookupLine'), 3, 'a checkout in the reopened repository is noticed');
     });
 
     it('hooks each repository once even when the git extension returns new wrapper objects', async () => {
