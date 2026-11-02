@@ -444,7 +444,7 @@ describe('AdoClient API calls', () => {
       near(client.throttledUntil, 15 * 60_000);
     });
 
-    it('forgets the pause on reset and does not apply it to another organization', async () => {
+    it('forgets the pause only on clearPause, not on reset, and does not apply it to another organization', async () => {
       answerWith({ 'Retry-After': '30' });
       const client = newClient();
       await client.listWikis();
@@ -455,10 +455,12 @@ describe('AdoClient API calls', () => {
       conn = first;
       near(client.throttledUntil, 30_000);
       client.reset();
+      near(client.throttledUntil, 30_000); // another project of the same organization: still paused
+      client.clearPause();
       assert.equal(client.throttledUntil, 0);
       await client.listWikis();
-      client.forProject('Contoso Web').reset();
-      assert.equal(client.throttledUntil, 0, 'a project client resets the shared pause');
+      client.forProject('Contoso Web').clearPause();
+      assert.equal(client.throttledUntil, 0, 'a project client clears the shared pause');
     });
 
     it('is shared between the root client and its project children', async () => {
@@ -766,6 +768,16 @@ describe('AdoClient identity, auth and errors', () => {
     assert.equal(requests[0].opts.createIfNone, false);
     await c.signIn();
     assert.equal(requests[1].opts.createIfNone, true, 'signIn may prompt');
+  });
+
+  it('tells a failing session lookup from being signed out', async () => {
+    vscode.settings['azureDevOps.authMethod'] = 'microsoft';
+    vscode.authentication.getSession = (async () => undefined) as never;
+    assert.equal(await newClient().accountId(), undefined, 'no session: signed out');
+    vscode.authentication.getSession = (async () => { throw new Error('keychain locked'); }) as never;
+    await assert.rejects(newClient().accountId(), /keychain locked/);
+    vscode.settings['azureDevOps.authMethod'] = 'pat';
+    assert.equal(await newClient().accountId(), undefined, 'a PAT does not use the account');
   });
 
   it('fails with an auth error without a Microsoft session', async () => {

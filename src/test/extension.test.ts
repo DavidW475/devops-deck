@@ -7,6 +7,8 @@ import { activate, deactivate } from '../extension';
 import { BlameUi } from '../blame/blameUi';
 import { ConnectionManager } from '../connection';
 import { MyDayService } from '../myDay/service';
+import { AdoClient } from '../client';
+import { TaskCatalog } from '../pipelines/taskCatalog';
 import { FakeWebview } from './fakeWebview';
 
 const pkg = require('../../package.json') as { contributes: { commands: { command: string }[] } };
@@ -64,6 +66,10 @@ const realInvalidate = MyDayService.prototype.invalidate;
 const blameSpy = { resets: 0 };
 const realBlameReset = BlameUi.prototype.reset;
 let sessionListener: ((e: { provider: { id: string } }) => void) | undefined;
+const configListeners: ((e: { affectsConfiguration(s: string): boolean }) => unknown)[] = [];
+const cleared = { pauses: 0, catalogs: 0 };
+const realClearPause = AdoClient.prototype.clearPause;
+const realCatalogReset = TaskCatalog.prototype.reset;
 const realFetch = globalThis.fetch;
 
 describe('activate', () => {
@@ -76,6 +82,10 @@ describe('activate', () => {
     vscode.settings['azureDevOps.authMethod'] = 'pat';
     vscode.settings['azureDevOps.refreshInterval'] = 0;
     secrets.set('azureDevOps.pat', 'fake-pat');
+    const realOnConfig = vscode.workspace.onDidChangeConfiguration;
+    vscode.workspace.onDidChangeConfiguration = (l => { configListeners.push(l); return realOnConfig(l); }) as typeof realOnConfig;
+    AdoClient.prototype.clearPause = function (this: AdoClient) { cleared.pauses++; realClearPause.call(this); };
+    TaskCatalog.prototype.reset = function (this: TaskCatalog) { cleared.catalogs++; realCatalogReset.call(this); };
     (vscode.authentication as any).onDidChangeSessions = (l: typeof sessionListener) => { sessionListener = l; return { dispose() { /* stub */ } }; };
     w.registerWebviewViewProvider = (_id: string, provider: typeof sidebarProvider) => { sidebarProvider = provider; return { dispose() { /* stub */ } }; };
     MyDayService.prototype.reset = function (this: MyDayService) { resetSpy.calls++; realReset.call(this); };
@@ -89,6 +99,8 @@ describe('activate', () => {
     MyDayService.prototype.reset = realReset;
     MyDayService.prototype.invalidate = realInvalidate;
     BlameUi.prototype.reset = realBlameReset;
+    AdoClient.prototype.clearPause = realClearPause;
+    TaskCatalog.prototype.reset = realCatalogReset;
     globalThis.fetch = realFetch;
   });
   beforeEach(() => {
@@ -363,6 +375,86 @@ describe('activate', () => {
       sessionListener!({ provider: { id: 'microsoft' } });
       await flush();
       assert.equal(resetSpy.calls, resets + 2);
+    } finally {
+      auth.getSession = realGet;
+      vscode.settings['azureDevOps.authMethod'] = 'pat';
+    }
+  });
+
+  /** One settings event that touches several settings, as VS Code sends when settings.json is edited. */
+  const fireSettings = async (...keys: string[]) => {
+    for (const l of configListeners) {
+      l({ affectsConfiguration: s => keys.some(k => k.startsWith(s)) });
+    }
+    await flush();
+  };
+
+  it('keeps the 429 pause and the task catalog when only the project changes, and drops them for another organization', async () => {
+    const cfg = vscode.workspace.getConfiguration('azureDevOps');
+    const base = { ...cleared };
+    await cfg.update('project', 'Contoso Web');
+    await flush();
+    assert.deepEqual(cleared, base, 'same organization, other project: pause and catalog stay');
+    await cfg.update('organization', 'fabrikam');
+    await flush();
+    assert.equal(cleared.pauses, base.pauses + 1, 'another organization starts without the pause');
+    assert.equal(cleared.catalogs, base.catalogs + 1, 'and with a fresh task catalog');
+    await cfg.update('organization', 'contoso');
+    await cfg.update('project', 'Fabrikam Shop');
+    await flush();
+  });
+
+  it('reloads the sidebar when the sign-in setting changes together with a blame or YAML setting', async () => {
+    const invalidates = resetSpy.invalidates;
+    const resets = resetSpy.calls;
+    await fireSettings('azureDevOps.blame.annotations', 'azureDevOps.yaml.taskSupport');
+    assert.equal(resetSpy.invalidates, invalidates, 'blame and YAML alone: no reload');
+    await fireSettings('azureDevOps.authMethod', 'azureDevOps.blame.annotations');
+    assert.equal(resetSpy.calls, resets + 1, 'the identity changed: state is reset');
+    assert.equal(resetSpy.invalidates, invalidates + 1, 'and the sidebar loads again with the new identity');
+  });
+
+  it('drops the blame cache when the git options of blame change, and for no other blame setting', async () => {
+    const blameResets = blameSpy.resets;
+    await fireSettings('azureDevOps.blame.annotations');
+    assert.equal(blameSpy.resets, blameResets);
+    await fireSettings('azureDevOps.blame.ignoreWhitespace');
+    assert.equal(blameSpy.resets, blameResets + 1);
+    await fireSettings('azureDevOps.blame.detectCopies');
+    assert.equal(blameSpy.resets, blameResets + 2);
+  });
+
+  it('ignores a failing session lookup, drops out-of-date answers and does not reset again after its own sign-in', async () => {
+    const auth = vscode.authentication as any;
+    const realGet = auth.getSession;
+    try {
+      vscode.settings['azureDevOps.authMethod'] = 'microsoft';
+      auth.getSession = async () => ({ account: { id: 'acc-a' }, accessToken: 't' });
+      sessionListener!({ provider: { id: 'microsoft' } });
+      await flush();
+      const resets = resetSpy.calls;
+      auth.getSession = async () => { throw new Error('keychain locked'); };
+      sessionListener!({ provider: { id: 'microsoft' } });
+      await flush();
+      assert.equal(resetSpy.calls, resets, 'a failed lookup is not a sign-out');
+      // Two events: the older lookup is slow and answers last with the older account.
+      const answers: ((v: unknown) => void)[] = [];
+      auth.getSession = () => new Promise(resolve => { answers.push(resolve); });
+      sessionListener!({ provider: { id: 'microsoft' } });
+      sessionListener!({ provider: { id: 'microsoft' } });
+      answers[1]({ account: { id: 'acc-b' }, accessToken: 't' });
+      await flush();
+      assert.equal(resetSpy.calls, resets + 1, 'the newer answer: a new account');
+      answers[0]({ account: { id: 'acc-a' }, accessToken: 't' });
+      await flush();
+      assert.equal(resetSpy.calls, resets + 1, 'the older answer is dropped');
+      // The sign-in command: its own session event arrives with the new account and must not reset a second time.
+      auth.getSession = async () => ({ account: { id: 'acc-c' }, accessToken: 't' });
+      await run('azureDevOps.signIn');
+      const afterSignIn = resetSpy.calls;
+      sessionListener!({ provider: { id: 'microsoft' } });
+      await flush();
+      assert.equal(resetSpy.calls, afterSignIn, 'the session event of the sign-in itself resets nothing more');
     } finally {
       auth.getSession = realGet;
       vscode.settings['azureDevOps.authMethod'] = 'pat';

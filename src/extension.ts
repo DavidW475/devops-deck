@@ -75,12 +75,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     prStatus.refresh();
   };
   /**
-   * Forgets what belongs to the connection or the sign-in: the client, the blame caches and My Day, and (unless
-   * `withCatalog` is false) the task catalog. A settings change leaves the catalog alone: it follows the organization by itself.
+   * Forgets what belongs to the connection or the sign-in: the client, the blame caches and My Day. The 429 pause and the
+   * task catalog belong to the organization and the sign-in: `keep` leaves them alone (another project of the same
+   * organization, or a changed sign-in setting, which does not change the catalog).
    */
-  const resetState = (withCatalog = true) => {
+  const resetState = (keep: { pause?: boolean; catalog?: boolean } = {}) => {
     client.reset();
-    if (withCatalog) {
+    if (!keep.pause) {
+      client.clearPause();
+    }
+    if (!keep.catalog) {
       taskCatalog.reset();
     }
     blame.reset();
@@ -101,7 +105,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   /** The Microsoft account the data was loaded for: a session event of another extension or a token refresh changes nothing. */
   let account: string | undefined;
-  const noteAccount = () => client.accountId().then(a => { account = a; }, () => undefined);
+  let accountCalls = 0;
+  /**
+   * The account now in use, as `{ id }` (`id` undefined when signed out). `undefined` when the answer is not usable: the
+   * lookup failed (not the same as signed out), or a newer call has been started since, so this answer is out of date.
+   */
+  const readAccount = async (): Promise<{ id: string | undefined } | undefined> => {
+    const call = ++accountCalls;
+    try {
+      const id = await client.accountId();
+      return call === accountCalls ? { id } : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const noteAccount = async () => {
+    const read = await readAccount();
+    if (read) {
+      account = read.id;
+    }
+  };
   void noteAccount();
 
   /**
@@ -109,6 +132,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
    * manager fires `onDidChange`, which resets and refreshes) and how requests are signed (`authMethod`, `tenantId`).
    * Every other setting leaves the pause, My Day and the blame caches alone; blame and YAML settings need no reload.
    */
+  let lastOrg = connections.current?.orgUrl;
   const onSettingsChanged = async (e: vscode.ConfigurationChangeEvent) => {
     if (e.affectsConfiguration('azureDevOps.yaml.designerCodeLens') || e.affectsConfiguration('azureDevOps.yaml.taskSupport')) {
       designerLens.refresh();
@@ -116,13 +140,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (!e.affectsConfiguration('azureDevOps')) {
       return;
     }
-    if (e.affectsConfiguration('azureDevOps.authMethod') || e.affectsConfiguration('azureDevOps.tenantId')) {
-      resetState(false);
+    // Blame and YAML settings need no reload of the sidebar; the two blame git options only drop the blame cache.
+    const signingChanged = e.affectsConfiguration('azureDevOps.authMethod') || e.affectsConfiguration('azureDevOps.tenantId');
+    if (signingChanged) {
+      resetState({ catalog: true });
       void noteAccount();
+    } else if (e.affectsConfiguration('azureDevOps.blame.ignoreWhitespace') || e.affectsConfiguration('azureDevOps.blame.detectCopies')) {
+      blame.reset();
     }
     const connectionChanged = await connections.resolve();
     // A changed connection was reset and refreshed by its own listener: refresh once, not twice.
-    if (!connectionChanged && !e.affectsConfiguration('azureDevOps.blame') && !e.affectsConfiguration('azureDevOps.yaml')) {
+    const noReload = e.affectsConfiguration('azureDevOps.blame') || e.affectsConfiguration('azureDevOps.yaml');
+    if (!connectionChanged && (signingChanged || !noReload)) {
       refresh();
     }
   };
@@ -132,11 +161,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (e.provider.id !== 'microsoft' || client.usesPat()) {
       return;
     }
-    const next = await client.accountId();
-    if (next === account) {
-      return;
+    const read = await readAccount();
+    if (!read || read.id === account) {
+      return; // a failed lookup says nothing about the sign-in; an out-of-date answer is dropped
     }
-    account = next;
+    account = read.id;
     resetState();
     refresh();
   };
@@ -162,7 +191,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.workspace.registerFileSystemProvider(WIKI_SCHEME, new WikiFileSystem(client), { isCaseSensitive: true }),
     vscode.workspace.registerTextDocumentContentProvider(LOG_SCHEME, logDocs),
     connections.onDidChange(() => {
-      resetState();
+      // Another project of the same organization keeps the 429 pause and the task catalog (they belong to the organization).
+      const sameOrg = connections.current?.orgUrl === lastOrg;
+      lastOrg = connections.current?.orgUrl;
+      resetState({ pause: sameOrg, catalog: sameOrg });
       refresh();
     }),
     vscode.workspace.onDidChangeConfiguration(e => void onSettingsChanged(e)),
@@ -177,6 +209,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   command('azureDevOps.signIn', async () => {
     await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'microsoft', vscode.ConfigurationTarget.Global);
     await client.signIn();
+    await noteAccount(); // the session event of this very sign-in must not look like a change and reset again
     resetState();
     refresh();
   });

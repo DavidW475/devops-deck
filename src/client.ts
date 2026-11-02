@@ -98,7 +98,10 @@ export class AdoClient {
   reset(): void {
     this.me = undefined;
     this.scoped.clear();
-    // A new sign-in or organization starts without the old pause.
+  }
+
+  /** A new sign-in or organization starts without the old pause; another project of the same organization keeps it. */
+  clearPause(): void {
     const root = this.parent ?? this;
     root.pauseUntil = 0;
     root.pauseOrg = undefined;
@@ -109,6 +112,7 @@ export class AdoClient {
   async signIn(): Promise<void> {
     await this.authHeader(true);
     this.reset();
+    this.clearPause();
   }
 
   /** True when requests are signed with a Personal Access Token instead of the Microsoft sign-in. */
@@ -116,16 +120,15 @@ export class AdoClient {
     return vscode.workspace.getConfiguration('azureDevOps').get<string>('authMethod') === 'pat';
   }
 
-  /** The Microsoft account that is signed in for Azure DevOps (never asks the user); undefined when there is none or a PAT is used. */
+  /**
+   * The Microsoft account that is signed in for Azure DevOps (never asks the user); undefined when there is none or a PAT
+   * is used. A failing lookup rejects: it is not the same as being signed out.
+   */
   async accountId(): Promise<string | undefined> {
     if (this.usesPat()) {
       return undefined;
     }
-    try {
-      return (await vscode.authentication.getSession('microsoft', this.scopes(), { createIfNone: false }))?.account.id;
-    } catch {
-      return undefined;
-    }
+    return (await vscode.authentication.getSession('microsoft', this.scopes(), { createIfNone: false }))?.account.id;
   }
 
   private scopes(): string[] {
