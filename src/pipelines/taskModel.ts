@@ -43,6 +43,8 @@ export interface TaskInfo {
   version: string;
   deprecated: boolean;
   preview: boolean;
+  /** the server marks this version as a test build (`version.isTest`); a regular build of the major wins over it */
+  testBuild?: boolean;
   helpUrl?: string;
   groups: { name: string; label: string; visibleRule?: string }[];
   inputs: TaskInput[];

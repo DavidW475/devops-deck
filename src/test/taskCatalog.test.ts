@@ -140,6 +140,20 @@ describe('buildIndex', () => {
     assert.equal(buildIndex(tasks).all().length, 3);
   });
 
+  it('prefers a regular build over a test build of the same major, and uses a test build only when alone', () => {
+    const regular = info({ major: 3, version: '3.1.0' });
+    const test = info({ major: 3, version: '3.9.0', testBuild: true, description: 'test help' });
+    assert.deepEqual(keepHighest([test, regular]).map(t => t.version), ['3.1.0']);
+    assert.deepEqual(keepHighest([regular, test]).map(t => t.version), ['3.1.0']);
+    assert.equal(buildIndex([test, regular]).find('ContosoDeploy', 3)?.version, '3.1.0');
+    assert.deepEqual(keepHighest([test]).map(t => t.version), ['3.9.0']);
+  });
+
+  it('reads version.isTest from the definition', () => {
+    assert.equal(toTaskInfo(def({ version: { major: 1, isTest: true } }))!.testBuild, true);
+    assert.equal(toTaskInfo(def({ version: { major: 1 } }))!.testBuild, undefined);
+  });
+
   it('finds by name, id and full name without regard to case', () => {
     const ix = buildIndex(tasks);
     assert.equal(ix.find('contosodeploy', 1)?.version, '1.10.0');

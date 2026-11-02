@@ -154,6 +154,7 @@ export function toTaskInfo(def: T.TaskDefinition): TaskInfo | undefined {
     version: `${major}.${nonNegInt(version?.minor) ?? 0}.${nonNegInt(version?.patch) ?? 0}`,
     deprecated: def.deprecated === true,
     preview: def.preview === true,
+    ...(version?.isTest === true ? { testBuild: true } : {}),
     helpUrl: helpUrl?.startsWith('https:') ? helpUrl : undefined,
     groups: list(def.groups, toGroup),
     inputs: list(def.inputs, toInput),
@@ -173,13 +174,17 @@ function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-/** One entry per task id and major: the highest version wins. */
+/** True when `t` should replace `old` for the same major: a regular build beats a test build, then the higher version wins. */
+const beats = (t: TaskInfo, old: TaskInfo): boolean =>
+  !!t.testBuild === !!old.testBuild ? compareVersions(t.version, old.version) > 0 : !t.testBuild;
+
+/** One entry per task id and major: the highest version wins, a test build only when it is the only one. */
 export function keepHighest(tasks: TaskInfo[]): TaskInfo[] {
   const best = new Map<string, TaskInfo>();
   for (const t of tasks) {
     const key = `${t.id.toLowerCase()}@${t.major}`;
     const old = best.get(key);
-    if (!old || compareVersions(t.version, old.version) > 0) {
+    if (!old || beats(t, old)) {
       best.set(key, t);
     }
   }
@@ -198,7 +203,7 @@ export function buildIndex(tasks: TaskInfo[]): TaskIndex {
       byName.set(k, majors);
     }
     const old = majors.get(t.major);
-    if (!old || compareVersions(t.version, old.version) > 0) {
+    if (!old || beats(t, old)) {
       majors.set(t.major, t);
     }
   };
