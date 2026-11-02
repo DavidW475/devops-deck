@@ -125,6 +125,22 @@ function toSeconds(date: unknown): number {
   return Number.isFinite(ms) ? Math.floor(ms / 1000) : 0;
 }
 
+/** The promise's result, or a rejection as soon as `signal` aborts: a caller that joined a run must not wait for it after it gave up. */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) {
+    return promise;
+  }
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(new GitError('The operation was aborted.', 'ABORT_ERR'));
+    if (signal.aborted) {
+      abort();
+      return;
+    }
+    signal.addEventListener('abort', abort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+  });
+}
+
 const firstLine = (text: string): string => text.split('\n', 1)[0].trim();
 
 export class BlameService implements BlameLookups {
@@ -280,7 +296,7 @@ export class BlameService implements BlameLookups {
       const flight = this.blameFlights.get(key);
       if (flight && !flight.signal?.aborted && (flight.explicit || !options.explicit)) {
         try {
-          return await flight.promise;
+          return await untilAborted(flight.promise, options.signal);
         } catch (err) {
           // The run was cancelled by its owner, not by us: try again with our own.
           if (!flight.signal?.aborted || options.signal?.aborted || attempt > 0) {
@@ -475,7 +491,7 @@ export class BlameService implements BlameLookups {
   // ---- pull requests ----
 
   private repoInfo(repo: LocalRepo, client: BlameClient): Promise<RepoInfo> {
-    const key = `${this.rootOf(repo)}|${repo.project}`;
+    const key = `${this.rootOf(repo)}|${repo.project}|${repo.repoName}`;
     const known = this.repoInfos.get(key);
     if (known) {
       return known;

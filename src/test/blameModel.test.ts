@@ -168,6 +168,10 @@ describe('annotationText', () => {
     assert.equal(annotationText(commit({ pr: { repoId: REPO_ID } }), NOW), 'Erika Muster, 3 days ago');
   });
 
+  it('shows no age for a commit without a date instead of "56 years ago"', () => {
+    assert.equal(annotationText({ lookup: { state: 'commit', line: line({ authorTime: 0 }), repo } }, NOW), 'Erika Muster');
+  });
+
   it('handles uncommitted, unpublished and shallow', () => {
     assert.equal(annotationText({ lookup: { state: 'uncommitted' } }, NOW), 'Not committed yet');
     const l = line({ authorTime: NOW / 1000 - 300 });
@@ -224,6 +228,11 @@ describe('hoverMarkdown', () => {
     for (const c of md.matchAll(/command:([\w.]+)\?/g)) {
       assert.ok(HOVER_COMMANDS.includes(c[1]));
     }
+  });
+
+  it('shows no age for a commit without a date', () => {
+    assert.ok(!hoverMarkdown(base({ line: line({ authorTime: 0 }) }), NOW).includes('ago'));
+    assert.ok(hoverMarkdown(base(), NOW).includes('3 days ago'));
   });
 
   it('omits unknown parts while loading', () => {

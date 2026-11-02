@@ -132,7 +132,11 @@ export function relativeAge(authorTime: number, nowMs: number): string {
 
 export const shortSha = (sha: string): string => sha.slice(0, 7);
 
-const authorAge = (line: CommitLine, nowMs: number): string => `${cleanText(line.author, 30)}, ${relativeAge(line.authorTime, nowMs)}`;
+/** A commit without a usable date has `authorTime` 0: showing "56 years ago" would be wrong, so no age is shown. */
+const hasAge = (line: CommitLine): boolean => line.authorTime > 0;
+
+const authorAge = (line: CommitLine, nowMs: number): string =>
+  hasAge(line) ? `${cleanText(line.author, 30)}, ${relativeAge(line.authorTime, nowMs)}` : cleanText(line.author, 30);
 
 /** The text after a line or in the status bar. The caller adds a spinner while `loading`. */
 export function annotationText(data: AnnotationData, nowMs: number): string | undefined {
@@ -235,7 +239,7 @@ function hoverWorkItem(w: TraceWorkItem): string {
 export function hoverMarkdown(d: HoverData, nowMs: number): string {
   const line = d.line;
   const blocks: string[][] = [];
-  blocks.push([`**${md(line.author)}** · ${relativeAge(line.authorTime, nowMs)}`, `$(git-commit) ${shortSha(md(line.sha))}  ${md(line.summary)}`]);
+  blocks.push([`**${md(line.author)}**${hasAge(line) ? ` · ${relativeAge(line.authorTime, nowMs)}` : ''}`, `$(git-commit) ${shortSha(md(line.sha))}  ${md(line.summary)}`]);
   if (d.unpublished) {
     blocks.push(['$(cloud-upload) not pushed yet']);
   } else if (d.pr) {

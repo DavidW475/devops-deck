@@ -334,6 +334,23 @@ describe('BlameService.lookupLine', () => {
     assert.equal(results[2].state, 'commit');
   });
 
+  it('a joiner that aborts does not wait for the run it joined', async () => {
+    let open!: () => void;
+    e.state.gate = new Promise<void>(r => { open = r; });
+    const first = e.svc.lookupLine(doc(), 10, { signal: new AbortController().signal });
+    await new Promise(r => setImmediate(r));
+    const own = new AbortController();
+    const joiner = e.svc.lookupLine(doc(), 10, { signal: own.signal });
+    await new Promise(r => setImmediate(r));
+    assert.equal(blameCalls(e).length, 1, 'it joined the running one');
+    own.abort();
+    const settled = await Promise.race([joiner.then(() => 'done'), new Promise<string>(r => setTimeout(() => r('still waiting'), 50))]);
+    assert.equal(settled, 'done');
+    e.state.gate = undefined;
+    open();
+    assert.equal((await first).state, 'commit');
+  });
+
   it('a new lookup after an aborted one starts a new run', async () => {
     let open!: () => void;
     e.state.gate = new Promise<void>(r => { open = r; });
@@ -523,6 +540,13 @@ describe('BlameService.pullRequest', () => {
     assert.equal(r?.match?.via, 'mergeCommit');
     await e.svc.pullRequest(e.local, B);
     assert.deepEqual(e.rest.filter(x => x.startsWith('repo:')), ['repo:web-shop']);
+  });
+
+  it('looks the repository up again when the remote now points to another repository of the project', async () => {
+    e.state.byMerge = [pr(7)];
+    await e.svc.pullRequest(e.local, A);
+    await e.svc.pullRequest({ ...e.local, repoName: 'payments' }, B);
+    assert.deepEqual(e.rest.filter(x => x.startsWith('repo:')), ['repo:web-shop', 'repo:payments']);
   });
 
   it('hydrates entries without title or status, at most 5', async () => {
