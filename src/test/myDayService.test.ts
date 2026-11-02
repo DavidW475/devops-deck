@@ -668,14 +668,51 @@ describe('MyDayService defers', () => {
     assert.equal(total(h), before);
   });
 
-  it('lists hide and done entries that are no longer seen, but not unseen snoozes', async () => {
-    const h = make();
+  const goneEntries = async (h: Harness) => {
     const base = { fingerprint: 'x', seenAt: START, source: 'runs' as const, project: SHOP };
     await h.defers.set('run:Fabrikam Shop:99', { ...base, kind: 'hide', title: 'Old run' });
     await h.defers.set('run:Fabrikam Shop:98', { ...base, kind: 'done', title: 'Done run' });
     await h.defers.set('run:Fabrikam Shop:97', { ...base, kind: 'snooze', until: START + HOUR, title: 'Gone' });
+  };
+
+  it('drops hide and done entries whose item is gone once every source loaded fine', async () => {
+    const h = make();
+    await goneEntries(h);
+    const r = await h.service.get();
+    assert.deepEqual(r.deferred, []);
+    await flush();
+    assert.deepEqual(Object.keys(h.defers.all()), [], 'the entries are forgotten as well');
+  });
+
+  it('keeps hide and done entries listed while a source failed, but not unseen snoozes', async () => {
+    const h = make();
+    await goneEntries(h);
+    h.overrides[SHOP] = { listPendingApprovals: async () => { throw new Error('down'); } };
     const r = await h.service.get();
     assert.deepEqual(r.deferred.map(d => d.title).toSorted((a, b) => a.localeCompare(b)), ['Done run', 'Old run']);
+    await flush();
+    assert.equal(Object.keys(h.defers.all()).length, 3);
+  });
+
+  it('keeps an entry while a capped list may have cut its item off', async () => {
+    const h = make();
+    await goneEntries(h);
+    h.overrides[SHOP] = { listBuildsSince: async () => Array.from({ length: 50 }, (_, i) => build(1000 + i)) };
+    const r = await h.service.get();
+    assert.equal(r.deferred.length, 2);
+  });
+
+  it('asks for the iteration dates again after a failure, and not again within the hour after success', async () => {
+    const h = make();
+    let fail = true;
+    h.overrides[SHOP] = { listIterationDates: async () => { if (fail) { throw new Error('down'); } return []; } };
+    await h.service.get();
+    assert.equal(h.count('listIterationDates'), 1);
+    fail = false;
+    await h.service.get({ force: true });
+    assert.equal(h.count('listIterationDates'), 2, 'a failure is not remembered');
+    await h.service.get({ force: true });
+    assert.equal(h.count('listIterationDates'), 2, 'a success is');
   });
 
   it('forgets a done entry once its item changed, so it does not come back under Deferred when the item is gone', async () => {

@@ -21,6 +21,9 @@ const ITERATIONS_TTL = 60 * MINUTE;
 const RUN_WINDOW = 7 * 24 * 60 * MINUTE;
 const PROJECT_PARALLEL = 4;
 const MAX_WORK_ITEMS = 200;
+const RUN_TOP = 50;
+/** A list that reached its cap may be cut off: an item missing from it is not known to be gone. */
+const LIST_CAP: Record<MyDaySource, number> = { reviews: Infinity, approvals: Infinity, runs: RUN_TOP, workItems: MAX_WORK_ITEMS };
 const SOURCES: readonly MyDaySource[] = ['reviews', 'approvals', 'runs', 'workItems'];
 
 interface WorkItemEntry {
@@ -390,7 +393,7 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
         case 'approvals':
           return client.listPendingApprovals();
         default:
-          return client.listBuildsSince(new Date(now - RUN_WINDOW), 'finished', { requestedFor: me.id, top: 50 });
+          return client.listBuildsSince(new Date(now - RUN_WINDOW), 'finished', { requestedFor: me.id, top: RUN_TOP });
       }
     };
     return mapLimit(projects, PROJECT_PARALLEL, async project => {
@@ -458,11 +461,11 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
       return !known || now - known.attemptAt >= ITERATIONS_TTL;
     });
     await mapLimit(stale, PROJECT_PARALLEL, async project => {
-      let list: ClassificationIteration[] = [];
+      let list: ClassificationIteration[];
       try {
         list = await this.deps.clientFor(project).listIterationDates();
       } catch {
-        list = [];
+        return; // not remembered: the next load asks again (what we know stays)
       }
       if (generation === this.generation) {
         const finish = new Map<string, string>();
@@ -495,8 +498,11 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
     };
     // A "done" entry whose item changed no longer hides anything: forget it, or it would come back under Deferred once the item is gone.
     const changed = [...listed.values()].filter(i => this.defers.get(i.key)?.kind === 'done' && this.defers.get(i.key)?.fingerprint !== i.fingerprint).map(i => i.key);
-    if (changed.length > 0) {
-      void this.defers.removeMany(changed).catch(() => undefined);
+    // An item that is gone for good (closed, merged, no longer mine) keeps no entry: Restore could not bring it back.
+    const complete = this.listsComplete();
+    const gone = Object.entries(this.defers.all()).filter(([key, entry]) => this.isGone(key, entry, listed, complete)).map(([key]) => key);
+    if (changed.length + gone.length > 0) {
+      void this.defers.removeMany([...changed, ...gone]).catch(() => undefined);
     }
     void this.defers.markSeen([...listed.keys()], now).catch(() => undefined);
     void this.defers.prune(ok, now).catch(() => undefined);
@@ -587,11 +593,28 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
     return out;
   }
 
+  /** True when every source of every project loaded without error and none of the lists may be cut off at its cap. */
+  private listsComplete(): boolean {
+    const projects = this.deps.projects();
+    return projects.length > 0 && projects.every(p => SOURCES.every(s => {
+      const slot = this.slots.get(slotKey(s, p));
+      const length = Array.isArray(slot?.data) ? slot.data.length : 0;
+      return slot?.loadedAt !== undefined && !slot.error && length < LIST_CAP[s];
+    }));
+  }
+
+  /** The entry's item is not listed although everything loaded fine: it is gone, not just missing because a source failed. */
+  private isGone(key: string, entry: DeferEntry, listed: Map<string, MyDayItem>, complete: boolean): boolean {
+    const project = entry.project.toLowerCase();
+    return complete && !listed.has(key) && this.deps.projects().some(p => p.toLowerCase() === project);
+  }
+
   private deferredList(entries: Record<string, DeferEntry>, listed: Map<string, MyDayItem>, now: number): DeferredDto[] {
     const out: DeferredDto[] = [];
+    const complete = this.listsComplete();
     for (const [key, entry] of Object.entries(entries)) {
       const item = listed.get(key);
-      const active = item ? isDeferred(entry, item.fingerprint, now) : entry.kind !== 'snooze';
+      const active = item ? isDeferred(entry, item.fingerprint, now) : entry.kind !== 'snooze' && !this.isGone(key, entry, listed, complete);
       if (active) {
         out.push({ key, title: entry.title, kind: entry.kind, until: entry.until, project: entry.project });
       }
