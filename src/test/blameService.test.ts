@@ -165,11 +165,14 @@ describe('BlameService.lookupLine', () => {
     }
     assert.deepEqual(await e.svc.lookupLine(doc({ lineCount: 20001 }), 1), { state: 'tooBig' });
     assert.deepEqual(await e.svc.lookupLine(doc({ isDirty: true, encoding: 'windows1252' }), 1), { state: 'saveToBlame' });
+    // getText() has no byte order mark, so line 1 of an unsaved file with one would read as changed
+    assert.deepEqual(await e.svc.lookupLine(doc({ isDirty: true, encoding: 'utf8bom' }), 0), { state: 'saveToBlame' });
     assert.deepEqual(await e.svc.lookupLine(doc({ isDirty: true, getText: () => 'x'.repeat(2 * 1024 * 1024 + 1) }), 1), { state: 'tooBig' });
     assert.equal(e.gitCalls.length, 0);
     // clean documents with another encoding and explicit requests are fine
     const r = await e.svc.lookupLine(doc({ lineCount: 20001, encoding: 'windows1252' }), 1, { explicit: true });
     assert.equal(r.state, 'commit');
+    assert.equal((await e.svc.lookupLine(doc({ encoding: 'utf8bom', version: 7 }), 0)).state, 'commit', 'a saved file is read by git itself');
   });
 
   it('returns a commit and passes git the right arguments', async () => {
@@ -248,6 +251,19 @@ describe('BlameService.lookupLine', () => {
     assert.equal(blameCalls(e).length, before);
     await e.svc.lookupLine(big, 0, { explicit: true });
     assert.equal(blameCalls(e).length, before + 1);
+  });
+
+  it('answers a line even when the document shrinks while git runs', async () => {
+    let open!: () => void;
+    e.state.gate = new Promise<void>(r => { open = r; });
+    e.state.output = porcelain(range(80, 100));
+    let lineCount = 100;
+    const shrinking = { ...doc(), get lineCount() { return lineCount; } };
+    const pending = e.svc.lookupLine(shrinking, 90);
+    await new Promise(r => setImmediate(r));
+    lineCount = 50; // text deleted while git was running
+    open();
+    assert.equal((await pending).state, 'commit', 'not "Blame failed."');
   });
 
   it('shares parallel identical requests', async () => {
@@ -355,6 +371,18 @@ describe('BlameService.lookupLine', () => {
     assert.equal(logs.length, 1);
     assert.deepEqual(logs[0][1], { range: 'origin/main..HEAD', maxEntries: 1000 });
     assert.equal(e.rest.length, 0);
+  });
+
+  it('forgets the unpublished commits when a push changes the upstream or how far HEAD is ahead', async () => {
+    const upstream = (commit: string) => ({ remote: 'origin', name: 'main', commit });
+    (e.repo.state as any).HEAD = { commit: C, ahead: 2, upstream: upstream('u1') };
+    e.repo.logEntries = [{ hash: A, message: 'm' }, { hash: B, message: 'n' }];
+    assert.equal((await e.svc.lookupLine(doc(), 10)).state, 'unpublished');
+    // a partial push published A: HEAD is the same, the upstream moved and HEAD is one commit ahead
+    (e.repo.state as any).HEAD = { commit: C, ahead: 1, upstream: upstream('u2') };
+    e.repo.logEntries = [{ hash: B, message: 'n' }];
+    assert.equal((await e.svc.lookupLine(doc({ version: 2 }), 10)).state, 'commit', 'A is published now');
+    assert.equal(e.repo.calls.filter(c => c[0] === 'log').length, 2);
   });
 
   it('without an upstream a commit is unpublished when no remote branch contains it', async () => {

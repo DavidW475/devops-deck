@@ -242,7 +242,8 @@ export class BlameService implements BlameLookups {
 
   private dirtyProblem(doc: BlameDocument, text: string): LineLookup | undefined {
     const enc = doc.encoding;
-    if (enc && enc !== 'utf8' && enc !== 'utf8bom') {
+    // `getText()` has no byte order mark, so a file with one would differ from the committed one in its first line.
+    if (enc && enc !== 'utf8') {
       return { state: 'saveToBlame' };
     }
     return Buffer.byteLength(text) > MAX_DIRTY_BYTES ? { state: 'tooBig' } : undefined;
@@ -303,6 +304,8 @@ export class BlameService implements BlameLookups {
     stdin: string | undefined; settings: BlameSettings; options: LookupOptions;
   }): Promise<Map<number, BlameLine>> {
     const gen = this.gen;
+    // The window of lines to cache is taken now: the document may shrink while git runs.
+    const { from, to } = blameWindow(a.line, a.doc.lineCount);
     const args = blameArgs({
       path: a.rel, line: a.line, lineCount: a.doc.lineCount, ignoreWhitespace: a.settings.ignoreWhitespace,
       detectCopies: a.settings.detectCopies, dirty: a.stdin !== undefined,
@@ -312,7 +315,6 @@ export class BlameService implements BlameLookups {
     });
     const parsed = parsePorcelain(out);
     if (gen === this.gen) {
-      const { from, to } = blameWindow(a.line, a.doc.lineCount);
       for (let n = from; n <= to; n++) {
         this.blame.set(`${a.base}|${n - 1}`, parsed.get(n) ?? null);
       }
@@ -362,7 +364,8 @@ export class BlameService implements BlameLookups {
     if ((head?.ahead ?? 0) <= 0) {
       return false;
     }
-    const key = `${this.rootOf(repo)}|${head.commit ?? ''}|${upstream.remote}/${upstream.name}`;
+    // A push changes the upstream's commit and `ahead`, not HEAD: both belong to the key, or a partial push keeps the old set.
+    const key = [this.rootOf(repo), head.commit ?? '', upstream.commit ?? '', head.ahead, upstream.remote, upstream.name].join('|');
     const known = this.unpublishedSets.get(key);
     if (known) {
       return known.has(sha);

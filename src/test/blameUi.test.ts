@@ -166,6 +166,27 @@ describe('BlameUi', () => {
       });
     }
 
+    it('keeps the row the user moved to when the list fills in', async () => {
+      editorAt(1);
+      const pr = new Deferred<PrLookup | undefined>();
+      const wi = new Deferred<TraceWorkItem[]>();
+      h.pullRequest = () => pr.promise;
+      h.workItems = () => wi.promise;
+      const done = ui.traceLine();
+      await flush();
+      const qp = list();
+      assert.equal(qp.activeItems[0], qp.items[1], 'the commit row is active first');
+      pr.resolve(prLookup());
+      await flush();
+      const prRow = qp.items.find(i => /!1234/.test(i.label));
+      assert.ok(prRow);
+      qp.activeItems = [prRow];
+      wi.resolve(workItems());
+      await done;
+      assert.equal(qp.activeItems.length, 1);
+      assert.match(qp.activeItems[0].label, /!1234/, 'Enter still opens the pull request, not the first row');
+    });
+
     it('shows a failed step as a row and stops', async () => {
       editorAt(0);
       h.pullRequest = async () => { throw new Error('Service unavailable'); };
@@ -455,6 +476,18 @@ describe('BlameUi', () => {
       assert.ok(status().visible);
     });
 
+    it('drops the annotation when a second cursor appears on the annotated line', async () => {
+      setMode('both');
+      const e = editorAt(1);
+      await run();
+      assert.ok(status().visible);
+      (e as any).selections = [e.selection, e.selection];
+      await fire('selection', {});
+      assert.equal(status().visible, false, 'hidden at once');
+      await tick(400);
+      assert.equal(status().visible, false, 'and not painted again for a multi-cursor editor');
+    });
+
     it('never paints a stale answer', async () => {
       setMode('statusBar');
       const e = editorAt(0);
@@ -626,6 +659,39 @@ describe('BlameUi', () => {
       assert.match(status().text, /!1234/);
     });
 
+    it('leaves a slow file alone only for a few minutes, and an annotation setting change gives it another chance', async () => {
+      setMode('statusBar');
+      const slow = editorAt(0);
+      const now = mock.method(Date, 'now', () => NOW);
+      try {
+        h.lookupLine = async () => ({ state: 'error', message: 'slow', timedOut: true });
+        await run();
+        assert.equal(count('lookupLine'), 1);
+        h.lookupLine = async () => commit();
+        await fire('activeEditor', {});
+        await tick(400);
+        assert.equal(count('lookupLine'), 1, 'still left alone');
+        now.mock.mockImplementation(() => NOW + 3 * 60_000 + 1);
+        await fire('activeEditor', {});
+        await tick(400);
+        assert.equal(count('lookupLine'), 2, 'asked again after a few minutes');
+        assert.ok(status().visible);
+        // and a toggle of the setting clears it as well
+        h.lookupLine = async () => ({ state: 'error', message: 'slow', timedOut: true });
+        await fire('activeEditor', {});
+        await tick(400);
+        assert.equal(count('lookupLine'), 3);
+        h.lookupLine = async () => commit();
+        setMode('both');
+        await vscode.workspace.getConfiguration('azureDevOps').update('blame.annotations', 'both');
+        await tick(1);
+        assert.equal(count('lookupLine'), 4, 'asked again at once after the toggle');
+        assert.ok(slow);
+      } finally {
+        now.mock.restore();
+      }
+    });
+
     it('a timeout or a huge file only stops that file, not the annotations of other files, until reset', async () => {
       setMode('both');
       const slow = editorAt(0);
@@ -733,6 +799,22 @@ describe('BlameUi', () => {
       assert.equal(count('lookupLine'), 2);
     });
 
+    it('looks again when a push changes the upstream while HEAD stays', async () => {
+      setMode('statusBar');
+      editorAt(0);
+      repo.state.HEAD = { commit: 'c1', ahead: 2, behind: 0, upstream: { remote: 'origin', name: 'main', commit: 'u1' } } as any;
+      await run();
+      assert.equal(count('lookupLine'), 1);
+      repo.state.HEAD = { commit: 'c1', ahead: 0, behind: 0, upstream: { remote: 'origin', name: 'main', commit: 'c1' } } as any;
+      await fire('repo:/src/web-shop');
+      await tick(400);
+      assert.equal(count('lookupLine'), 2, 'the commit is published now');
+      repo.state.HEAD = { commit: 'c1', ahead: 0, behind: 0, upstream: { remote: 'origin', name: 'main', commit: 'c1' } } as any;
+      await fire('repo:/src/web-shop');
+      await tick(400);
+      assert.equal(count('lookupLine'), 2, 'nothing changed');
+    });
+
     it('hooks each repository once even when the git extension returns new wrapper objects', async () => {
       setMode('statusBar');
       editorAt(0);
@@ -778,6 +860,24 @@ describe('BlameUi', () => {
         assert.equal(md.supportHtml, false);
         await hoverAt(END + 5);
         assert.equal(count('workItems'), 1);
+      });
+
+      it('does not keep work items fetched while the pull request was still being searched', async () => {
+        const pr = new Deferred<PrLookup | undefined>();
+        h.pullRequest = () => pr.promise;
+        h.workItems = async (_repo: unknown, _sha: unknown, match: unknown) =>
+          (match ? workItems() : []);
+        ui.reset(); // forgets the pull request found by the setup
+        await tick(1);
+        const early = await hoverAt(END);
+        assert.ok(early);
+        assert.doesNotMatch(early.contents.value, /#4711/);
+        pr.resolve(prLookup());
+        await flush();
+        const late = await hoverAt(END);
+        assert.ok(late);
+        assert.match(late.contents.value, /#4711/, 'the work items of the pull request are found once it is known');
+        assert.equal((calls.filter(c => c[0] === 'workItems').at(-1)?.[3] as any).pr.pullRequestId, 1234);
       });
 
       it('leaves work items out when they fail', async () => {

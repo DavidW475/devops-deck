@@ -20,6 +20,8 @@ const SETTING = 'azureDevOps.blame.annotations';
 const DEBOUNCE_MS = 400;
 /** A document with unsaved changes is sent to git whole: wait longer after typing. */
 const DIRTY_DEBOUNCE_MS = 2000;
+/** How long a file whose blame timed out is left alone. */
+const SLOW_FILE_MS = 3 * 60 * 1000;
 const MODES: ReadonlySet<string> = new Set(['off', 'statusBar', 'inline', 'both']);
 const HINT_TEXT = 'Another extension or VS Code already shows blame at the end of the line.';
 const HINT_BUTTON = 'Use status bar instead';
@@ -51,6 +53,9 @@ function hoverData(lookup: LineLookup, pr?: PrLookup, workItems?: TraceWorkItem[
   return { line: lookup.line, project: lookup.repo.project, repoName: lookup.repo.repoName, pr, workItems, unpublished: lookup.state === 'unpublished' };
 }
 
+/** Identifies a row across updates of the list: what it runs, or its label for rows that only inform. */
+const rowKey = (item: TraceItem): string => item.action ? JSON.stringify([item.action.command, item.action.args]) : item.label;
+
 /** The trace list (Quick Pick) and the commands around it. */
 class TraceList {
   constructor(private readonly lookups: BlameLookups) {}
@@ -67,8 +72,16 @@ class TraceList {
       unpublished: found.state === 'unpublished', shallow: found.state === 'shallow',
     };
     const render = (d: TraceData) => {
-      if (!closed) {
-        qp.items = traceRows(d, Date.now()).map(r => toItem(r));
+      if (closed) {
+        return;
+      }
+      // Assigning the items resets the active row to the first one: put it back, or Enter could open another row.
+      const active = qp.activeItems[0];
+      const activeKey = active && rowKey(active);
+      qp.items = traceRows(d, Date.now()).map(r => toItem(r));
+      const same = activeKey === undefined ? undefined : qp.items.find(i => rowKey(i) === activeKey);
+      if (same) {
+        qp.activeItems = [same];
       }
     };
     qp.onDidAccept(() => {
@@ -230,12 +243,23 @@ const PR_PENDING_TTL_MS = 15 * 60 * 1000;
 const usable = (cached: { pr: PrLookup; at: number }): boolean =>
   cached.pr.match?.pr.status === 'completed' || Date.now() - cached.at < PR_PENDING_TTL_MS;
 
+/**
+ * What decides whether a line counts as pushed: the commit, and how far it is ahead of its upstream (a push changes the
+ * upstream's commit and ahead/behind, not HEAD).
+ */
+const headKey = (repo: any): string => {
+  const head = repo.state.HEAD;
+  return [head?.commit, head?.upstream?.commit, head?.ahead, head?.behind].join('|');
+};
+
 /** What the annotation currently shows. */
 interface Shown {
   file: string;
   line: number;
   lookup: LineLookup;
   pr?: PrLookup;
+  /** true while the pull request is being searched: work items fetched now would miss the ones linked to it */
+  prPending?: boolean;
   workItems?: TraceWorkItem[];
 }
 
@@ -254,13 +278,13 @@ class Annotations {
   private working: vscode.Disposable[] = [];
   /** repositories being watched, by root: the git extension returns a new wrapper object on every access */
   private readonly hooked = new Set<string>();
-  private readonly heads = new Map<string, string | undefined>();
+  private readonly heads = new Map<string, string>();
   private timer?: ReturnType<typeof setTimeout>;
   private abort?: AbortController;
   private seq = 0;
   private silenced = false;
-  /** Files whose blame timed out or was too big: left alone until a reset, the others keep their annotations. */
-  private readonly slowFiles = new Set<string>();
+  /** Files whose blame timed out or was too big, with the time they are left alone until; the others keep their annotations. */
+  private readonly slowFiles = new Map<string, number>();
   private hintShown = false;
 
   constructor(private readonly lookups: BlameLookups) {}
@@ -268,6 +292,7 @@ class Annotations {
   start(): void {
     this.always.push(vscode.workspace.onDidChangeConfiguration(e => {
       if (e.affectsConfiguration(SETTING)) {
+        this.slowFiles.clear();
         this.apply();
       }
     }));
@@ -366,7 +391,8 @@ class Annotations {
   private selectionChanged(): void {
     const editor = vscode.window.activeTextEditor;
     const shown = this.shown;
-    if (shown && editor?.document.uri.fsPath === shown.file && editor.selection.active.line === shown.line) {
+    // A second cursor makes the editor unsuitable for the annotation (see `target`): that is a change.
+    if (shown && editor?.document.uri.fsPath === shown.file && editor.selection.active.line === shown.line && (editor.selections?.length ?? 1) <= 1) {
       return;
     }
     this.moved();
@@ -397,9 +423,9 @@ class Annotations {
       const root: string = repo.rootUri.fsPath;
       if (!this.hooked.has(root)) {
         this.hooked.add(root);
-        this.heads.set(root, repo.state.HEAD?.commit);
+        this.heads.set(root, headKey(repo));
         this.working.push(repo.state.onDidChange(() => {
-          const head = repo.state.HEAD?.commit;
+          const head = headKey(repo);
           if (head !== this.heads.get(root)) {
             this.heads.set(root, head);
             this.schedule(DEBOUNCE_MS);
@@ -433,7 +459,7 @@ class Annotations {
     if (!vscode.window.state.focused) {
       return;
     }
-    if (this.slowFiles.has(editor.document.uri.fsPath)) {
+    if (this.isSlow(editor.document.uri.fsPath)) {
       this.clearAll();
       return;
     }
@@ -453,10 +479,21 @@ class Annotations {
     await this.resolve(seq, editor, shown);
   }
 
-  /** A timeout or a file too big for git's output buffer only costs that file its annotation, not every file. */
+  private isSlow(file: string): boolean {
+    const until = this.slowFiles.get(file);
+    if (until !== undefined && until <= Date.now()) {
+      this.slowFiles.delete(file);
+    }
+    return this.slowFiles.has(file);
+  }
+
+  /**
+   * A timeout or a file too big for git's output buffer only costs that file its annotation, not every file, and only for a
+   * few minutes: one slow moment (a busy disk) must not switch the file off for the whole session.
+   */
   private onLookupError(lookup: Extract<LineLookup, { state: 'error' }>, file: string): void {
     if (lookup.timedOut || lookup.tooLarge) {
-      this.slowFiles.add(file);
+      this.slowFiles.set(file, Date.now() + SLOW_FILE_MS);
     }
     this.clearAll();
   }
@@ -476,6 +513,7 @@ class Annotations {
     }
     this.paint(editor, shown, true);
     const generation = this.generation;
+    shown.prPending = true;
     try {
       shown.pr = await this.lookups.pullRequest(lookup.repo, lookup.line.sha, { background: true });
       if (shown.pr && generation === this.generation) {
@@ -484,6 +522,7 @@ class Annotations {
     } catch (e) {
       this.silenced = this.silenced || isAuth(e);
     }
+    shown.prPending = false;
     if (seq === this.seq) {
       this.paint(editor, shown, false);
     }
@@ -548,21 +587,30 @@ class Annotations {
     if (position.character < doc.lineAt(position.line).text.length) {
       return undefined;
     }
-    await this.loadWorkItems(shown);
-    const data = hoverData(shown.lookup, shown.pr, shown.workItems);
+    const workItems = await this.loadWorkItems(shown);
+    const data = hoverData(shown.lookup, shown.pr, workItems);
     return data ? new vscode.Hover(markdownOf(data)) : undefined;
   }
 
-  /** Work items load when the hover opens. A failure just leaves them out. */
-  private async loadWorkItems(shown: Shown): Promise<void> {
+  /**
+   * Work items load when the hover opens. A failure just leaves them out. Asked while the pull request is still being
+   * searched they miss the ones linked to it: those are shown, but not kept, so the next hover asks again.
+   */
+  private async loadWorkItems(shown: Shown): Promise<TraceWorkItem[] | undefined> {
     const lookup = shown.lookup;
     if (lookup.state !== 'commit' || this.silenced || shown.workItems) {
-      return;
+      return shown.workItems;
     }
+    const complete = !shown.prPending;
     try {
-      shown.workItems = await this.lookups.workItems(lookup.repo, lookup.line.sha, shown.pr?.match);
+      const items = await this.lookups.workItems(lookup.repo, lookup.line.sha, shown.pr?.match);
+      if (complete) {
+        shown.workItems = items;
+      }
+      return items;
     } catch (e) {
       this.silenced = this.silenced || isAuth(e);
+      return undefined;
     }
   }
 

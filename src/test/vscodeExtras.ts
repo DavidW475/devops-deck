@@ -75,8 +75,15 @@ export const quickPicks: FakeQuickPick[] = [];
 function createQuickPick(): FakeQuickPick {
   const handlers: Record<string, Listener[]> = {};
   const on = (name: string) => (l: Listener) => { const list = handlers[name] ?? []; handlers[name] = list; list.push(l); return noop; };
+  let items: any[] = [];
   const qp: FakeQuickPick = {
-    items: [], selectedItems: [], activeItems: [], buttons: [], value: '', busy: false, visible: false, disposed: false,
+    // Like VS Code: assigning the items makes the first selectable one the active item again.
+    get items() { return items; },
+    set items(value: any[]) {
+      items = value;
+      qp.activeItems = value.filter(i => i.kind !== -1).slice(0, 1);
+    },
+    selectedItems: [], activeItems: [], buttons: [], value: '', busy: false, visible: false, disposed: false,
     show() { qp.visible = true; },
     hide() { qp.visible = false; qp.fire('hide'); },
     dispose() { qp.disposed = true; },
