@@ -138,6 +138,12 @@ describe('findTaskSteps', () => {
     assert.deepEqual(s.inputs, []);
   });
 
+  it('does not mark a step dynamic for an if alone', () => {
+    const [s] = findTaskSteps('- task: ContosoDeploy@1\n  inputs:\n    ${{ if eq(1, 1) }}:\n      mode: fast\n    ${{ else }}:\n      mode: safe');
+    assert.equal(s.dynamicInputs, false);
+    assert.deepEqual(s.inputs.map(e => [e.name, e.conditional]), [['mode', true], ['mode', true]]);
+  });
+
   it('marks an each key as dynamic and takes conditional keys', () => {
     const [s] = findTaskSteps([
       '- task: ContosoDeploy@1',
@@ -274,6 +280,13 @@ describe('taskCompletionContext', () => {
     assert.equal(complete(base + '      echo |'), undefined);
     assert.equal(complete('steps:\n- task: ContosoDeploy@1\n  inputs:\n    # no|te'), undefined);
     assert.equal(complete('steps:\n- script: x\n  inputs:\n    |'), undefined);
+    // an empty line in the middle of the script text is text, not a place for an input name
+    assert.equal(complete(base + '      echo a\n    |\n      echo b'), undefined, 'between two lines of the script');
+    assert.equal(complete('steps:\n- task: ContosoDeploy@1\n  inputs:\n    script: >\n    |\n      echo b'), undefined, 'right behind the header');
+    // but behind the last line of the script it is the next input
+    assert.equal(complete(base + '      echo a\n    |')?.kind, 'inputName');
+    assert.equal(complete(base + '      echo a\n    |\n    mode: fast')?.kind, 'inputName');
+    assert.equal(complete('steps:\n- task: ContosoDeploy@1\n  inputs:\n    mode: fast\n    # note\n    |\n    script: x')?.kind, 'inputName');
     assert.equal(taskCompletionContext('a: b', 5, 0), undefined);
   });
 });
@@ -335,6 +348,25 @@ describe('checkTaskStep', () => {
       assert.deepEqual(check(dep), []);
     });
 
+    it('still reports what is missing next to an input set under an if', () => {
+      const yaml = ['- task: ContosoDeploy@1', '  inputs:', '    environment: dev', '    ${{ if eq(1, 1) }}:', '      retries: 2'].join('\n');
+      assert.deepEqual(check(yaml).map(i => [i.code, i.input]), [['missingInput', 'azureSubscription'], ['missingInput', 'script']]);
+      const elseBranch = ['- task: ContosoDeploy@1', '  inputs:', '    environment: dev', '    scriptLocation: path', '    ${{ if eq(1, 1) }}:', '      subscription: a',
+        '    ${{ else }}:', '      subscription: b'].join('\n');
+      assert.deepEqual(check(elseBranch), []);
+    });
+
+    it('stays silent for a step whose inputs are built by each, an expression key or a nested condition', () => {
+      const each = ['- task: ContosoDeploy@1', '  inputs:', '    ${{ each p in parameters.i }}:', '      ${{ p.key }}: 1'].join('\n');
+      assert.deepEqual(check(each), []);
+      const built = ['- task: ContosoDeploy@1', '  inputs:', '    ${{ parameters.name }}: dev'].join('\n');
+      assert.deepEqual(check(built), []);
+      const inIf = ['- task: ContosoDeploy@1', '  inputs:', '    ${{ if eq(1, 1) }}:', '      ${{ each p in parameters.i }}:', '        ${{ p.key }}: 1'].join('\n');
+      assert.deepEqual(check(inIf), []);
+      const nested = ['- task: ContosoDeploy@1', '  inputs:', '    ${{ if eq(1, 1) }}:', '      ${{ if eq(2, 2) }}:', '        environment: dev'].join('\n');
+      assert.deepEqual(check(nested), []);
+    });
+
     it('skips a pinned version', () => {
       assert.deepEqual(check('- task: ContosoDeploy@1.0.0').filter(i => i.code === 'missingInput'), []);
     });
@@ -362,6 +394,11 @@ describe('checkTaskStep', () => {
     it('skips conditional entries and dynamic inputs', () => {
       assert.deepEqual(check(ok + '    ${{ if eq(1, 1) }}:\n      qqq: x'), []);
       assert.deepEqual(check('- task: ContosoDeploy@1\n  inputs:\n    ${{ each p in parameters.i }}:\n      ${{ p.key }}: 1\n    qqq: x'), []);
+    });
+
+    it('is still reported next to an if, but not next to an each', () => {
+      const issues = check(ok + '    ${{ if eq(1, 1) }}:\n      mode: safe\n    qqq: x');
+      assert.deepEqual(issues.map(i => [i.code, i.input]), [['unknownInput', 'qqq']]);
     });
 
     it('is not reported for an unknown task or major', () => {

@@ -503,6 +503,13 @@ describe('quick fixes', () => {
       assert.deepEqual([edit.line, edit.character, edit.text], [5, 20, '\n                b: ']);
     });
 
+    it('adds an input to a step that has an if under its inputs', () => {
+      const text = 'steps:\n- task: X@1\n  inputs:\n    a: 1\n    ${{ if eq(1, 1) }}:\n      b: 2';
+      const edit = addInputEdit(text, issue({ line: 1, input: 'c' }))!;
+      assert.ok(edit, 'an if does not stop the quick fix');
+      assert.deepEqual([edit.line, edit.text], [5, '\n    c: ']);
+    });
+
     it('refuses flow inputs, dynamic inputs, an unknown line and a missing name', () => {
       assert.equal(addInputEdit('steps:\n- task: X@1\n  inputs: {a: 1}', issue()), undefined);
       assert.equal(addInputEdit('steps:\n- task: X@1\n  inputs: ${{ parameters.i }}', issue()), undefined);

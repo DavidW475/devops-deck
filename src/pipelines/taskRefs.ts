@@ -61,7 +61,8 @@ function inputsOf(lines: YLine[], p: YLine): { inputs: ParamEntry[]; dynamic: bo
   if (p.rest) {
     return { inputs: [], dynamic: true };
   }
-  const block = blockParams(lines, p);
+  // An input under `${{ if }}` is possibly set, not unknown: only `${{ each }}` and built keys hide the names of the inputs.
+  const block = blockParams(lines, p, true);
   return { inputs: block.params, dynamic: block.dynamic };
 }
 
@@ -185,6 +186,31 @@ function valueContext(lines: YLine[], step: TaskStepRef, rawLine: string, col: n
   return { kind: 'taskName', step, prefix: typed, start, end, line: step.line, ...(quoted ? { quoted: true } : {}) };
 }
 
+/** The nearest line from `from` in the direction `step` with text; -1 when there is none. */
+function nearestText(raw: string[], from: number, step: 1 | -1): number {
+  for (let j = from + step; j >= 0 && j < raw.length; j += step) {
+    if (raw[j].trim() !== '') {
+      return j;
+    }
+  }
+  return -1;
+}
+
+/**
+ * An empty line between the text of a block scalar (`script: |`) is part of that text, whatever its indentation: scanYaml
+ * reads the text lines as blank, so the line above (the header or text) and the line below (text) tell. A comment is not text.
+ */
+function inScalarText(lines: YLine[], raw: string[], line: number): boolean {
+  const above = nearestText(raw, line, -1);
+  const below = nearestText(raw, line, 1);
+  if (above < 0 || below < 0) {
+    return false;
+  }
+  const text = (j: number) => lines[j].blank && !raw[j].trim().startsWith('#');
+  const header = !lines[above].blank && lines[above].key !== undefined && isBlockHeader(lines[above].rest);
+  return (header || text(above)) && text(below);
+}
+
 /** Cursor on an empty or partly typed line beside or below a step: the `inputs` key, an input name or a value. */
 function bodyContext(lines: YLine[], steps: TaskStepRef[], rawLine: string, line: number, col: number): TaskCompletionContext | undefined {
   const typed = rawLine.slice(0, col);
@@ -223,7 +249,7 @@ export function taskCompletionContext(text: string, line: number, col: number): 
   if (own) {
     return valueContext(lines, own, rawLine, col);
   }
-  if (lines[line].blank && rawLine.trim() !== '') {
+  if (lines[line].blank && (rawLine.trim() !== '' || inScalarText(lines, rawLines, line))) {
     return undefined;
   }
   return bodyContext(lines, steps, rawLine, line, col);
@@ -354,7 +380,8 @@ function missingIssues(step: TaskStepRef, task: TaskInfo, label: string): TaskIs
  * Problems of one step: task not installed, retired or deprecated, newer major, unknown inputs, values outside static
  * options, missing required inputs. Everything that can't be decided from the source text is left out, so nothing is
  * reported for: expressions (`${{ }}`, `$[ ]`, `$( )`) as task name, input name or value; inputs under `${{ if }}` /
- * `${{ each }}` (not unknown, not missing); `inputs:` that is an expression; a visibility rule that can't be evaluated
+ * `${{ each }}` (not unknown, not missing); `inputs:` that is an expression, or a step whose inputs are built by `${{ each }}`
+ * or an expression key (everything is silent then, `${{ if }}` alone is not enough); a visibility rule that can't be evaluated
  * (the input is not required then); a pinned version (`GoTool@0.3.1`: no missing inputs); pick lists with dynamic
  * options; a major that the catalog lacks for a known task. Flow style steps (`- {task: A@1}`) are not recognized at all.
  */

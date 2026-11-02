@@ -227,17 +227,25 @@ const entry = (l: YLine, conditional: boolean): ParamEntry =>
 
 interface ParamScan {
   params: ParamEntry[];
+  /** a key or a block is built by an expression: the names in this mapping are not known from the text */
   dynamic: boolean;
+  /** `${{ if }}` / `${{ elseif }}` / `${{ else }}` only make the keys below them optional: they do not make the mapping dynamic */
+  conditionIsStatic: boolean;
   childCol: number;
   /** inside an expression key: column of its keys once known (0 = not yet known), -1 = not inside one */
   conditionalCol: number;
 }
 
+const CONDITION_KEY = /^\$\{\{\s*(?:if|elseif|else)\b/;
+
+/** A key that only decides whether the keys below it exist; `${{ each }}`, `${{ insert }}` and `${{ name }}` build keys. */
+const isConditionKey = (key: string): boolean => CONDITION_KEY.test(key);
+
 function addParamLine(s: ParamScan, l: YLine & { key: string }): void {
   s.childCol = s.childCol < 0 ? l.keyCol : s.childCol;
   if (l.keyCol === s.childCol) {
     const expression = isExpression(l.key);
-    s.dynamic ||= expression;
+    s.dynamic ||= expression && !(s.conditionIsStatic && isConditionKey(l.key));
     s.conditionalCol = expression ? 0 : -1;
     if (!expression) {
       s.params.push(entry(l, false));
@@ -245,14 +253,20 @@ function addParamLine(s: ParamScan, l: YLine & { key: string }): void {
   } else if (s.conditionalCol >= 0) {
     s.conditionalCol ||= l.keyCol;
     if (l.keyCol === s.conditionalCol) {
+      // An expression key inside a condition (`${{ each }}`, `${{ p.key }}`, a nested `${{ if }}` whose keys are not read): names are unknown again.
+      s.dynamic ||= s.conditionIsStatic && isExpression(l.key);
       s.params.push(entry(l, true));
     }
   }
 }
 
-/** Parameters passed in the block under `parameters:`; keys under `${{ if }}` / `${{ each }}` are taken one level deeper. */
-export function blockParams(lines: YLine[], p: YLine): { params: ParamEntry[]; dynamic: boolean } {
-  const s: ParamScan = { params: [], dynamic: false, childCol: -1, conditionalCol: -1 };
+/**
+ * Parameters passed in the block under `parameters:`; keys under `${{ if }}` / `${{ each }}` are taken one level deeper.
+ * Any expression key makes the block `dynamic`, unless `conditionIsStatic`: then `${{ if }}` / `${{ elseif }}` / `${{ else }}`
+ * do not (their keys are listed as `conditional`), while `${{ each }}` and keys built by an expression still do.
+ */
+export function blockParams(lines: YLine[], p: YLine, conditionIsStatic = false): { params: ParamEntry[]; dynamic: boolean } {
+  const s: ParamScan = { params: [], dynamic: false, conditionIsStatic, childCol: -1, conditionalCol: -1 };
   for (let j = p.n + 1; j < lines.length && (lines[j].blank || lines[j].indent > p.keyCol); j++) {
     const l = lines[j];
     if (!l.blank && l.key !== undefined && !l.dash) {
