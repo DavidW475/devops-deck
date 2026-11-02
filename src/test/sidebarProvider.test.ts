@@ -8,7 +8,7 @@ import { Connection, ConnectionManager } from '../connection';
 import { ReviewedFiles } from '../pullRequests/reviewed';
 import type { MyDayService } from '../myDay/service';
 import type { MyDayResult } from '../myDay/types';
-import { ASSIGNED_TO_ME, SidebarProvider } from '../sidebar/sidebarProvider';
+import { ASSIGNED_TO_ME, CHECKS_CACHE_MAX, SidebarProvider } from '../sidebar/sidebarProvider';
 import { Approval, Build, IdentityRef, PullRequest, TeamIteration, WorkItem } from '../types';
 import { cspNonce, FakeWebview } from './fakeWebview';
 import * as vscode from './vscodeStub';
@@ -290,6 +290,17 @@ describe('SidebarProvider', () => {
     provider.refresh();
     await rpc('prs', { filter: 'mine' });
     assert.equal(calls.getPolicyEvaluations.length, 6);
+  });
+
+  it('bounds the checks cache in a long session and keeps the newest entries', async () => {
+    const { provider } = resolve();
+    const internal = provider as unknown as { checksOf(projectId: string, prId: number, force: boolean): Promise<unknown>; checksCache: Map<string, unknown> };
+    for (let id = 1000; id < 1000 + CHECKS_CACHE_MAX + 150; id++) {
+      await internal.checksOf('pid-Fabrikam Shop', id, false);
+    }
+    assert.equal(internal.checksCache.size, CHECKS_CACHE_MAX);
+    assert.ok(internal.checksCache.has(`pid-Fabrikam Shop/${1000 + CHECKS_CACHE_MAX + 149}`), 'the newest stays');
+    assert.ok(!internal.checksCache.has('pid-Fabrikam Shop/1000'), 'the oldest went');
   });
 
   it('lists PR files with reviewed marks and stores reviews', async () => {

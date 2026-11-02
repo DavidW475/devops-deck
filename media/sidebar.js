@@ -129,6 +129,8 @@
 
   // ---------- state ----------
   const saved = vscode.getState() || {};
+  /** cards rendered per page of a long list */
+  const PAGE = 40;
   const S = {
     tab: saved.tab || 'myday',
     prFilter: saved.prFilter || 'review',
@@ -161,9 +163,8 @@
     /** project dropdown: null when closed, else { org, projects, loading, error, filter, saving } */
     picker: null,
     /** how many cards of the visible list are rendered; grows by PAGE when the end comes into view */
-    shown: 40,
+    shown: PAGE,
   };
-  const PAGE = 40;
   const persist = () => vscode.setState({
     tab: S.tab, prFilter: S.prFilter, wiQuery: S.wiQuery, buildFilter: S.buildFilter, folder: S.folder,
     sprintTeam: S.sprintTeam, sprintIteration: S.sprintIteration, sprintGroup: S.sprintGroup,

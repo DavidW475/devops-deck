@@ -29,6 +29,8 @@ export const ASSIGNED_TO_ME: BuiltinQuery = DEFAULT_QUERIES[0];
 
 /** How long the policy status of a pull request is reused: switching filters or refreshing in a burst asks once. */
 const CHECKS_TTL_MS = 15_000;
+/** Entries kept at most: the cache is bounded in a long session that sees many pull requests. */
+export const CHECKS_CACHE_MAX = 200;
 
 const badgeTooltip = (count: number): string => (count === 1 ? '1 item needs you in My Day' : `${plural(count, 'item')} need you in My Day`);
 
@@ -330,8 +332,29 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       return cached.checks;
     }
     const checks = this.client.getPolicyEvaluations(projectId, prId).then(summarizeChecks, () => undefined);
-    this.checksCache.set(key, { at: Date.now(), checks });
+    this.rememberChecks(key, checks);
     return checks;
+  }
+
+  /** Stores the entry; expired entries go first, then the oldest, so the cache never exceeds CHECKS_CACHE_MAX. */
+  private rememberChecks(key: string, checks: Promise<ChecksSummary | undefined>): void {
+    const now = Date.now();
+    this.checksCache.delete(key);
+    if (this.checksCache.size >= CHECKS_CACHE_MAX) {
+      for (const [k, entry] of this.checksCache) {
+        if (now - entry.at >= CHECKS_TTL_MS) {
+          this.checksCache.delete(k);
+        }
+      }
+    }
+    while (this.checksCache.size >= CHECKS_CACHE_MAX) {
+      const oldest = this.checksCache.keys().next();
+      if (oldest.done) {
+        break;
+      }
+      this.checksCache.delete(oldest.value);
+    }
+    this.checksCache.set(key, { at: now, checks });
   }
 
   /** Files of a PR's latest update with their reviewed check marks. */
