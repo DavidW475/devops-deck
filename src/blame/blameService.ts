@@ -521,7 +521,7 @@ export class BlameService implements BlameLookups {
     if (!isFullSha(sha)) {
       throw new Error('Invalid commit SHA.');
     }
-    const key = `${this.rootOf(repo)}|${repo.project}|${sha}`;
+    const key = `${this.rootOf(repo)}|${repo.project}|${repo.repoName}|${sha}`;
     // A trace the user asked for does not trust the 15 minute cache of "no pull request": it may have been created since.
     const cached = this.completed.get(key) ?? (options?.background ? this.pending.get(key) : undefined);
     if (cached) {
@@ -603,7 +603,7 @@ export class BlameService implements BlameLookups {
     if (!isFullSha(sha)) {
       return Promise.reject(new Error('Invalid commit SHA.'));
     }
-    const key = `${this.rootOf(repo)}|${repo.project}|${sha}|${match?.pr.pullRequestId ?? 0}`;
+    const key = `${this.rootOf(repo)}|${repo.project}|${repo.repoName}|${sha}|${match?.pr.pullRequestId ?? 0}`;
     const cached = this.items.get(key);
     if (cached) {
       return Promise.resolve(cached);

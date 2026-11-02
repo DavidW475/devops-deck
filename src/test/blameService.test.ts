@@ -549,6 +549,20 @@ describe('BlameService.pullRequest', () => {
     assert.deepEqual(e.rest.filter(x => x.startsWith('repo:')), ['repo:web-shop', 'repo:payments']);
   });
 
+  it('does not return the data of the old repository for the same commit after the remote was re-pointed', async () => {
+    e.state.byMerge = [pr(7)];
+    const other = { ...e.local, repoName: 'payments' };
+    await e.svc.pullRequest(e.local, A);
+    await e.svc.pullRequest(other, A);
+    assert.equal(e.rest.filter(x => x.startsWith('query:')).length, 2, 'completed pull request is cached per repository name');
+    e.state.prWi = [1];
+    e.state.items = [wi(1)];
+    const match = { pr: pr(7), via: 'mergeCommit' as const, others: [] };
+    await e.svc.workItems(e.local, A, match);
+    await e.svc.workItems(other, A, match);
+    assert.equal(e.rest.filter(x => x.startsWith('prWi:')).length, 2, 'work items are cached per repository name');
+  });
+
   it('hydrates entries without title or status, at most 5', async () => {
     const stub = (id: number) => ({ pullRequestId: id }) as PullRequest;
     e.state.byMerge = [stub(1), stub(2), stub(1)];
