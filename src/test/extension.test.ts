@@ -184,6 +184,26 @@ describe('activate', () => {
     assert.equal(vscode.messages.at(-1), 'The task catalog was reset while it loaded. Run the command again.');
   });
 
+  it('reports a refresh dropped by new credentials as reset, not as a failure or success', async () => {
+    taskReply = [{ id: 'g1', name: 'ContosoDeploy', friendlyName: 'Contoso deploy', version: { major: 1, minor: 0, patch: 0 } }];
+    let release: () => void = () => undefined;
+    w.showInformationMessage = async (m: string) => { vscode.messages.push(m); return undefined; };
+    await run('azureDevOps.yaml.refreshTaskCatalog'); // the catalog has data now
+    taskGate = new Promise<void>(resolve => { release = resolve; });
+    try {
+      const refreshing = run('azureDevOps.yaml.refreshTaskCatalog');
+      await flush();
+      await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'microsoft'); // clears the backoff while the request runs
+      release();
+      await refreshing;
+      assert.equal(vscode.messages.at(-1), 'The task catalog was reset while it loaded. Run the command again.');
+    } finally {
+      taskGate = undefined;
+      taskReply = undefined;
+      await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'pat');
+    }
+  });
+
   it('runs the pipeline YAML commands for the active editor', async () => {
     w.activeTextEditor = undefined;
     await run('azureDevOps.yaml.showTemplates', 'not a uri');

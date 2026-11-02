@@ -920,6 +920,23 @@ describe('PipelineDesignerPanel: task steps', () => {
     assert.deepEqual(state().tasks.items, []);
   });
 
+  it('asks the catalog again after it was cleared while loading, and ends the spinner of a dropped reload', async () => {
+    const host = taskHost({ status: 'loading' });
+    const { web, state } = await openTasks(0, TASK_PIPELINE, host);
+    await web.send({ type: 'catalogMode', mode: 'tasks' });
+    assert.equal(host.tasks.ensured, 1);
+    host.tasks.snap = { status: 'empty' };
+    host.tasks.emitter.fire(); // clearBackoff dropped the loading refresh
+    await new Promise(r => setTimeout(r, 350));
+    assert.equal(host.tasks.ensured, 2, 'asked again');
+    // A reload dropped by the same call: the catalog fires while the reload still runs; the spinner must end afterwards.
+    host.tasks.snap = { status: 'ready', index: INDEX, fetchedAt: NOW };
+    const reload = web.send({ type: 'reloadTasks' });
+    host.tasks.emitter.fire();
+    await reload;
+    assert.equal(state().tasks.refreshing, false);
+  });
+
   it('renders again when the catalog changes and reads it without a task selected only in Tasks mode', async () => {
     const host = taskHost({ status: 'empty' });
     const { web, state } = await open(12, host);

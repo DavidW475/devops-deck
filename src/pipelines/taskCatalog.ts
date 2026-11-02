@@ -273,6 +273,12 @@ export class TaskCatalog implements vscode.Disposable {
     this.orgUrl = connections.current?.orgUrl;
   }
 
+  /** Changes whenever the catalog is reset or its credentials change: a refresh that spans a change was dropped. */
+  get epoch(): number {
+    this.sync();
+    return this.generation;
+  }
+
   snapshot(): CatalogSnapshot {
     this.sync();
     return { status: this.status, index: this.data?.index, fetchedAt: this.data?.fetchedAt, error: this.error };
@@ -359,9 +365,13 @@ export class TaskCatalog implements vscode.Disposable {
   /**
    * The credentials changed: a failed refresh no longer holds the editor back and a refresh started with the old ones is
    * dropped. The data stays; listeners check their documents again and the next use asks again.
+   * The status leaves `loading` and the old error: `empty` without data (consumers ask again), `ready` with data.
    */
   clearBackoff(): void {
     this.generation++;
+    this.status = this.data ? 'ready' : 'empty';
+    this.error = undefined;
+    this.lastUnknown = undefined;
     this.loading = undefined;
     this.inflight = undefined;
     this.failures = 0;

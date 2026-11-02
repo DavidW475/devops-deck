@@ -454,8 +454,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     PipelineDesignerPanel.show(designerHost, context.extensionUri, doc, typeof line === 'number' && Number.isInteger(line) ? line : cursor);
   });
   command('azureDevOps.yaml.refreshTaskCatalog', async () => {
+    const epoch = taskCatalog.epoch;
     const snap = await taskCatalog.refresh();
-    if (snap.status === 'ready' && snap.index) {
+    if (taskCatalog.epoch !== epoch) {
+      void vscode.window.showInformationMessage('The task catalog was reset while it loaded. Run the command again.');
+    } else if (snap.status === 'ready' && snap.index) {
       void vscode.window.showInformationMessage(`Task catalog refreshed: ${plural(snap.index.all().length, 'task')}.`);
     } else if (snap.status === 'empty') {
       // Without a connection there is no organization; with one, the catalog was reset while it loaded.

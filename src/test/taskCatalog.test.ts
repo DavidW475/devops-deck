@@ -296,6 +296,35 @@ describe('TaskCatalog', () => {
     assert.equal(c.snapshot().status, 'ready');
   });
 
+  it('clearBackoff leaves loading for empty without data, so consumers ask again, and forgets the unknown-task throttle', async () => {
+    const c = newCatalog(false);
+    answer = () => new Promise(() => undefined);
+    const stuck = c.ensure();
+    await flush();
+    assert.equal(c.snapshot().status, 'loading');
+    c.refreshForUnknownTask();
+    const before = requests;
+    c.clearBackoff();
+    assert.deepEqual([c.snapshot().status, c.snapshot().error], ['empty', undefined]);
+    answer = async () => [def()];
+    c.refreshForUnknownTask();
+    await flush();
+    assert.equal(requests, before + 1, 'the throttle does not outlast the new credentials');
+    void stuck;
+  });
+
+  it('clearBackoff turns a stale status with its old error into ready when there is data', async () => {
+    const c = newCatalog();
+    await c.ensure();
+    answer = async () => { throw new Error('old credentials'); };
+    await c.refresh();
+    assert.deepEqual([c.snapshot().status, c.snapshot().error], ['stale', 'old credentials']);
+    const epoch = c.epoch;
+    c.clearBackoff();
+    assert.deepEqual([c.snapshot().status, c.snapshot().error], ['ready', undefined]);
+    assert.notEqual(c.epoch, epoch);
+  });
+
   it('clearBackoff drops a refresh made with the old credentials, notifies, and keeps the data', async () => {
     const c = newCatalog();
     await c.ensure();
