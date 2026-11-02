@@ -183,7 +183,8 @@
   // ---------- parameter form ----------
   function enumControl(p, disabled) {
     if (p.values.length > 6) {
-      const unset = p.value === '' ? '<option value="" selected>(not set)</option>' : '';
+      // An optional input without a default can go back to "not set" (the line leaves the file), as in the button list.
+      const unset = p.value === '' || p.clearable ? `<option value=""${p.value === '' ? ' selected' : ''}>(not set)</option>` : '';
       const other = p.value !== '' && !p.values.includes(p.value) ? `<option selected>${esc(p.value)}</option>` : '';
       const options = unset + other + p.values.map((v) => `<option${v === p.value ? ' selected' : ''}>${esc(v)}</option>`).join('');
       return `<select class="pd-select" id="p-${esc(p.name)}" data-param="${esc(p.name)}"${disabled}>${options}</select>`;
@@ -520,10 +521,24 @@
     if (!active?.id || !isTextField(active) || active.readOnly || !old.contains(active)) return false;
     const twin = next.querySelector('#' + CSS.escape(active.id));
     if (!twin) return false;
-    if (twin.tagName === 'TEXTAREA') twin.textContent = active.defaultValue;
-    else if (active.hasAttribute('value')) twin.setAttribute('value', active.getAttribute('value') || '');
+    if (twin.tagName === 'TEXTAREA') return onlyTypedAreaDiffers(old, next, active, twin);
+    if (active.hasAttribute('value')) twin.setAttribute('value', active.getAttribute('value') || '');
     else twin.removeAttribute('value');
     return next.outerHTML === old.outerHTML;
+  }
+
+  /**
+   * `onlyTypedTextDiffers` for a textarea. Its `rows` follow the line count of the value, so a changed count is not a
+   * difference: the textarea stays and gets the new height, instead of being replaced (which loses its undo history).
+   */
+  function onlyTypedAreaDiffers(old, next, active, twin) {
+    const rows = twin.getAttribute('rows');
+    twin.textContent = active.defaultValue;
+    if (active.hasAttribute('rows')) twin.setAttribute('rows', active.getAttribute('rows') || '');
+    const same = next.outerHTML === old.outerHTML;
+    if (rows !== null) twin.setAttribute('rows', rows);
+    if (same && rows !== null) active.setAttribute('rows', rows);
+    return same;
   }
 
   /** Replaces only the lines between the unchanged start and end of a code view. */
