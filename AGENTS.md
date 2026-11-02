@@ -14,6 +14,7 @@ DevOps Deck is a VS Code extension (TypeScript, strict mode) for Azure DevOps Se
 - **Fictitious data only** in screenshots, examples, tests and docs (Contoso, Fabrikam, made-up names), never real organizations, people or customer data.
 - **Test coverage:** new code needs at least **80 % line coverage** (SonarCloud quality gate). Every change comes with unit tests; check with `npm run test:coverage`. Details: [docs/agents/05-testing-and-quality.md](docs/agents/05-testing-and-quality.md).
 - **No SonarQube issues:** a pull request must not leave any open SonarCloud issue on new code (bugs, vulnerabilities, code smells of every severity, unreviewed security hotspots), not only pass the quality gate. Fix the code; `// NOSONAR: <reason>` is allowed only where a rule does not apply (e.g. an `await` in a loop whose order matters), with the reason on the same line or in the doc comment. Check the PR's issues before finishing: [docs/agents/05-testing-and-quality.md](docs/agents/05-testing-and-quality.md#sonarqube).
+- **Findings not fixed right away:** every problem you find but do not fix in the same change (from a review, a test or while reading code) gets a GitHub issue, so it is not lost in a chat or a pull request. Check for an existing issue first. Issues are public: follow the fictitious data rule.
 - **Trademark:** "Azure DevOps" is a Microsoft trademark. Keep the "not affiliated with or endorsed by Microsoft" notice in the README and do not use Microsoft logos.
 
 ## Checks before finishing a change
