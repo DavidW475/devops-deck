@@ -10,6 +10,7 @@ import { mdEscape, plural } from '../util';
 import { yamlScalar } from './objectParams';
 import { CatalogSnapshot, MAX_AGE_MS, TaskCompletionContext, TaskInfo, TaskInput, TaskIndex, TaskIssue, TaskIssueCode, TaskStepRef } from './taskModel';
 import { checkTaskStep, findTaskSteps, newestMajor, stepInputValues, taskCompletionContext } from './taskRefs';
+import { orgLabel } from './taskDesigner';
 import { retirementOf } from './taskRetirement';
 import { plainHelp, safeHelpUrl } from './taskHelp';
 import { findInput, inputVisibility, ruleOf } from './taskRules';
@@ -221,7 +222,7 @@ export class YamlTaskSupport implements vscode.CompletionItemProvider, vscode.Ho
   }
 
   private loadingItem(cc: Extract<TaskCompletionContext, { kind: 'taskName' }>): vscode.CompletionItem {
-    const org = this.connections.current?.orgUrl.split('/').pop() ?? 'the organization';
+    const org = orgLabel(this.connections.current?.orgUrl) || 'the organization';
     const item = new vscode.CompletionItem(`Loading tasks of ${org} …`, vscode.CompletionItemKind.Text);
     // Accepting it must not change the text: it replaces what was typed with the same text.
     item.insertText = cc.prefix;

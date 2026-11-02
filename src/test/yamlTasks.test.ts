@@ -247,6 +247,13 @@ describe('completion', () => {
     assert.equal((await complete(makeDoc(NAME_DOC), 1, 12))![0].label, 'Loading tasks of the organization …');
   });
 
+  it('names a visualstudio.com organization by its host label', async () => {
+    support = new YamlTaskSupport(catalog, { current: { orgUrl: 'https://fabrikam.visualstudio.com', project: 'Shop', projects: ['Shop'], detected: false } }, 5);
+    catalog.snap = { status: 'loading' };
+    catalog.gate = new Promise(() => undefined);
+    assert.equal((await complete(makeDoc(NAME_DOC), 1, 12))![0].label, 'Loading tasks of fabrikam …');
+  });
+
   it('stays out of the way of the Microsoft extension in azure-pipelines documents', async () => {
     (vscode.extensions as any).getExtension = (id: string) => (id === OTHER_EXTENSION_ID ? { isActive: true } : undefined);
     assert.equal(await complete(makeDoc(NAME_DOC, 'azure-pipelines'), 1, 12), undefined);
