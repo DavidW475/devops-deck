@@ -239,7 +239,8 @@ function hoverWorkItem(w: TraceWorkItem): string {
 export function hoverMarkdown(d: HoverData, nowMs: number): string {
   const line = d.line;
   const blocks: string[][] = [];
-  blocks.push([`**${md(line.author)}**${hasAge(line) ? ` · ${relativeAge(line.authorTime, nowMs)}` : ''}`, `$(git-commit) ${shortSha(md(line.sha))}  ${md(line.summary)}`]);
+  const age = hasAge(line) ? ` · ${relativeAge(line.authorTime, nowMs)}` : '';
+  blocks.push([`**${md(line.author)}**${age}`, `$(git-commit) ${shortSha(md(line.sha))}  ${md(line.summary)}`]);
   if (d.unpublished) {
     blocks.push(['$(cloud-upload) not pushed yet']);
   } else if (d.pr) {
