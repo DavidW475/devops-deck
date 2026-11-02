@@ -4,6 +4,8 @@ import { fakeDoc, openedDocs, quickPicks, registered, resetExtras, shownDocs } f
 import { lastPanel } from './fakeWebview';
 import * as vscode from './vscodeStub';
 import { activate, deactivate } from '../extension';
+import { BlameUi } from '../blame/blameUi';
+import { ConnectionManager } from '../connection';
 import { MyDayService } from '../myDay/service';
 import { FakeWebview } from './fakeWebview';
 
@@ -58,6 +60,8 @@ let warnings: unknown[] = [];
 let sidebarProvider: { resolveWebviewView(view: unknown): void } | undefined;
 const resetSpy = { calls: 0 };
 const realReset = MyDayService.prototype.reset;
+const blameSpy = { resets: 0 };
+const realBlameReset = BlameUi.prototype.reset;
 let sessionListener: ((e: { provider: { id: string } }) => void) | undefined;
 const realFetch = globalThis.fetch;
 
@@ -74,12 +78,14 @@ describe('activate', () => {
     (vscode.authentication as any).onDidChangeSessions = (l: typeof sessionListener) => { sessionListener = l; return { dispose() { /* stub */ } }; };
     w.registerWebviewViewProvider = (_id: string, provider: typeof sidebarProvider) => { sidebarProvider = provider; return { dispose() { /* stub */ } }; };
     MyDayService.prototype.reset = function (this: MyDayService) { resetSpy.calls++; realReset.call(this); };
+    BlameUi.prototype.reset = function (this: BlameUi) { blameSpy.resets++; realBlameReset.call(this); };
     await activate(context as any);
   });
   after(() => {
     context.subscriptions.forEach(d => d.dispose());
     deactivate();
     MyDayService.prototype.reset = realReset;
+    BlameUi.prototype.reset = realBlameReset;
     globalThis.fetch = realFetch;
   });
   beforeEach(() => {
@@ -298,8 +304,10 @@ describe('activate', () => {
     assert.ok(answer, 'the sidebar answers the myDay call');
     assert.notEqual(answer.error?.message, 'My Day is not available', 'the service is connected to the sidebar');
     const base = resetSpy.calls;
+    const blameBase = blameSpy.resets;
     await run('azureDevOps.signIn');
     assert.equal(resetSpy.calls, base + 1, 'sign-in resets My Day');
+    assert.equal(blameSpy.resets, blameBase + 1, 'and the blame caches, once');
     await run('azureDevOps.setPat');
     await vscode.workspace.getConfiguration('azureDevOps').update('additionalProjects', ['Contoso Web']);
     await flush();
@@ -307,5 +315,35 @@ describe('activate', () => {
     const afterConfig = resetSpy.calls;
     sessionListener!({ provider: { id: 'microsoft' } });
     assert.equal(resetSpy.calls, afterConfig + 1, 'a Microsoft session change resets My Day');
+  });
+});
+
+describe('activate when watching git fails', () => {
+  it('still starts blame and shows the failure instead of an unhandled rejection', async () => {
+    const realWatch = ConnectionManager.prototype.watchGit;
+    const realStart = BlameUi.prototype.start;
+    let started = 0;
+    const seen: unknown[] = [];
+    const onReject = (e: unknown): void => { seen.push(e); };
+    process.on('unhandledRejection', onReject);
+    ConnectionManager.prototype.watchGit = async () => { throw new Error('git is gone'); };
+    BlameUi.prototype.start = function () { started++; };
+    const realWarn = w.showWarningMessage;
+    const shown: string[] = [];
+    w.showWarningMessage = async (m: string) => { shown.push(m); return undefined; };
+    const second = { ...context, subscriptions: [] as { dispose(): unknown }[] };
+    try {
+      await activate(second as any);
+      await flush();
+      assert.equal(started, 1);
+      assert.ok(shown.some(m => m.includes('git is gone')), shown.join('|'));
+      assert.deepEqual(seen, []);
+    } finally {
+      process.off('unhandledRejection', onReject);
+      second.subscriptions.forEach(d => d.dispose());
+      ConnectionManager.prototype.watchGit = realWatch;
+      BlameUi.prototype.start = realStart;
+      w.showWarningMessage = realWarn;
+    }
   });
 });

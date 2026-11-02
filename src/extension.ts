@@ -25,7 +25,7 @@ import { ReviewedFiles } from './pullRequests/reviewed';
 import { ReposPanel } from './repos/reposPanel';
 import { ASSIGNED_TO_ME, SidebarProvider } from './sidebar/sidebarProvider';
 import { openWiki, WIKI_SCHEME, WikiFileSystem } from './wiki/wiki';
-import { guarded, plural } from './util';
+import { errorMessage, guarded, plural } from './util';
 import {
   assignWorkItemToMe, changeWorkItemState, commentOnWorkItem, createBranchForWorkItem, createWorkItem, createWorkItemFromCode, TodoCodeActions,
 } from './workItems/wiCommands';
@@ -74,6 +74,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     sidebar.refresh();
     prStatus.refresh();
   };
+  /**
+   * Forgets what belongs to the connection or the sign-in: the client, the blame caches and My Day, and (unless
+   * `withCatalog` is false) the task catalog. A settings change leaves the catalog alone: it follows the organization by itself.
+   */
+  const resetState = (withCatalog = true) => {
+    client.reset();
+    if (withCatalog) {
+      taskCatalog.reset();
+    }
+    blame.reset();
+    myDay.reset();
+  };
 
   /** Client for the project a sidebar item belongs to (passed as the last command argument when several are selected). */
   const at = (project: unknown) => client.forProject(typeof project === 'string' && project ? project : undefined);
@@ -108,10 +120,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.workspace.registerFileSystemProvider(WIKI_SCHEME, new WikiFileSystem(client), { isCaseSensitive: true }),
     vscode.workspace.registerTextDocumentContentProvider(LOG_SCHEME, logDocs),
     connections.onDidChange(() => {
-      client.reset();
-      taskCatalog.reset();
-      blame.reset();
-      myDay.reset();
+      resetState();
       refresh();
     }),
     vscode.workspace.onDidChangeConfiguration(e => {
@@ -119,18 +128,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         designerLens.refresh();
       }
       if (e.affectsConfiguration('azureDevOps')) {
-        client.reset();
-        blame.reset();
-        myDay.reset();
+        resetState(false);
         void connections.resolve().then(refresh);
       }
     }),
     vscode.authentication.onDidChangeSessions(e => {
       if (e.provider.id === 'microsoft') {
-        client.reset();
-        taskCatalog.reset();
-        blame.reset();
-        myDay.reset();
+        resetState();
         refresh();
       }
     }),
@@ -144,9 +148,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   command('azureDevOps.signIn', async () => {
     await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'microsoft', vscode.ConfigurationTarget.Global);
     await client.signIn();
-    taskCatalog.reset();
-    blame.reset();
-    myDay.reset();
+    resetState();
     refresh();
   });
   command('azureDevOps.setPat', async () => {
@@ -161,10 +163,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     await context.secrets.store(PAT_SECRET_KEY, pat.trim());
     await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'pat', vscode.ConfigurationTarget.Global);
-    client.reset();
-    taskCatalog.reset();
-    blame.reset();
-    myDay.reset();
+    resetState();
     refresh();
   });
   command('azureDevOps.configure', async () => {
@@ -382,7 +381,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 
   await connections.resolve();
-  void connections.watchGit().then(() => blame.start());
+  // Blame starts also when watching git failed; the failure is shown instead of ending as an unhandled rejection.
+  void (async () => {
+    try {
+      await connections.watchGit();
+    } catch (e) {
+      void vscode.window.showWarningMessage(`DevOps Deck: watching Git repositories failed: ${errorMessage(e)}`);
+    }
+    try {
+      blame.start();
+    } catch (e) {
+      void vscode.window.showWarningMessage(`DevOps Deck: line blame could not start: ${errorMessage(e)}`);
+    }
+  })();
 }
 
 export function deactivate(): void {}
