@@ -713,7 +713,7 @@ export interface DisplayName {
 
 /** A folded block scalar (`>`) reads its lines as one: line breaks between text become spaces. */
 function foldedText(text: string): string {
-  return text.split('\n\n').map(part => part.split('\n').join(' ')).join('\n');
+  return text.split('\n\n').map(part => part.replaceAll('\n', ' ')).join('\n');
 }
 
 /** The `displayName:` line of a step, if it has one. A block scalar value (`>-`) is read as its text. */
