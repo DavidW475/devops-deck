@@ -1044,7 +1044,7 @@ function callStatus(call: CallModel): string {
   return call.ref ? `${kind} · line ${call.ref.line + 1}` : kind;
 }
 
-/** "Open in Designer" above every `template:` / `extends:` call and `- task:` step of local YAML files (settings `azureDevOps.yaml.designerCodeLens`, `.taskSupport`). */
+/** "Open in Designer" above every `template:` / `extends:` call and `- task: Name@Major` step of local YAML files (not a `task:` key of another tool, e.g. a Taskfile) (settings `azureDevOps.yaml.designerCodeLens`, `.taskSupport`). */
 export class DesignerCodeLens implements vscode.CodeLensProvider {
   private readonly changed = new vscode.EventEmitter<void>();
   readonly onDidChangeCodeLenses = this.changed.event;
@@ -1057,7 +1057,7 @@ export class DesignerCodeLens implements vscode.CodeLensProvider {
     const text = doc.getText();
     const lines = findTemplateRefs(text).map(ref => ({ line: ref.line, tooltip: 'Edit the parameters of this template call in a form' }));
     if (config.get<boolean>('yaml.taskSupport', true)) {
-      lines.push(...findTaskSteps(text).map(step => ({ line: step.line, tooltip: 'Edit the inputs of this task step in a form' })));
+      lines.push(...findTaskSteps(text).filter(step => step.name !== undefined).map(step => ({ line: step.line, tooltip: 'Edit the inputs of this task step in a form' })));
     }
     return lines.map(l => new vscode.CodeLens(new vscode.Range(l.line, 0, l.line, 0), {
       title: 'Open in Designer', tooltip: l.tooltip, command: 'azureDevOps.yaml.openDesigner', arguments: [doc.uri, l.line],

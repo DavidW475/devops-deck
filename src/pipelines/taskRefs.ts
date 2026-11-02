@@ -7,6 +7,7 @@ import { RetiredTask, TaskCompletionContext, TaskInfo, TaskInput, TaskIssue, Tas
 import { findInput, inputVisibility, ruleOf } from './taskRules';
 import { blockParams, flowParams, isExpression, mappingOf, ParamEntry, parentOf, scanYaml, TemplateRef, YLine } from './templateRefs';
 import { isBlockHeader, PipelineParameter, unquote } from './yamlParameters';
+import { scalarOf } from './templateEdits';
 
 export { findDisplayName } from './templateEdits';
 
@@ -64,16 +65,51 @@ function inputsOf(lines: YLine[], p: YLine): { inputs: ParamEntry[]; dynamic: bo
   return { inputs: block.params, dynamic: block.dynamic };
 }
 
-/** Every `- task:` step of the document (only list items with the key `task`; a task named in a script is no step). */
+/** Every `- task:` step of the document (list items with the key `task`, first or not; a task named in a script is no step). */
 export function findTaskSteps(text: string): TaskStepRef[] {
   return stepsIn(scanYaml(text), text.split(/\r?\n/));
+}
+
+/**
+ * Whether the `task` key at lines[n] belongs to a block list item: the line is `- task:` itself, or a later key of an
+ * item that starts with another key (`- displayName: x` above `task: Foo@1`). Flow style (`- {task: Foo@1}`) is not recognized.
+ */
+function isStepKey(lines: YLine[], n: number): boolean {
+  const l = lines[n];
+  if (l.dash) {
+    return true;
+  }
+  for (let j = n - 1; j >= 0; j--) {
+    const above = lines[j];
+    if (above.blank || above.indent > l.keyCol) {
+      continue;
+    }
+    if (above.dash && above.keyCol === l.keyCol) {
+      return true;
+    }
+    if (above.dash || above.keyCol !== l.keyCol) {
+      return false;
+    }
+  }
+  return false;
+}
+
+/** The text of the inputs that are block scalars, which the rules and checks read instead of the header (`|`, `>-`). */
+function blockTexts(raw: string[], lines: YLine[], inputs: ParamEntry[]): Map<number, string> | undefined {
+  const out = new Map<number, string>();
+  for (const e of inputs) {
+    if (!e.conditional && isBlockHeader(e.value)) {
+      out.set(e.line, scalarOf(raw, lines, e)?.text ?? '');
+    }
+  }
+  return out.size ? out : undefined;
 }
 
 /** `findTaskSteps` on text that is already scanned (a completion request scans once). */
 function stepsIn(lines: YLine[], raw: string[]): TaskStepRef[] {
   const steps: TaskStepRef[] = [];
   for (const l of lines) {
-    if (l.blank || !l.dash || l.key !== 'task') {
+    if (l.blank || l.key !== 'task' || !isStepKey(lines, l.n)) {
       continue;
     }
     const { siblings, end } = mappingOf(lines, l.n);
@@ -90,10 +126,19 @@ function stepsIn(lines: YLine[], raw: string[]): TaskStepRef[] {
       step.inputsLine = p.n;
       step.inputs = found.inputs;
       step.dynamicInputs = found.dynamic;
+      const blocks = blockTexts(raw, lines, found.inputs);
+      if (blocks) {
+        step.blockText = blocks;
+      }
     }
     steps.push(step);
   }
   return steps;
+}
+
+/** The value of a written input as the rules and checks see it: the text of a block scalar, not its header. */
+export function inputValue(step: TaskStepRef, e: ParamEntry): string {
+  return step.blockText?.get(e.line) ?? e.value;
 }
 
 /** `steps:` above, or a `parameters:` block (a stepList parameter): the places where a bare task name is expected. */
@@ -116,6 +161,10 @@ function valueContext(lines: YLine[], step: TaskStepRef, rawLine: string, col: n
     start++;
   }
   const quoted = isQuote(rawLine[start]);
+  if (start === colon + 1 && col === start && !quoted) {
+    // `- task:` and the cursor right behind the colon: a name would be glued to it (`task:AzureCLI@2`). It is offered after the space.
+    return undefined;
+  }
   start = quoted ? start + 1 : start;
   const end = Math.max(step.valueEnd, start);
   if (col < start || col > end || isExpression(step.raw)) {
@@ -146,6 +195,10 @@ function bodyContext(lines: YLine[], steps: TaskStepRef[], rawLine: string, line
   }
   const owner = parent?.key === 'inputs' && !parent.rest ? steps.find(s => s.inputsLine === parent.n) : undefined;
   if (owner) {
+    if (typed.trimStart().includes(':') && !typed.includes(': ')) {
+      // `scriptType:` with the cursor behind the colon: the key is written, a name here would be glued to it.
+      return undefined;
+    }
     const colon = typed.indexOf(': ');
     return colon > indent ? { kind: 'inputValue', step: owner, name: unquote(typed.slice(indent, colon)) } : { kind: 'inputName', step: owner };
   }
@@ -188,7 +241,7 @@ export interface TaskCheckOptions {
 /** The written inputs of a step as the visibility rules see them: name → value, and the names set under `${{ if }}` / `${{ each }}`. */
 export function stepInputValues(step: TaskStepRef): { passed: Map<string, string>; conditional: Set<string> } {
   return {
-    passed: new Map(step.inputs.map(e => [e.name, e.value] as [string, string])),
+    passed: new Map(step.inputs.map(e => [e.name, inputValue(step, e)] as [string, string])),
     conditional: new Set(step.inputs.filter(e => e.conditional).map(e => e.name)),
   };
 }
@@ -299,8 +352,11 @@ function missingIssues(step: TaskStepRef, task: TaskInfo, label: string): TaskIs
 
 /**
  * Problems of one step: task not installed, retired or deprecated, newer major, unknown inputs, values outside static
- * options, missing required inputs. Everything that can't be decided from the source text is left out (see the
- * false-positive table of the concept). A major that the catalog lacks for a known task is not reported.
+ * options, missing required inputs. Everything that can't be decided from the source text is left out, so nothing is
+ * reported for: expressions (`${{ }}`, `$[ ]`, `$( )`) as task name, input name or value; inputs under `${{ if }}` /
+ * `${{ each }}` (not unknown, not missing); `inputs:` that is an expression; a visibility rule that can't be evaluated
+ * (the input is not required then); a pinned version (`GoTool@0.3.1`: no missing inputs); pick lists with dynamic
+ * options; a major that the catalog lacks for a known task. Flow style steps (`- {task: A@1}`) are not recognized at all.
  */
 export function checkTaskStep(step: TaskStepRef, index: TaskIndex, opts: TaskCheckOptions): TaskIssue[] {
   if (step.name === undefined || step.major === undefined) {

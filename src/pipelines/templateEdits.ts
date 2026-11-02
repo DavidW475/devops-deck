@@ -385,7 +385,7 @@ export function scalarValue(text: string, entry: ParamEntry): ScalarText | undef
   return scalarOf(raw, lines, entry);
 }
 
-function scalarOf(lines: string[], scanned: YLine[], entry: ParamEntry): ScalarText | undefined {
+export function scalarOf(lines: string[], scanned: YLine[], entry: ParamEntry): ScalarText | undefined {
   const l = scanned[entry.line];
   if (!l) {
     return undefined;

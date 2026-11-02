@@ -221,8 +221,12 @@ describe('completion', () => {
     const items = (await complete(makeDoc(NAME_DOC), 1, 12))!;
     assert.equal(items.length, 1);
     assert.equal(items[0].label, 'Loading tasks of contoso …');
-    assert.equal(items[0].insertText, '');
     assert.equal(items[0].filterText, 'Cont');
+    // Accepting the item must leave the line as it is.
+    const doc = makeDoc(NAME_DOC);
+    const line = doc.getText().split('\n')[1];
+    const at = items[0].range as { start: { character: number }; end: { character: number } };
+    assert.equal(line.slice(0, at.start.character) + items[0].insertText + line.slice(at.end.character), line);
     const other = await complete(makeDoc('steps:\n- task: ContosoDeploy@2\n  inputs:\n    mode: '), 3, 10);
     assert.equal(other, undefined);
   });

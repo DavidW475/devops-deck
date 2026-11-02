@@ -223,10 +223,11 @@ export class YamlTaskSupport implements vscode.CompletionItemProvider, vscode.Ho
   private loadingItem(cc: Extract<TaskCompletionContext, { kind: 'taskName' }>): vscode.CompletionItem {
     const org = this.connections.current?.orgUrl.split('/').pop() ?? 'the organization';
     const item = new vscode.CompletionItem(`Loading tasks of ${org} …`, vscode.CompletionItemKind.Text);
-    item.insertText = '';
+    // Accepting it must not change the text: it replaces what was typed with the same text.
+    item.insertText = cc.prefix;
     item.filterText = cc.prefix;
     item.sortText = '￿';
-    item.range = range(cc.line, cc.start, cc.end);
+    item.range = range(cc.line, cc.start, cc.start + cc.prefix.length);
     return item;
   }
 

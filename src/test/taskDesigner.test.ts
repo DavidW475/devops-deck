@@ -181,6 +181,17 @@ describe('task form', () => {
     assert.equal(df.rows.find(r => r.name === 'target')?.error, 'A value is required.');
   });
 
+  it('keeps the real default of a required input whose rule cannot be decided', () => {
+    const t = task('ContosoRule', 1, { inputs: [tin('mode'), tin('target', { required: true, default: 'blue', visibleRule: 'mode contains a' })] });
+    const bare = 'steps:\n- task: ContosoRule@1\n';
+    const st = findTaskSteps(bare)[0];
+    const f = buildTaskForm(bare, t, st, asTemplateRef(st, t), {});
+    assert.equal(f.declared.find(p => p.name === 'target')?.default, 'blue');
+    assert.equal(f.rows.find(r => r.name === 'target')?.value, 'blue');
+    const lines = planNewTask(t, f, {}, { at: 2, indent: 0, unit: 2 }, { writeDefaults: true }).insert;
+    assert.ok(lines.includes('    target: blue'), lines.join('\n'));
+  });
+
   it('marks optional inputs without a default as clearable (the segmented control offers "not set" for them only)', () => {
     const t = task('ContosoPick', 1, {
       inputs: [

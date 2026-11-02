@@ -90,6 +90,8 @@ export interface TaskStepRef {
   /** `inputs: ${{ ... }}` or an `${{ each }}` key: the input names can't be checked. */
   dynamicInputs: boolean;
   inputs: ParamEntry[];
+  /** Text of the inputs written as a block scalar (`script: |`), by the input's line; only set when there is one. */
+  blockText?: Map<number, string>;
 }
 
 export type TaskCompletionContext =

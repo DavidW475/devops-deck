@@ -713,6 +713,24 @@ describe('PipelineDesignerPanel: task steps', () => {
     assert.equal(param(state(), 'retries').unsaved, false);
   });
 
+  it('edits a step whose task key follows another key', async () => {
+    const text = [
+      'steps:', '- displayName: Deploy web', '  task: ContosoDeploy@2', '  inputs:', '    connectionName: Fabrikam-Prod', '    scriptLocation: inlineScript', '    inlineScript: echo hi', '    retries: 5', '- script: echo done',
+    ].join('\n');
+    const { web, state } = await openTasks(2, text);
+    assert.equal(state().call.title, 'ContosoDeploy · line 3');
+    assert.equal(state().call.task.displayName.value, 'Deploy web');
+    await web.send({ type: 'value', name: 'retries', value: '7' });
+    await web.send({ type: 'taskField', name: 'displayName', value: 'Roll out' });
+    await web.send({ type: 'taskVersion', major: 1 });
+    await web.send({ type: 'taskVersion', major: 2 });
+    await web.send({ type: 'apply' });
+    assert.equal(state().notices[0].level, 'ok', JSON.stringify(state().notices));
+    assert.deepEqual(doc.text.split('\n'), [
+      'steps:', '- displayName: Roll out', '  task: ContosoDeploy@2', '  inputs:', '    connectionName: Fabrikam-Prod', '    scriptLocation: inlineScript', '    inlineScript: echo hi', '    retries: 7', '- script: echo done',
+    ]);
+  });
+
   it('drops values equal to the default unless Write defaults is on', async () => {
     const { web, state } = await openTasks();
     await web.send({ type: 'value', name: 'retries', value: '3' });
@@ -990,6 +1008,8 @@ describe('DesignerCodeLens: task steps', () => {
     const d = mutableDoc(`${ROOT}/tasks.yml`, TASK_PIPELINE);
     const lines = (lens.provideCodeLenses(d as any) as any[]).map(l => [l.range.start.line, l.command.arguments[1]]);
     assert.deepEqual(lines, [[5, 5], [17, 17]]);
+    const taskfile = mutableDoc(`${ROOT}/Taskfile.yml`, 'tasks:\n  all:\n    cmds:\n      - task: lint\n      - task: ${{ parameters.t }}\n      - task: AzureCLI\n');
+    assert.deepEqual(lens.provideCodeLenses(taskfile as any), [], 'only a task reference with Name@Major gets the lens');
     vscode.settings['azureDevOps.yaml.taskSupport'] = false;
     assert.deepEqual(lens.provideCodeLenses(d as any), []);
     vscode.settings['azureDevOps.yaml.taskSupport'] = true;

@@ -1,6 +1,7 @@
 import * as assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { RetiredTask, TaskCompletionContext, TaskIndex, TaskInfo, TaskInput, TaskStepRef } from '../pipelines/taskModel';
+import { planCallEdits, planDisplayName, planTaskVersion } from '../pipelines/templateEdits';
 import { asTemplateRef, checkTaskStep, findDisplayName, findTaskSteps, newestMajor, parseTaskRef, taskCompletionContext, toParameter } from '../pipelines/taskRefs';
 
 function input(name: string, extra: Partial<TaskInput> = {}): TaskInput {
@@ -257,6 +258,15 @@ describe('taskCompletionContext', () => {
     assert.equal(q.name, 'mode');
     const nested = complete(base + '    ${{ if eq(1, 1) }}:\n      |');
     assert.equal(nested?.kind, 'inputName');
+  });
+
+  it('offers nothing right behind the colon, where a name would be glued to it', () => {
+    assert.equal(complete('steps:\n- task:|'), undefined, '`- task:` + Enter must not give `- task:AzureCLI@2`');
+    assert.ok(complete('steps:\n- task: |')?.kind === 'taskName', 'after the space it is offered');
+    const base = 'steps:\n- task: ContosoDeploy@1\n  inputs:\n';
+    assert.equal(complete(base + '    scriptType:|'), undefined, 'no input names behind the colon of a written key');
+    assert.equal(complete(base + '    scriptType: |')?.kind, 'inputValue');
+    assert.equal(complete(base + '    scriptType|')?.kind, 'inputName');
   });
 
   it('stays silent inside a block scalar, a comment and outside the step', () => {
@@ -517,5 +527,58 @@ describe('designer mapping: toParameter, asTemplateRef, findDisplayName', () => 
     const idx = fakeIndex([info(1, []), info(2, []), info(3, [], { preview: true })]);
     assert.equal(newestMajor(idx, 'ContosoDeploy', 1), 2);
     assert.equal(newestMajor(idx, 'ContosoDeploy', 2), undefined);
+  });
+});
+
+describe('steps whose task key is not the first', () => {
+  const text = [
+    'steps:',
+    '- displayName: Deploy it',
+    '  task: ContosoDeploy@1',
+    '  inputs:',
+    '    mode: fast',
+    '- task: ContosoDeploy@1',
+    '  displayName: Second',
+    '- {task: Flow@1, inputs: {a: b}}',
+    'other:',
+    '  task: Bar@2',
+  ].join('\n');
+
+  it('finds the task after another key, with its inputs, and not a task key outside a list item or in flow style', () => {
+    const steps = findTaskSteps(text);
+    assert.deepEqual(steps.map(s => [s.line, s.raw, s.name, s.inputs.map(i => i.name)]), [
+      [2, 'ContosoDeploy@1', 'ContosoDeploy', ['mode']], [5, 'ContosoDeploy@1', 'ContosoDeploy', []],
+    ]);
+    assert.equal(steps[0].inputsLine, 3);
+    assert.equal(findDisplayName(text, steps[0])?.value, 'Deploy it');
+  });
+
+  it('checks, completes and edits such a step like the others', () => {
+    const yaml = 'steps:\n- displayName: x\n  task: ContosoDeploy@1\n  inputs:\n    bogus: 1\n';
+    assert.ok(check(yaml).some(i => i.code === 'unknownInput'));
+    const c = complete('steps:\n- displayName: x\n  task: Contoso|');
+    assert.ok(c?.kind === 'taskName');
+    assert.equal(complete('steps:\n- displayName: x\n  task: ContosoDeploy@1\n  inputs:\n    mode: |')?.kind, 'inputValue');
+    const step = stepOf(yaml);
+    assert.deepEqual(planTaskVersion(yaml, step, 2), [{ line: 2, deleteCount: 1, insert: ['  task: ContosoDeploy@2'] }]);
+    assert.deepEqual(planDisplayName(yaml, step, 'y'), [{ line: 1, deleteCount: 1, insert: ['- displayName: y'] }]);
+    const edits = planCallEdits(yaml, asTemplateRef(step, index.find('ContosoDeploy', 1)), [toParameter(deployInputs[1])], { mode: 'safe' }, { writeDefaults: false }, 'inputs').edits;
+    assert.ok(edits.length > 0);
+  });
+
+  it('has no step for a Taskfile style task call', () => {
+    assert.equal(findTaskSteps('tasks:\n  build:\n    cmds:\n      - task: lint\n').every(s => s.name === undefined), true);
+  });
+});
+
+describe('inputs written as block scalars', () => {
+  it('judges the visibility rules by the text of the block, not its header', () => {
+    // `path` is visible for mode != file: the block `file` hides it, so it is not missing.
+    const task = info(1, [input('mode', { default: 'x' }), input('path', { required: true, visibleRule: 'mode != file' })]);
+    const idx = fakeIndex([task]);
+    const missing = (yaml: string) => checkTaskStep(stepOf(yaml), idx, fresh).filter(i => i.code === 'missingInput');
+    assert.equal(missing('- task: ContosoDeploy@1\n  inputs:\n    mode: >-\n      file\n').length, 0);
+    assert.equal(missing('- task: ContosoDeploy@1\n  inputs:\n    mode: |\n      other\n').length, 1);
+    assert.equal(missing('- task: ContosoDeploy@1\n  inputs:\n    mode: file\n').length, 0, 'a plain value behaves as before');
   });
 });
