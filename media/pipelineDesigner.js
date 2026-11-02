@@ -596,6 +596,8 @@
   window.addEventListener('message', (e) => {
     const m = e.data || {};
     if (m.type === 'state') {
+      // The host sends the task list only when it changed.
+      if (m.tasks && m.tasks.itemsUnchanged) m.tasks.items = state && state.tasks ? state.tasks.items : [];
       state = m;
       render();
     } else if (m.type === 'validation' && state) {

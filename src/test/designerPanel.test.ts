@@ -170,6 +170,20 @@ describe('PipelineDesignerPanel', () => {
     assert.equal(host.calls.catalog.length, 1);
   });
 
+  it('does not apply when the document changes while the state is computed', async () => {
+    const { web, state, host } = await open();
+    await web.send({ type: 'value', name: 'runTests', value: false });
+    const original = host.resolver.contextFor;
+    host.resolver.contextFor = async () => {
+      doc.text += '# typed meanwhile\n';
+      doc.version++;
+      return original();
+    };
+    await web.send({ type: 'apply' });
+    assert.equal(applied.length, 0, 'edits made from the old text must not reach the newer document');
+    assert.equal(state().notices[0].title, 'The file changed');
+  });
+
   it('applies changed values as line edits and keeps the selection', async () => {
     const { web, state } = await open();
     await web.send({ type: 'value', name: 'dotnetVersion', value: '10.0.x' });
@@ -796,6 +810,11 @@ describe('PipelineDesignerPanel: task steps', () => {
       ['FabrikamBuild', [1], [false]], ['ContosoDeploy', [2, 1], [false, false]], ['ContosoLegacy', [1], [true]],
     ]);
     await web.send({ type: 'pickTask', id: 'guid-ContosoDeploy', major: 2 });
+    assert.deepEqual([state().tasks.itemsUnchanged, state().tasks.items], [true, []], 'the unchanged list is not sent again');
+    await web.send({ type: 'ready' });
+    assert.equal(state().tasks.items.length, 3, 'a reloaded page gets the list again');
+    assert.equal(state().tasks.itemsUnchanged, undefined);
+    await web.send({ type: 'pickTask', id: 'guid-ContosoDeploy', major: 2 });
     let s = state();
     assert.equal(s.call.isNew, true);
     assert.equal(s.call.title, 'New: ContosoDeploy@2');
@@ -872,7 +891,8 @@ describe('PipelineDesignerPanel: task steps', () => {
     assert.equal(state().tasks.error, 'HTTP 401: sign in <b>again</b>', 'server text is data; the page escapes it');
     host.tasks.snap = { status: 'stale', index: INDEX, fetchedAt: NOW - 6 * 24 * 3600_000, error: 'offline' };
     await web.send({ type: 'reloadTasks' });
-    assert.deepEqual([state().tasks.state, state().tasks.age, state().tasks.items.length], ['stale', '6 days ago', 3]);
+    assert.deepEqual([state().tasks.state, state().tasks.age], ['stale', '6 days ago']);
+    assert.ok(web.posted.some((m: any) => m.type === 'state' && m.tasks?.state === 'stale' && m.tasks.items.length === 3), 'the list was sent once');
     host.tasks.snap = { status: 'ready', index: INDEX, fetchedAt: NOW };
     await web.send({ type: 'reloadTasks' });
     assert.deepEqual([state().tasks.state, state().tasks.age, state().tasks.refreshing], ['ready', 'just now', false]);
@@ -948,6 +968,19 @@ describe('PipelineDesignerPanel: task steps', () => {
     await web.send({ type: 'apply' });
     assert.equal(doc.text, ['steps:', '- task: ContosoDeploy@2', '  inputs:', '    connectionName: Fabrikam-Prod', '    scriptLocation: inlineScript',
       '    inlineScript: |', '      echo a', '      echo b', '    retries: 9'].join('\r\n'), 'CRLF stays, the last line has no break');
+  });
+});
+
+describe('PipelineDesignerPanel: catalog reset', () => {
+  it('asks the catalog again after it was reset, instead of waiting for it forever', async () => {
+    const { host, state } = await openTasks();
+    assert.equal(host.tasks.ensured, 1);
+    host.tasks.snap = { status: 'empty' };
+    host.tasks.emitter.fire();
+    await new Promise(r => setTimeout(r, 400));
+    await flush(6);
+    assert.equal(host.tasks.ensured, 2, 'a reset catalog is read again');
+    assert.ok(state());
   });
 });
 

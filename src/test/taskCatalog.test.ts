@@ -397,6 +397,20 @@ describe('TaskCatalog', () => {
     assert.equal(fired, 1);
   });
 
+  it('fires when the first organization appears, so open documents are checked again', () => {
+    connection = { current: undefined };
+    const c = newCatalog();
+    let fired = 0;
+    c.onDidChange(() => fired++);
+    assert.equal(c.snapshot().status, 'empty');
+    assert.equal(fired, 0, 'still no organization');
+    connection.current = { orgUrl: ORG, project: 'Fabrikam Shop', projects: ['Fabrikam Shop'], detected: false };
+    assert.equal(c.snapshot().status, 'empty');
+    assert.equal(fired, 1);
+    c.snapshot();
+    assert.equal(fired, 1);
+  });
+
   it('works in memory without a storage uri and survives a failing write', async () => {
     const c = newCatalog(false);
     assert.equal((await c.ensure()).status, 'ready');

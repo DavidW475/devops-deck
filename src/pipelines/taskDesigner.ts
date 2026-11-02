@@ -41,6 +41,8 @@ export interface TaskListItem {
 export interface TaskListState {
   state: 'loading' | 'ready' | 'stale' | 'error';
   items: TaskListItem[];
+  /** the page already has this exact list from an earlier state message: `items` is left empty */
+  itemsUnchanged?: boolean;
   /** how old the data is, e.g. `2 h ago` */
   age: string;
   /** a refresh runs while old data is shown */

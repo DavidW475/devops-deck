@@ -141,6 +141,8 @@ export class PipelineDesignerPanel {
   /** pending `displayName` of the selected or new task step (undefined = untouched) */
   private displayName?: string;
   private tasksRequested = false;
+  /** the task list the page was last sent (it keeps it while `itemsUnchanged`) */
+  private sentTaskItems?: unknown;
   private tasksRefreshing = false;
   private alias = '';
   /** chosen ref of the catalog repository: undefined = as declared, '' = default branch */
@@ -204,7 +206,13 @@ export class PipelineDesignerPanel {
       }),
       { dispose: () => { this.disposed = true; clearTimeout(this.timer); } },
     );
-    const tasks = host.tasks?.onDidChange(() => this.schedule());
+    const tasks = host.tasks?.onDidChange(() => {
+      // A catalog that was reset (empty again) must be asked again, or the page would wait for it forever.
+      if (host.tasks?.snapshot().status === 'empty') {
+        this.tasksRequested = false;
+      }
+      this.schedule();
+    });
     if (tasks) {
       this.disposables.push(tasks);
     }
@@ -262,7 +270,7 @@ export class PipelineDesignerPanel {
 
   private async handle(m: any): Promise<void> {
     const handlers: Record<string, (m: any) => unknown> = {
-      ready: () => undefined,
+      ready: () => { this.sentTaskItems = undefined; },
       select: x => this.onSelect(x.index),
       pick: x => this.onPick(x.path),
       repo: x => this.onRepo(x.alias),
@@ -497,6 +505,7 @@ export class PipelineDesignerPanel {
   private async compute(): Promise<Computed> {
     const doc = await this.current().catch(() => this.doc);
     const text = doc.getText();
+    const version = doc.version; // read together with the text: the awaits below may let the document change
     const refs = findTemplateRefs(text);
     const taskSteps = this.taskSupport() ? findTaskSteps(text) : [];
     const ctx = await this.host.resolver.contextFor(doc.uri, text).catch(() => undefined);
@@ -513,7 +522,7 @@ export class PipelineDesignerPanel {
     const applied = applyLineEdits(text, edits);
     const firstError = call && this.rows(text, call).find(p => p.error);
     const blocking = call?.error ?? call?.readOnly ?? (firstError ? `${firstError.label}: ${firstError.error}` : undefined);
-    return { doc, text, version: doc.version, refs, taskSteps, ctx, repos, repo, ref, call, edits, newText: applied.text, marks: applied.marks, blocking };
+    return { doc, text, version, refs, taskSteps, ctx, repos, repo, ref, call, edits, newText: applied.text, marks: applied.marks, blocking };
   }
 
   private async callModel(text: string, refs: TemplateRef[], ctx: TemplateContext | undefined): Promise<CallModel | undefined> {
@@ -723,7 +732,17 @@ export class PipelineDesignerPanel {
 
   /** The task part of the catalog: state, age and (in Tasks mode) the short list items. */
   private tasksView() {
-    return taskListState(this.host.tasks!.snapshot(), Date.now(), this.host.orgUrl?.(), this.tasksRefreshing, this.catalogMode === 'tasks');
+    const t = taskListState(this.host.tasks!.snapshot(), Date.now(), this.host.orgUrl?.(), this.tasksRefreshing, this.catalogMode === 'tasks');
+    if (t.items.length === 0) {
+      this.sentTaskItems = undefined; // the page drops its list now
+      return t;
+    }
+    // The list is cached per catalog index, so the same array means the page already has it.
+    if (t.items === this.sentTaskItems) {
+      return { ...t, items: [], itemsUnchanged: true };
+    }
+    this.sentTaskItems = t.items;
+    return t;
   }
 
   /** What the page shows about the task of the form: summary, version choices, display name and groups. */

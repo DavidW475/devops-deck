@@ -264,7 +264,9 @@ export class TaskCatalog implements vscode.Disposable {
   private retryAfter = 0;
 
   constructor(private readonly client: AdoClient, private readonly connections: { current?: Connection },
-    private readonly storageUri: vscode.Uri | undefined) {}
+    private readonly storageUri: vscode.Uri | undefined) {
+    this.orgUrl = connections.current?.orgUrl;
+  }
 
   snapshot(): CatalogSnapshot {
     this.sync();
@@ -330,12 +332,14 @@ export class TaskCatalog implements vscode.Disposable {
 
   /** The connection changed: forget the memory. Files stay, they belong to their organization. */
   reset(): void {
-    const changed = this.status !== 'empty';
+    const org = this.connections.current?.orgUrl;
+    // The first organization appearing is a change too: open documents were checked without a catalog.
+    const changed = this.status !== 'empty' || org !== this.orgUrl;
     this.generation++;
     this.data = undefined;
     this.status = 'empty';
     this.error = undefined;
-    this.orgUrl = this.connections.current?.orgUrl;
+    this.orgUrl = org;
     this.ensured = false;
     this.loading = undefined;
     this.inflight = undefined;
