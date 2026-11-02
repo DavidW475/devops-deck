@@ -111,6 +111,28 @@ export class AdoClient {
     this.reset();
   }
 
+  /** True when requests are signed with a Personal Access Token instead of the Microsoft sign-in. */
+  usesPat(): boolean {
+    return vscode.workspace.getConfiguration('azureDevOps').get<string>('authMethod') === 'pat';
+  }
+
+  /** The Microsoft account that is signed in for Azure DevOps (never asks the user); undefined when there is none or a PAT is used. */
+  async accountId(): Promise<string | undefined> {
+    if (this.usesPat()) {
+      return undefined;
+    }
+    try {
+      return (await vscode.authentication.getSession('microsoft', this.scopes(), { createIfNone: false }))?.account.id;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private scopes(): string[] {
+    const tenant = vscode.workspace.getConfiguration('azureDevOps').get<string>('tenantId', '').trim();
+    return tenant ? [ADO_RESOURCE_SCOPE, `VSCODE_TENANT:${tenant}`] : [ADO_RESOURCE_SCOPE];
+  }
+
   private async authHeader(interactive: boolean): Promise<string> {
     const cfg = vscode.workspace.getConfiguration('azureDevOps');
     if (cfg.get<string>('authMethod') === 'pat') {
@@ -120,12 +142,7 @@ export class AdoClient {
       }
       return 'Basic ' + Buffer.from(':' + pat).toString('base64');
     }
-    const scopes = [ADO_RESOURCE_SCOPE];
-    const tenant = cfg.get<string>('tenantId', '').trim();
-    if (tenant) {
-      scopes.push(`VSCODE_TENANT:${tenant}`);
-    }
-    const session = await vscode.authentication.getSession('microsoft', scopes,
+    const session = await vscode.authentication.getSession('microsoft', this.scopes(),
       interactive ? { createIfNone: true } : { createIfNone: false });
     if (!session) {
       throw new AdoError('Not signed in to Microsoft.', 401, true);

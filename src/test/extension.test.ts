@@ -58,8 +58,9 @@ const run = (id: string, ...args: unknown[]) => registered.get(id)!(...args);
 let inputs: unknown[] = [];
 let warnings: unknown[] = [];
 let sidebarProvider: { resolveWebviewView(view: unknown): void } | undefined;
-const resetSpy = { calls: 0 };
+const resetSpy = { calls: 0, invalidates: 0 };
 const realReset = MyDayService.prototype.reset;
+const realInvalidate = MyDayService.prototype.invalidate;
 const blameSpy = { resets: 0 };
 const realBlameReset = BlameUi.prototype.reset;
 let sessionListener: ((e: { provider: { id: string } }) => void) | undefined;
@@ -78,6 +79,7 @@ describe('activate', () => {
     (vscode.authentication as any).onDidChangeSessions = (l: typeof sessionListener) => { sessionListener = l; return { dispose() { /* stub */ } }; };
     w.registerWebviewViewProvider = (_id: string, provider: typeof sidebarProvider) => { sidebarProvider = provider; return { dispose() { /* stub */ } }; };
     MyDayService.prototype.reset = function (this: MyDayService) { resetSpy.calls++; realReset.call(this); };
+    MyDayService.prototype.invalidate = function (this: MyDayService) { resetSpy.invalidates++; realInvalidate.call(this); };
     BlameUi.prototype.reset = function (this: BlameUi) { blameSpy.resets++; realBlameReset.call(this); };
     await activate(context as any);
   });
@@ -85,6 +87,7 @@ describe('activate', () => {
     context.subscriptions.forEach(d => d.dispose());
     deactivate();
     MyDayService.prototype.reset = realReset;
+    MyDayService.prototype.invalidate = realInvalidate;
     BlameUi.prototype.reset = realBlameReset;
     globalThis.fetch = realFetch;
   });
@@ -309,12 +312,61 @@ describe('activate', () => {
     assert.equal(resetSpy.calls, base + 1, 'sign-in resets My Day');
     assert.equal(blameSpy.resets, blameBase + 1, 'and the blame caches, once');
     await run('azureDevOps.setPat');
-    await vscode.workspace.getConfiguration('azureDevOps').update('additionalProjects', ['Contoso Web']);
+    const afterSetPat = resetSpy.calls;
+    const invalidatesBefore = resetSpy.invalidates;
+    await vscode.workspace.getConfiguration('azureDevOps').update('additionalProjects', ['Contoso Web', 'Fabrikam Extra']);
     await flush();
-    assert.ok(resetSpy.calls >= base + 2, 'a configuration change resets My Day');
-    const afterConfig = resetSpy.calls;
-    sessionListener!({ provider: { id: 'microsoft' } });
-    assert.equal(resetSpy.calls, afterConfig + 1, 'a Microsoft session change resets My Day');
+    assert.equal(resetSpy.calls, afterSetPat + 1, 'a changed connection resets once');
+    assert.equal(resetSpy.invalidates, invalidatesBefore + 1, 'and refreshes once, not twice');
+  });
+
+  it('keeps the pause, My Day and the blame caches for settings that do not change the connection', async () => {
+    const resets = resetSpy.calls;
+    const blameResets = blameSpy.resets;
+    const invalidates = resetSpy.invalidates;
+    await vscode.workspace.getConfiguration('azureDevOps').update('blame.annotations', 'statusBar');
+    await vscode.workspace.getConfiguration('azureDevOps').update('yaml.taskSupport', false);
+    await flush();
+    assert.equal(resetSpy.calls, resets);
+    assert.equal(blameSpy.resets, blameResets);
+    assert.equal(resetSpy.invalidates, invalidates, 'blame and YAML settings need no reload');
+    await vscode.workspace.getConfiguration('azureDevOps').update('myDay.importantBranches', ['main']);
+    await flush();
+    assert.equal(resetSpy.calls, resets, 'still no reset');
+    assert.equal(resetSpy.invalidates, invalidates + 1, 'a data setting reloads once');
+    await vscode.workspace.getConfiguration('azureDevOps').update('tenantId', 'contoso.example');
+    await flush();
+    assert.equal(resetSpy.calls, resets + 1, 'the way requests are signed is part of the connection');
+  });
+
+  it('resets on a Microsoft session change only when the account in use changed, and never with a PAT', async () => {
+    const auth = vscode.authentication as any;
+    const realGet = auth.getSession;
+    try {
+      const resets = resetSpy.calls;
+      sessionListener!({ provider: { id: 'microsoft' } });
+      await flush();
+      assert.equal(resetSpy.calls, resets, 'a PAT does not use the Microsoft sign-in');
+      vscode.settings['azureDevOps.authMethod'] = 'microsoft';
+      let id = 'acc-1';
+      auth.getSession = async () => ({ account: { id }, accessToken: 't' });
+      sessionListener!({ provider: { id: 'github' } });
+      await flush();
+      assert.equal(resetSpy.calls, resets, 'another provider');
+      sessionListener!({ provider: { id: 'microsoft' } });
+      await flush();
+      assert.equal(resetSpy.calls, resets + 1, 'a new account');
+      sessionListener!({ provider: { id: 'microsoft' } });
+      await flush();
+      assert.equal(resetSpy.calls, resets + 1, 'a token refresh or another extension signing in is no change');
+      id = 'acc-2';
+      sessionListener!({ provider: { id: 'microsoft' } });
+      await flush();
+      assert.equal(resetSpy.calls, resets + 2);
+    } finally {
+      auth.getSession = realGet;
+      vscode.settings['azureDevOps.authMethod'] = 'pat';
+    }
   });
 });
 

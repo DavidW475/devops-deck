@@ -99,6 +99,48 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     });
 
+  /** The Microsoft account the data was loaded for: a session event of another extension or a token refresh changes nothing. */
+  let account: string | undefined;
+  const noteAccount = () => client.accountId().then(a => { account = a; }, () => undefined);
+  void noteAccount();
+
+  /**
+   * A setting changed. Only what changes the connection resets state: the organization and projects (the connection
+   * manager fires `onDidChange`, which resets and refreshes) and how requests are signed (`authMethod`, `tenantId`).
+   * Every other setting leaves the pause, My Day and the blame caches alone; blame and YAML settings need no reload.
+   */
+  const onSettingsChanged = async (e: vscode.ConfigurationChangeEvent) => {
+    if (e.affectsConfiguration('azureDevOps.yaml.designerCodeLens') || e.affectsConfiguration('azureDevOps.yaml.taskSupport')) {
+      designerLens.refresh();
+    }
+    if (!e.affectsConfiguration('azureDevOps')) {
+      return;
+    }
+    if (e.affectsConfiguration('azureDevOps.authMethod') || e.affectsConfiguration('azureDevOps.tenantId')) {
+      resetState(false);
+      void noteAccount();
+    }
+    const connectionChanged = await connections.resolve();
+    // A changed connection was reset and refreshed by its own listener: refresh once, not twice.
+    if (!connectionChanged && !e.affectsConfiguration('azureDevOps.blame') && !e.affectsConfiguration('azureDevOps.yaml')) {
+      refresh();
+    }
+  };
+
+  /** Sessions of other extensions, and a token refresh, are no reason to forget anything; with a PAT the Microsoft account is not used at all. */
+  const onSessionsChanged = async (e: vscode.AuthenticationSessionsChangeEvent) => {
+    if (e.provider.id !== 'microsoft' || client.usesPat()) {
+      return;
+    }
+    const next = await client.accountId();
+    if (next === account) {
+      return;
+    }
+    account = next;
+    resetState();
+    refresh();
+  };
+
   context.subscriptions.push(
     connections,
     comments,
@@ -123,21 +165,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       resetState();
       refresh();
     }),
-    vscode.workspace.onDidChangeConfiguration(e => {
-      if (e.affectsConfiguration('azureDevOps.yaml.designerCodeLens') || e.affectsConfiguration('azureDevOps.yaml.taskSupport')) {
-        designerLens.refresh();
-      }
-      if (e.affectsConfiguration('azureDevOps')) {
-        resetState(false);
-        void connections.resolve().then(refresh);
-      }
-    }),
-    vscode.authentication.onDidChangeSessions(e => {
-      if (e.provider.id === 'microsoft') {
-        resetState();
-        refresh();
-      }
-    }),
+    vscode.workspace.onDidChangeConfiguration(e => void onSettingsChanged(e)),
+    vscode.authentication.onDidChangeSessions(e => void onSessionsChanged(e)),
   );
 
   // ----- general -----
