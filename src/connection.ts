@@ -16,7 +16,8 @@ export class ConnectionManager implements vscode.Disposable {
   readonly onDidChange = this.emitter.event;
   private readonly disposables: vscode.Disposable[] = [];
 
-  async resolve(): Promise<void> {
+  /** Reads the settings (or a git remote) again; true when the organization or the projects changed (`onDidChange` fired). */
+  async resolve(): Promise<boolean> {
     const cfg = vscode.workspace.getConfiguration('azureDevOps');
     let org = cfg.get<string>('organization', '').trim();
     let project = cfg.get<string>('project', '').trim();
@@ -39,6 +40,7 @@ export class ConnectionManager implements vscode.Disposable {
     if (changed) {
       this.emitter.fire();
     }
+    return changed;
   }
 
   /** Re-resolve when git repositories show up (the git extension opens them lazily). */

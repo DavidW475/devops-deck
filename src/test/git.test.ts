@@ -1,7 +1,7 @@
 import * as assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { Connection, ConnectionManager, gitApi, trimSlashes } from '../connection';
-import { currentBranch, describeCommits, isInside, localAdoRepos, pickLocalRepo, titleFromBranch } from '../git';
+import { adoRemoteOf, adoRepoForFile, currentBranch, describeCommits, isInside, localAdoRepos, pickLocalRepo, titleFromBranch } from '../git';
 import * as vscode from './vscodeStub';
 
 interface FakeRepo { rootUri: { fsPath: string }; state: { HEAD?: { name?: string }; remotes: { name: string; fetchUrl?: string; pushUrl?: string }[] } }
@@ -42,6 +42,11 @@ describe('git helpers with the git extension', () => {
       ['/src/web', 'origin', 'web-shop', 'Fabrikam Shop'],
       ['/src/api', 'upstream', 'api', 'Northwind'],
     ]);
+  });
+
+  it('localAdoRepos finds a repo whose first ADO remote is not selected but second is', () => {
+    useGit([repo('/src/web', [{ name: 'origin', fetchUrl: remote('x', 'Tailspin') }, { name: 'second', fetchUrl: remote('api', 'Northwind') }])]);
+    assert.deepEqual(localAdoRepos(CONN).map(r => [r.remoteName, r.repoName, r.project]), [['second', 'api', 'Northwind']]);
   });
 
   it('localAdoRepos is empty without a connection or git', () => {
@@ -102,6 +107,72 @@ describe('git helpers with the git extension', () => {
     assert.equal(titleFromBranch('feature/1234'), 'feature/1234');
     assert.deepEqual(describeCommits('feature/x', ['Fix login\n\nDetails here']), { title: 'Fix login', description: 'Details here' });
     assert.deepEqual(describeCommits('feature/fix-login', []), { title: 'Fix login', description: '' });
+  });
+});
+
+describe('adoRepoForFile and adoRemoteOf', () => {
+  const FILE = { fsPath: '/src/web/a.ts' };
+  function useGetRepository(getRepository: ((uri: { fsPath: string }) => FakeRepo | null) | undefined): void {
+    vscode.extensionExports['vscode.git'] = { getAPI: () => ({ repositories: [], getRepository }) };
+  }
+
+  beforeEach(() => vscode.reset());
+
+  it('returns the Azure Repos remote of the file repository', () => {
+    useGetRepository(() => repo('/src/web', [{ name: 'origin', fetchUrl: remote('web-shop') }]));
+    const r = adoRepoForFile(CONN, FILE);
+    assert.deepEqual([r?.remoteName, r?.repoName, r?.project], ['origin', 'web-shop', 'Fabrikam Shop']);
+  });
+
+  it('is undefined for a GitHub remote', () => {
+    useGetRepository(() => repo('/src/web', [{ name: 'origin', fetchUrl: 'https://github.com/contoso/x.git' }]));
+    assert.equal(adoRepoForFile(CONN, FILE), undefined);
+  });
+
+  it('finds the ADO remote among mixed remotes and prefers origin', () => {
+    useGetRepository(() => repo('/src/web', [
+      { name: 'gh', fetchUrl: 'https://github.com/contoso/x.git' },
+      { name: 'fork', fetchUrl: remote('web-fork') },
+      { name: 'origin', fetchUrl: remote('web-shop') },
+    ]));
+    assert.equal(adoRepoForFile(CONN, FILE)?.repoName, 'web-shop');
+    useGetRepository(() => repo('/src/web', [{ name: 'gh', fetchUrl: 'https://github.com/contoso/x.git' }, { name: 'up', pushUrl: remote('api') }]));
+    assert.equal(adoRepoForFile(CONN, FILE)?.remoteName, 'up');
+  });
+
+  it('is undefined for another organization', () => {
+    useGetRepository(() => repo('/src/web', [{ name: 'origin', fetchUrl: remote('web-shop', 'Fabrikam%20Shop', 'adventure-works') }]));
+    assert.equal(adoRepoForFile(CONN, FILE), undefined);
+  });
+
+  it('accepts a project that is not selected and decodes it', () => {
+    useGetRepository(() => repo('/src/web', [{ name: 'origin', fetchUrl: remote('web-shop', 'Tailspin%20Toys') }]));
+    assert.equal(adoRepoForFile(CONN, FILE)?.project, 'Tailspin Toys');
+  });
+
+  it('is undefined without a connection, a repository or getRepository', () => {
+    useGetRepository(() => repo('/src/web', [{ name: 'origin', fetchUrl: remote('web-shop') }]));
+    assert.equal(adoRepoForFile(undefined, FILE), undefined);
+    useGetRepository(() => null);
+    assert.equal(adoRepoForFile(CONN, FILE), undefined);
+    useGetRepository(undefined);
+    assert.equal(adoRepoForFile(CONN, FILE), undefined);
+    delete vscode.extensionExports['vscode.git'];
+    assert.equal(adoRepoForFile(CONN, FILE), undefined);
+  });
+
+  it('uses the repository getRepository returns for a submodule file', () => {
+    const outer = repo('/src/web', [{ name: 'origin', fetchUrl: remote('web-shop') }]);
+    const sub = repo('/src/web/libs/ui', [{ name: 'origin', fetchUrl: remote('ui-kit', 'Northwind') }]);
+    vscode.extensionExports['vscode.git'] = { getAPI: () => ({ repositories: [outer, sub], getRepository: () => sub }) };
+    const r = adoRepoForFile(CONN, { fsPath: '/src/web/libs/ui/b.ts' });
+    assert.deepEqual([r?.repo, r?.repoName, r?.project], [sub, 'ui-kit', 'Northwind']);
+  });
+
+  it('adoRemoteOf works on a repo directly and without a connection', () => {
+    const r = repo('/src/web', [{ name: 'origin', fetchUrl: remote('web-shop') }]);
+    assert.equal(adoRemoteOf(r, CONN)?.repoName, 'web-shop');
+    assert.equal(adoRemoteOf(r, undefined), undefined);
   });
 });
 

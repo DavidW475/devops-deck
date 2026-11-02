@@ -41,6 +41,11 @@ export function escapeHtml(s: unknown): string {
   return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 }
 
+/** Escapes text for a Markdown hover (no links, emphasis, theme icons or HTML from server or file content). */
+export function mdEscape(s: string): string {
+  return s.replace(/[\\`*_{}[\]()#+\-.!|<>~$]/g, c => '\\' + c);
+}
+
 export function nonce(): string {
   return randomBytes(16).toString('base64');
 }

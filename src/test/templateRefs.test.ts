@@ -1,7 +1,8 @@
 import * as assert from 'node:assert/strict';
+import { mdEscape } from '../util';
 import { describe, it } from 'node:test';
 import {
-  checkTemplateParameters, completionContext, describeParameter, findTemplateRefs, joinTemplatePath, mdEscape, parameterSnippet,
+  checkTemplateParameters, completionContext, describeParameter, findTemplateRefs, joinTemplatePath, parameterSnippet,
   parsePreviewErrors, parseRepositories, parseTemplatePath,
 } from '../pipelines/templateRefs';
 import { PipelineParameter } from '../pipelines/yamlParameters';

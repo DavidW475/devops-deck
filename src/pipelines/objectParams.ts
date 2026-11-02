@@ -4,7 +4,7 @@
  * into the call. Pure functions.
  */
 import { isExpression } from './templateRefs';
-import { isRecord, parseYamlDocument, PipelineParameter, setOwn, splitKey, Value } from './yamlParameters';
+import { isBlockHeader, isRecord, parseYamlDocument, PipelineParameter, setOwn, splitKey, Value } from './yamlParameters';
 
 /** One node of the object form. Keys stay strings (`${{ if … }}` / `${{ each … }}` keys included). */
 export type TreeNode =
@@ -21,7 +21,6 @@ export interface TreeEntry {
 const PLAIN_UNSAFE_START = '!&*{}[],|>@`"\'%?-';
 const PLAIN_UNSAFE_ANYWHERE = '*$:#';
 const RESERVED = new Set(['true', 'false', 'yes', 'no', 'on', 'off', 'null', '~']);
-const BLOCK_SCALAR = /^[|>][-+]?\d*$/;
 const MAX_DEPTH = 40;
 const MAX_NODES = 5000;
 
@@ -248,7 +247,7 @@ export function parseValueText(text: string): Value | undefined {
   return parseYamlDocument(normalizeText(text));
 }
 
-export const isBlockScalarText = (text: string) => BLOCK_SCALAR.test(text.trimStart().split(/\r?\n/)[0].trim());
+export const isBlockScalarText = (text: string) => isBlockHeader(text.trimStart().split(/\r?\n/)[0].trim());
 
 const SINGLE: Record<string, string> = { step: 'step', job: 'job', stage: 'stage' };
 
@@ -287,7 +286,7 @@ export function paramLines(key: string, text: string, col: number, childCol: num
   if (body.length === 1 && isInline(first)) {
     return [`${head} ${first || "''"}`];
   }
-  if (BLOCK_SCALAR.test(first)) {
+  if (isBlockHeader(first)) {
     return [`${head} ${first}`, ...indentLines(dedent(body.slice(1)), Math.max(childCol, col + 1))];
   }
   return [head, ...indentLines(body, childCol)];
@@ -303,7 +302,7 @@ export interface PassedValue {
 
 /** Reads a passed object/list value: the text after the colon, or the nested lines up to `end` (inclusive). */
 export function passedText(lines: string[], line: number, rest: string, end: number): PassedValue {
-  if (rest && !BLOCK_SCALAR.test(rest)) {
+  if (rest && !isBlockHeader(rest)) {
     return { text: rest, end: line };
   }
   const body = lines.slice(line + 1, end + 1);

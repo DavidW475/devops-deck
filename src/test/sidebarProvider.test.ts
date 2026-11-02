@@ -6,8 +6,10 @@ import type { Uri as VsUri, WebviewView } from 'vscode';
 import { AdoClient, AdoError } from '../client';
 import { Connection, ConnectionManager } from '../connection';
 import { ReviewedFiles } from '../pullRequests/reviewed';
-import { SidebarProvider } from '../sidebar/sidebarProvider';
-import { Build, IdentityRef, PullRequest, TeamIteration, WorkItem } from '../types';
+import type { MyDayService } from '../myDay/service';
+import type { MyDayResult } from '../myDay/types';
+import { ASSIGNED_TO_ME, CHECKS_CACHE_MAX, SidebarProvider } from '../sidebar/sidebarProvider';
+import { Approval, Build, IdentityRef, PullRequest, TeamIteration, WorkItem } from '../types';
 import { cspNonce, FakeWebview } from './fakeWebview';
 import * as vscode from './vscodeStub';
 
@@ -65,6 +67,7 @@ function fakeClient(calls: Calls, opts: { iterations?: TeamIteration[]; failing?
         return [pr(1, project, '2026-10-01T08:00:00Z'), pr(2, project, '2026-10-03T08:00:00Z'), pr(3, project, '2026-10-02T08:00:00Z')];
       },
       getPolicyEvaluations: async (_projectId: string, prId: number) => {
+        record('getPolicyEvaluations', [prId]);
         if (prId === 2) {
           throw new Error('no access');
         }
@@ -132,6 +135,47 @@ function fakeReviewed() {
   return { reviewed: reviewed as unknown as ReviewedFiles, sets, fire: (e: unknown) => listeners.forEach(l => l(e)) };
 }
 
+/** A sidebar view: the webview plus the badge and visibility the provider drives. */
+function fakeView(webview: FakeWebview) {
+  const listeners: (() => void)[] = [];
+  const disposals: (() => void)[] = [];
+  const view = {
+    webview, badge: undefined as unknown, visible: true,
+    onDidChangeVisibility: (l: () => void) => { listeners.push(l); return { dispose() { /* nothing */ } }; },
+    onDidDispose: (l: () => void) => { disposals.push(l); return { dispose() { /* nothing */ } }; },
+  };
+  return {
+    view, setVisible: (on: boolean) => { view.visible = on; listeners.forEach(l => l()); },
+    /** Like VS Code: a disposed view throws when it is written to. */
+    dispose: () => {
+      Object.defineProperty(view, 'badge', { set: () => { throw new Error('Webview is disposed'); }, get: () => undefined });
+      disposals.forEach(l => l());
+    },
+  };
+}
+
+function myDayResult(count: number): MyDayResult {
+  return { items: [], deferred: [], failures: [], count, multi: false, loadedAt: 1, generation: 0 };
+}
+
+/** The part of MyDayService the sidebar uses; records what it was asked. */
+function fakeService() {
+  const log: unknown[][] = [];
+  const listeners: ((r: MyDayResult) => void)[] = [];
+  const reviews: PullRequest[] = [pr(7, 'x', '2026-10-05T08:00:00Z')];
+  const approvals: Approval[] = [{ id: 'a9', status: 'pending', createdOn: '2026-10-01T08:00:00Z', steps: [{ assignedApprover: ME, status: 'pending' }] } as Approval];
+  const service = {
+    start: () => { log.push(['start']); },
+    stop: () => { log.push(['stop']); },
+    setVisible: (on: boolean) => { log.push(['visible', on]); },
+    get: async (o?: { force?: boolean; user?: boolean }) => { log.push(['get', o]); return myDayResult(3); },
+    onDidChange: (l: (r: MyDayResult) => void) => { listeners.push(l); return { dispose() { /* nothing */ } }; },
+    rawReviews: async (project: string, o?: unknown) => { log.push(['reviews', project]); log.push(['reviewsAsked', o]); return reviews; },
+    rawApprovals: async (project: string, o?: unknown) => { log.push(['approvals', project]); log.push(['approvalsAsked', o]); return approvals; },
+  };
+  return { service: service as unknown as MyDayService, log, fire: (r: MyDayResult) => listeners.forEach(l => l(r)), listeners };
+}
+
 describe('SidebarProvider', () => {
   const originalWindowState = vscode.window.onDidChangeWindowState;
   let calls: Calls;
@@ -151,11 +195,15 @@ describe('SidebarProvider', () => {
     vscode.window.onDidChangeWindowState = originalWindowState;
   });
 
-  function resolve(opts: { iterations?: TeamIteration[]; failing?: string[] } = {}) {
+  function resolve(opts: { iterations?: TeamIteration[]; failing?: string[]; service?: MyDayService } = {}) {
     const r = fakeReviewed();
     const provider = new SidebarProvider(fakeClient(calls, opts), conn as unknown as ConnectionManager, r.reviewed, EXT);
     const webview = new FakeWebview();
-    provider.resolveWebviewView({ webview } as unknown as WebviewView);
+    const fake = fakeView(webview);
+    if (opts.service) {
+      provider.useMyDay(opts.service);
+    }
+    provider.resolveWebviewView(fake.view as unknown as WebviewView);
     let next = 0;
     const rpc = async (method: string, params?: unknown) => {
       const id = ++next;
@@ -166,7 +214,7 @@ describe('SidebarProvider', () => {
       }
       return answer.result;
     };
-    return { provider, webview, rpc, ...r };
+    return { provider, webview, rpc, view: fake.view, setVisible: fake.setVisible, ...r };
   }
 
   it('renders the dashboard shell with a CSP nonce and scripts limited to media', () => {
@@ -239,6 +287,30 @@ describe('SidebarProvider', () => {
     await rpc('prs', { filter: 'mine' });
     await rpc('prs', { filter: 'all' });
     assert.deepEqual(calls.listPullRequests.slice(1).map(c => c[1]), [{ creatorId: 'me' }, {}]);
+  });
+
+  it('asks for the checks of a PR once in a burst, again when forced or refreshed', async () => {
+    const { rpc, provider } = resolve();
+    await rpc('prs', { filter: 'review' });
+    assert.equal(calls.getPolicyEvaluations.length, 2);
+    await rpc('prs', { filter: 'mine' });
+    assert.equal(calls.getPolicyEvaluations.length, 2);
+    await rpc('prs', { filter: 'mine', force: true });
+    assert.equal(calls.getPolicyEvaluations.length, 4);
+    provider.refresh();
+    await rpc('prs', { filter: 'mine' });
+    assert.equal(calls.getPolicyEvaluations.length, 6);
+  });
+
+  it('bounds the checks cache in a long session and keeps the newest entries', async () => {
+    const { provider } = resolve();
+    const internal = provider as unknown as { checksOf(projectId: string, prId: number, force: boolean): Promise<unknown>; checksCache: Map<string, unknown> };
+    for (let id = 1000; id < 1000 + CHECKS_CACHE_MAX + 150; id++) {
+      await internal.checksOf('pid-Fabrikam Shop', id, false);
+    }
+    assert.equal(internal.checksCache.size, CHECKS_CACHE_MAX);
+    assert.ok(internal.checksCache.has(`pid-Fabrikam Shop/${1000 + CHECKS_CACHE_MAX + 149}`), 'the newest stays');
+    assert.ok(!internal.checksCache.has('pid-Fabrikam Shop/1000'), 'the oldest went');
   });
 
   it('lists PR files with reviewed marks and stores reviews', async () => {
@@ -362,6 +434,171 @@ describe('SidebarProvider', () => {
     assert.deepEqual(list[1].approvers, []);
   });
 
+  it('exports the Assigned to me query', () => {
+    assert.equal(ASSIGNED_TO_ME.name, 'Assigned to me');
+    assert.match(ASSIGNED_TO_ME.wiql, /@Me/);
+  });
+
+  it('shares the work item state cache through statesFor', async () => {
+    const { provider } = resolve();
+    const first = await provider.statesFor('Fabrikam Shop', 'User Story');
+    const second = await provider.statesFor('Fabrikam Shop', 'User Story');
+    assert.equal(first, second);
+    assert.equal(calls.getWorkItemStates.length, 1);
+    await provider.statesFor('Contoso Web', 'Bug');
+    assert.equal(calls.getWorkItemStates.length, 2);
+    provider.refresh();
+    await provider.statesFor('Fabrikam Shop', 'User Story');
+    assert.equal(calls.getWorkItemStates.length, 3);
+  });
+
+  it('rejects when the states cannot be read and asks again next time instead of caching the failure', async () => {
+    const r = fakeReviewed();
+    let tries = 0;
+    const client = {
+      forProject: () => client,
+      getWorkItemStates: async () => { if (++tries === 1) { throw new Error('no access'); } return [{ name: 'Active', color: 'f00', category: 'InProgress' }]; },
+    } as unknown as AdoClient;
+    const provider = new SidebarProvider(client, conn as unknown as ConnectionManager, r.reviewed, EXT);
+    await assert.rejects(provider.statesFor('Fabrikam Shop', 'Bug'), /no access/);
+    assert.equal((await provider.statesFor('Fabrikam Shop', 'Bug')).length, 1, 'the failure was not kept');
+    assert.equal(tries, 2);
+  });
+
+  it('uses the work item states cache for work items and the given client for sprints', async () => {
+    const { rpc } = resolve();
+    await rpc('workItems', {});
+    await rpc('workItems', {});
+    assert.equal(calls.getWorkItemStates.length, 1);
+  });
+
+  describe('My Day', () => {
+    it('answers myDay through the service and passes force', async () => {
+      const f = fakeService();
+      const { rpc, view } = resolve({ service: f.service });
+      assert.equal(((await rpc('myDay')) as MyDayResult).count, 3);
+      await rpc('myDay', { force: true });
+      await rpc('myDay', { force: true, user: true });
+      assert.deepEqual(f.log.filter(l => l[0] === 'get'), [
+        ['get', { force: false, user: false }], ['get', { force: true, user: false }], ['get', { force: true, user: true }],
+      ]);
+      assert.deepEqual(view.badge, { value: 3, tooltip: '3 items need you in My Day' });
+    });
+
+    it('forwards force and user to the shared PR and approval lists', async () => {
+      const f = fakeService();
+      const { rpc } = resolve({ service: f.service });
+      await rpc('prs', { filter: 'review', force: true, user: true });
+      await rpc('approvals', { force: true });
+      assert.deepEqual(f.log.filter(l => l[0] === 'reviewsAsked' || l[0] === 'approvalsAsked'), [
+        ['reviewsAsked', { force: true, user: true }], ['approvalsAsked', { force: true, user: false }],
+      ]);
+    });
+
+    it('fails clearly without a service', async () => {
+      const { rpc } = resolve();
+      await assert.rejects(rpc('myDay'), /My Day is not available/);
+    });
+
+    it('starts the service on resolve and sets the badge from the last result', () => {
+      const f = fakeService();
+      const r = fakeReviewed();
+      const provider = new SidebarProvider(fakeClient(calls), conn as unknown as ConnectionManager, r.reviewed, EXT);
+      provider.useMyDay(f.service);
+      provider.useMyDay(f.service);
+      assert.equal(f.listeners.length, 1);
+      const first = fakeView(new FakeWebview());
+      provider.resolveWebviewView(first.view as unknown as WebviewView);
+      assert.deepEqual(f.log, [['start']]);
+      assert.equal(first.view.badge, undefined);
+      f.fire(myDayResult(1));
+      assert.deepEqual(first.view.badge, { value: 1, tooltip: '1 item needs you in My Day' });
+      const second = fakeView(new FakeWebview());
+      provider.resolveWebviewView(second.view as unknown as WebviewView);
+      assert.deepEqual(second.view.badge, { value: 1, tooltip: '1 item needs you in My Day' });
+    });
+
+    it('stops polling and writes nothing to a disposed view', () => {
+      const f = fakeService();
+      const r = fakeReviewed();
+      const provider = new SidebarProvider(fakeClient(calls), conn as unknown as ConnectionManager, r.reviewed, EXT);
+      provider.useMyDay(f.service);
+      const webview = new FakeWebview();
+      const view = fakeView(webview);
+      provider.resolveWebviewView(view.view as unknown as WebviewView);
+      view.dispose();
+      assert.deepEqual(f.log, [['start'], ['stop']]);
+      assert.doesNotThrow(() => f.fire(myDayResult(2)), 'the badge of the disposed view is not written');
+      assert.equal(webview.ofType('myDay').length, 0);
+    });
+
+    it('pushes changes to the page and clears the badge at 0', () => {
+      const f = fakeService();
+      const { webview, view } = resolve({ service: f.service });
+      f.fire(myDayResult(4));
+      assert.deepEqual(view.badge, { value: 4, tooltip: '4 items need you in My Day' });
+      assert.deepEqual(webview.last('myDay'), { type: 'myDay', result: myDayResult(4) });
+      f.fire(myDayResult(0));
+      assert.equal(view.badge, undefined);
+      assert.equal(webview.ofType('myDay').length, 2);
+    });
+
+    it('works without a view and without a service', async () => {
+      const f = fakeService();
+      const r = fakeReviewed();
+      const provider = new SidebarProvider(fakeClient(calls), conn as unknown as ConnectionManager, r.reviewed, EXT);
+      provider.useMyDay(f.service);
+      f.fire(myDayResult(2));
+      const plain = resolve();
+      await plain.rpc('tab', { tab: 'myday' });
+      plain.setVisible(false);
+      assert.equal(plain.view.badge, undefined);
+    });
+
+    it('tells the service when its tab is on screen', async () => {
+      const f = fakeService();
+      const { rpc, setVisible } = resolve({ service: f.service });
+      const visible = () => f.log.filter(l => l[0] === 'visible').map(l => l[1]);
+      assert.equal(await rpc('tab', { tab: 'myday' }), null);
+      await rpc('tab', { tab: 'prs' });
+      await rpc('tab', { tab: 42 });
+      await rpc('tab', { tab: 'myday' });
+      setVisible(false);
+      setVisible(true);
+      assert.deepEqual(visible(), [true, false, false, true, false, true]);
+    });
+
+    it('reads reviews and approvals through the service', async () => {
+      const f = fakeService();
+      const { rpc } = resolve({ service: f.service });
+      const prs = await rpc('prs', { filter: 'review' }) as { id: number }[];
+      assert.deepEqual(prs.map(x => x.id), [7]);
+      assert.equal(calls.listPullRequests, undefined);
+      const approvals = await rpc('approvals') as { id: string; mine: boolean }[];
+      assert.deepEqual(approvals.map(a => [a.id, a.mine]), [['a9', true]]);
+      assert.deepEqual(f.log.filter(l => l[0] === 'reviews' || l[0] === 'approvals'), [['reviews', 'Fabrikam Shop'], ['approvals', 'Fabrikam Shop']]);
+    });
+
+    it('uses the primary project when the connection lists no projects and each project otherwise', async () => {
+      const f = fakeService();
+      conn.current = { orgUrl: ORG, project: 'Fabrikam Shop', projects: [], detected: false };
+      const single = resolve({ service: f.service });
+      await single.rpc('prs', { filter: 'review' });
+      conn.current = { orgUrl: ORG, project: 'Fabrikam Shop', projects: ['Fabrikam Shop', 'Contoso Web'], detected: false };
+      const many = resolve({ service: f.service });
+      await many.rpc('approvals');
+      assert.deepEqual(f.log.filter(l => l[0] === 'reviews' || l[0] === 'approvals'), [['reviews', 'Fabrikam Shop'], ['approvals', 'Fabrikam Shop'], ['approvals', 'Contoso Web']]);
+    });
+
+    it('keeps the other pull request filters on the client', async () => {
+      const f = fakeService();
+      const { rpc } = resolve({ service: f.service });
+      await rpc('prs', { filter: 'mine' });
+      assert.equal(calls.listPullRequests.length, 1);
+      assert.deepEqual(f.log.filter(l => l[0] === 'reviews'), []);
+    });
+  });
+
   it('reports errors and marks sign-in problems', async () => {
     const { rpc, webview } = resolve();
     await assert.rejects(rpc('nope'), /Unknown method nope/);
@@ -371,7 +608,7 @@ describe('SidebarProvider', () => {
     const failing = { getMe: async () => { throw new AdoError('Sign in again.', 401, true); } } as unknown as AdoClient;
     const provider = new SidebarProvider(failing, conn as unknown as ConnectionManager, r.reviewed, EXT);
     const wv = new FakeWebview();
-    provider.resolveWebviewView({ webview: wv } as unknown as WebviewView);
+    provider.resolveWebviewView(fakeView(wv).view as unknown as WebviewView);
     await wv.send({ type: 'rpc', id: 1, method: 'me' });
     assert.deepEqual(wv.last('rpc'), { type: 'rpc', id: 1, error: { message: 'Sign in again.', auth: true } });
   });

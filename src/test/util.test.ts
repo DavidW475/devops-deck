@@ -2,7 +2,7 @@ import * as assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { AdoError } from '../client';
 import { changeVersion } from '../pullRequests/reviewed';
-import { duration, errorMessage, escapeHtml, initials, mapLimit, sanitizeHtml, shortRef, timeAgo } from '../util';
+import { duration, errorMessage, escapeHtml, initials, mapLimit, mdEscape, sanitizeHtml, shortRef, timeAgo } from '../util';
 
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
 
@@ -11,6 +11,14 @@ describe('util', () => {
     assert.equal(shortRef('refs/heads/feature/x'), 'feature/x');
     assert.equal(shortRef('refs/pull/12/merge'), 'refs/pull/12/merge');
     assert.equal(shortRef(), '');
+  });
+
+  it('mdEscape escapes theme icons, command links and HTML', () => {
+    assert.equal(mdEscape('$(sync)'), '\\$\\(sync\\)');
+    assert.ok(!mdEscape('[x](command:evil)').includes('](command:'));
+    assert.equal(mdEscape('[x](command:evil)'), '\\[x\\]\\(command:evil\\)');
+    assert.equal(mdEscape('<script>'), '\\<script\\>');
+    assert.equal(mdEscape('plain text'), 'plain text');
   });
 
   it('escapeHtml escapes all HTML-significant characters', () => {
