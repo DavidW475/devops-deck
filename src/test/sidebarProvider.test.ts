@@ -146,7 +146,7 @@ function fakeView(webview: FakeWebview) {
 }
 
 function myDayResult(count: number): MyDayResult {
-  return { items: [], deferred: [], failures: [], count, multi: false, loadedAt: 1 };
+  return { items: [], deferred: [], failures: [], count, multi: false, loadedAt: 1, generation: 0 };
 }
 
 /** The part of MyDayService the sidebar uses; records what it was asked. */
@@ -442,14 +442,17 @@ describe('SidebarProvider', () => {
     assert.equal(calls.getWorkItemStates.length, 3);
   });
 
-  it('caches an empty list when the states cannot be read, as work items do', async () => {
+  it('rejects when the states cannot be read and asks again next time instead of caching the failure', async () => {
     const r = fakeReviewed();
     let tries = 0;
-    const client = { forProject: () => client, getWorkItemStates: async () => { tries++; throw new Error('no access'); } } as unknown as AdoClient;
+    const client = {
+      forProject: () => client,
+      getWorkItemStates: async () => { if (++tries === 1) { throw new Error('no access'); } return [{ name: 'Active', color: 'f00', category: 'InProgress' }]; },
+    } as unknown as AdoClient;
     const provider = new SidebarProvider(client, conn as unknown as ConnectionManager, r.reviewed, EXT);
-    assert.deepEqual(await provider.statesFor('Fabrikam Shop', 'Bug'), []);
-    assert.deepEqual(await provider.statesFor('Fabrikam Shop', 'Bug'), []);
-    assert.equal(tries, 1);
+    await assert.rejects(provider.statesFor('Fabrikam Shop', 'Bug'), /no access/);
+    assert.equal((await provider.statesFor('Fabrikam Shop', 'Bug')).length, 1, 'the failure was not kept');
+    assert.equal(tries, 2);
   });
 
   it('uses the work item states cache for work items and the given client for sprints', async () => {

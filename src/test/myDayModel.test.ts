@@ -1,6 +1,6 @@
 import * as assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { approvalItem, dedupe, reviewItem, runItems, workItemItem } from '../myDay/model';
+import { approvalItem, dedupe, importantBranchesOf, reviewItem, runItems, workItemItem } from '../myDay/model';
 import type { MyDayItem } from '../myDay/types';
 import type { Approval, Build, IdentityRef, PullRequest, WorkItem } from '../types';
 
@@ -315,5 +315,22 @@ describe('dedupe', () => {
     const b = { ...a, title: 'duplicate' };
     const c = workItemItem(wi(), undefined, undefined, NOW)!;
     assert.deepEqual(dedupe([a, c, b]).map(i => i.title), ['Refactor checkout totals', '#1207 Basket export story']);
+  });
+});
+
+describe('importantBranchesOf', () => {
+  it('keeps the string entries of an array and falls back to the default for anything else', () => {
+    assert.deepEqual(importantBranchesOf(['main', 'hotfix/*']), ['main', 'hotfix/*']);
+    assert.deepEqual(importantBranchesOf(['main', 5, null, {}, 'dev']), ['main', 'dev']);
+    assert.deepEqual(importantBranchesOf([]), [], 'an empty list is a choice');
+    for (const bad of ['main', 5, null, undefined, { 0: 'main' }]) {
+      assert.deepEqual(importantBranchesOf(bad), ['main', 'master', 'release/*']);
+    }
+  });
+
+  it('gives runItems something it can work with', () => {
+    const b = build({ sourceBranch: 'refs/heads/main', finishTime: ago(2 * HOUR) });
+    assert.doesNotThrow(() => runItems([b], PROJECT, importantBranchesOf('main'), NOW));
+    assert.doesNotThrow(() => runItems([b], PROJECT, importantBranchesOf(['main', 7]), NOW));
   });
 });

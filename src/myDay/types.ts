@@ -102,6 +102,8 @@ export interface MyDayResult {
   multi: boolean;
   /** last successful load of any source (ms) */
   loadedAt: number;
+  /** counts `reset`s (a new account or connection): the page takes a higher number over an older one whatever `loadedAt` says */
+  generation: number;
 }
 
 /** The REST calls per project, a subset of `AdoClient` so tests can fake them. */

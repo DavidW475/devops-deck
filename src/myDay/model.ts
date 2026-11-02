@@ -117,6 +117,13 @@ function branchLabel(ref: string): string {
   return m ? `PR ${m[1]}` : shortRef(ref);
 }
 
+export const DEFAULT_IMPORTANT_BRANCHES: readonly string[] = ['main', 'master', 'release/*'];
+
+/** The setting `azureDevOps.myDay.importantBranches` from whatever settings.json holds: the string entries of an array, else the default. */
+export function importantBranchesOf(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [...DEFAULT_IMPORTANT_BRANCHES];
+}
+
 function isImportant(b: Build, patterns: string[]): boolean {
   const branch = shortRef(b.sourceBranch);
   const def = shortRef(b.repository?.defaultBranch);

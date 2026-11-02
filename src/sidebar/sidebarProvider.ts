@@ -98,14 +98,20 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     this.myDay?.setVisible(!!this.view?.visible && this.lastTab === 'myday');
   }
 
-  /** The work item states of a project's type, cached; a failure caches an empty list. */
+  /** The work item states of a project's type, cached. A failure rejects and is not cached: the next call asks again. */
   statesFor(project: string, type: string, client?: AdoClient): Promise<WorkItemState[]> {
     // States depend on the project's process, so the cache is per project and type.
     const key = `${project}\n${type}`;
     let states = this.stateCache.get(key);
     if (!states) {
-      states = (client ?? this.client.forProject(project || undefined)).getWorkItemStates(type).catch(() => []);
-      this.stateCache.set(key, states);
+      const loading: Promise<WorkItemState[]> = (client ?? this.client.forProject(project || undefined)).getWorkItemStates(type);
+      states = loading;
+      this.stateCache.set(key, loading);
+      loading.catch(() => {
+        if (this.stateCache.get(key) === loading) {
+          this.stateCache.delete(key);
+        }
+      });
     }
     return states;
   }
@@ -427,7 +433,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     const f = w.fields;
     const type = f['System.WorkItemType'];
     const project = String(f['System.TeamProject'] ?? '');
-    const state = (await this.statesFor(project, String(type), client)).find(s => s.name === f['System.State']);
+    // A list only colors the state: without the states it is still shown.
+    const state = (await this.statesFor(project, String(type), client).catch(() => [])).find(s => s.name === f['System.State']);
     return {
       id: w.id,
       title: f['System.Title'],

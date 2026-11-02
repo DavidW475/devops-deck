@@ -188,6 +188,31 @@ describe('MyDayService loading', () => {
     assert.equal(a.items.length, b.items.length);
   });
 
+  it('a click on Refresh that joins a running flight loads the projects the flight did not cover', async () => {
+    const h = make();
+    h.state.projects = [SHOP, WEB];
+    h.overrides[WEB] = { listPullRequests: async () => { throw new AdoError('No access', 403); } };
+    await h.service.get();
+    assert.equal(h.count('listPullRequests:Contoso Web'), 1);
+    h.state.now += 6 * MINUTE; // everything is due again, but Contoso Web reviews are in the 403 backoff
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    h.overrides[SHOP] = { listPullRequests: async () => { await gate; return [pr(1)]; } };
+    const timer = h.service.get(); // the flight for reviews covers Fabrikam Shop only
+    await flush();
+    let refreshed = false;
+    h.overrides[WEB] = { listPullRequests: async () => [pr(2)] }; // the backoff is over on the server side
+    const click = h.service.get({ user: true }).then(r => { refreshed = true; return r; });
+    await flush();
+    assert.equal(refreshed, false, 'the click waits for the joined flight');
+    release();
+    const [, clicked] = await Promise.all([timer, click]);
+    assert.equal(h.count('listPullRequests:Contoso Web'), 2, 'the project in backoff was loaded for the click');
+    assert.equal(h.count('listPullRequests:Fabrikam Shop'), 2, 'and the covered one only once more, not again');
+    assert.deepEqual(clicked.failures.filter(f => f.source === 'reviews'), []);
+    assert.ok(clicked.items.some(i => i.key.includes('2')), 'with its data');
+  });
+
   it('caps the work item ids at 200', async () => {
     const h = make();
     h.overrides[SHOP] = { queryWiql: async () => Array.from({ length: 300 }, (_, i) => i + 1) };
@@ -197,12 +222,17 @@ describe('MyDayService loading', () => {
     assert.equal(asked.length, 200);
   });
 
-  it('keeps an item whose states cannot be read, without a category', async () => {
+  it('reports a failed state lookup as a failed work item source instead of listing items without a category', async () => {
     const h = make();
+    h.overrides[SHOP] = { getWorkItems: async () => [workItem(101, SHOP, 'Closed')] };
     h.state.states = async () => { throw new Error('boom'); };
     const r = await h.service.get();
-    assert.equal(r.items.filter(i => i.source === 'workItems').length, 1);
-    assert.deepEqual(r.failures, []);
+    assert.equal(r.items.filter(i => i.source === 'workItems').length, 0, 'a completed item is not shown as if it were open');
+    assert.deepEqual(r.failures.filter(f => f.source === 'workItems').map(f => f.message), ['boom']);
+    h.state.states = async () => [{ name: 'Active', color: 'f00', category: 'InProgress' }, { name: 'Closed', color: '0f0', category: 'Completed' }];
+    const again = await h.service.get({ force: true });
+    assert.equal(again.items.filter(i => i.source === 'workItems').length, 0, 'now it is known to be completed');
+    assert.deepEqual(again.failures, []);
   });
 
   it('drops completed work items by their state category', async () => {
@@ -683,6 +713,14 @@ describe('MyDayService defers', () => {
 });
 
 describe('MyDayService reset and raw lists', () => {
+  it('numbers its results by reset so the page can tell a new account from an older answer', async () => {
+    const h = make();
+    const first = await h.service.get();
+    h.service.reset();
+    const second = await h.service.get();
+    assert.equal(second.generation, first.generation + 1);
+  });
+
   it('reset drops data and ignores a late answer', async () => {
     const h = make();
     let release: (v: PullRequest[]) => void = (_v: PullRequest[]) => undefined;

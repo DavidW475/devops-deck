@@ -56,6 +56,12 @@ export interface RequestOptions {
   user?: boolean;
 }
 
+/** A running load of one source and the projects (lower case) it covers: a caller that joins it may need more. */
+interface Flight {
+  promise: Promise<void>;
+  projects: ReadonlySet<string>;
+}
+
 interface Computed {
   result: MyDayResult;
   /** all listed items by key, deferred ones included */
@@ -85,7 +91,7 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
   private readonly emitter = new vscode.EventEmitter<MyDayResult>();
   readonly onDidChange: vscode.Event<MyDayResult> = this.emitter.event;
   private readonly slots = new Map<string, Slot>();
-  private readonly flights = new Map<MyDaySource, Promise<void>>();
+  private readonly flights = new Map<MyDaySource, Flight>();
   private readonly iterations = new Map<string, { attemptAt: number; finish: Map<string, string> }>();
   private timer: ReturnType<typeof setInterval> | undefined;
   private visible = false;
@@ -284,17 +290,43 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
     }
     const generation = this.generation;
     const fresh = sources.filter(s => !this.flights.has(s));
+    // What this caller needs, by source: a flight that is already running may cover only some of those projects.
+    const wanted = new Map(sources.map(s => [s, this.dueProjects(s, now, opts)] as const));
+    const running = new Map(sources.flatMap(s => { const f = this.flights.get(s); return f ? [[s, new Set(f.projects)] as const] : []; }));
     if (fresh.length > 0 && !(await this.startFlights(fresh, opts, now, generation))) {
       // `reset` ran while we waited for the user: start over in the new generation, never a flight that drops its records.
       return this.ensureLoaded(opts);
     }
-    await Promise.all(sources.flatMap(s => this.flights.get(s) ?? []));
+    await Promise.all(sources.flatMap(s => this.flights.get(s)?.promise ?? []));
+    await Promise.all([...running].map(([s, covered]) => this.loadUncovered(s, wanted.get(s) ?? [], covered, generation)));
     if (generation !== this.generation) {
       // `reset` ran while the flights were running: their answers were dropped, and the empty slots must not read as "nothing to do".
       return this.ensureLoaded(opts);
     }
     if (fresh.length > 0) {
       this.afterLoad(now);
+    }
+  }
+
+  /**
+   * A caller joined a flight that covered only some of the projects it needs (a timer loads only what is due; a click on
+   * Refresh or a vote wants all of them, also the ones in a 403 backoff): load the rest in a flight of its own.
+   */
+  private async loadUncovered(source: MyDaySource, wanted: string[], covered: Set<string>, generation: number): Promise<void> {
+    for (let rest = wanted.filter(p => !covered.has(p.toLowerCase())); rest.length > 0; rest = wanted.filter(p => !covered.has(p.toLowerCase()))) {
+      const me = this.me;
+      if (generation !== this.generation || !me) {
+        return;
+      }
+      const running = this.flights.get(source);
+      if (running) {
+        running.projects.forEach(p => covered.add(p)); // started after we began: fresh enough for us
+        await running.promise; // NOSONAR: sequential rounds, each depends on what the previous flight covered
+      } else {
+        rest.forEach(p => covered.add(p.toLowerCase()));
+        this.startFlight(source, rest, me, this.now(), generation);
+        await this.flights.get(source)?.promise; // NOSONAR: sequential rounds, each depends on what the previous flight covered
+      }
     }
   }
 
@@ -314,12 +346,12 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
   }
 
   private startFlight(source: MyDaySource, projects: string[], me: IdentityRef, now: number, generation: number): void {
-    const flight: Promise<void> = this.loadSource(source, projects, me, now, generation, this.invalidations).finally(() => {
-      if (this.flights.get(source) === flight) {
+    const promise: Promise<void> = this.loadSource(source, projects, me, now, generation, this.invalidations).finally(() => {
+      if (this.flights.get(source)?.promise === promise) {
         this.flights.delete(source);
       }
     });
-    this.flights.set(source, flight);
+    this.flights.set(source, { promise, projects: new Set(projects.map(p => p.toLowerCase())) });
   }
 
   private loadSource(source: MyDaySource, projects: string[], me: IdentityRef, now: number, generation: number, invalidations: number): Promise<void> {
@@ -373,25 +405,32 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
       }
       await this.refreshIterations(okProjects, now, generation);
     }
-    const categories = new Map<string, Promise<WorkItemState[] | undefined>>();
-    await Promise.all(okProjects.map(async project => {
-      const wis = (idsByProject.get(project) ?? []).map(id => byId.get(id)).filter((w): w is WorkItem => !!w);
-      const entries = await Promise.all(wis.map(async wi => ({ wi, category: await this.categoryOf(wi, categories) })));
-      record(project, { data: entries });
-    }));
+    const categories = new Map<string, Promise<WorkItemState[]>>();
+    let entries: (readonly [string, WorkItemEntry[]])[];
+    try {
+      entries = await Promise.all(okProjects.map(async project => {
+        const wis = (idsByProject.get(project) ?? []).map(id => byId.get(id)).filter((w): w is WorkItem => !!w);
+        return [project, await Promise.all(wis.map(async wi => ({ wi, category: await this.categoryOf(wi, categories) })))] as const;
+      }));
+    } catch (err) {
+      // Without the states a completed item cannot be told from an active one: this is a failed load, not a load without categories.
+      okProjects.forEach(p => record(p, { err }));
+      return;
+    }
+    entries.forEach(([project, data]) => record(project, { data }));
   }
 
-  private categoryOf(wi: WorkItem, cache: Map<string, Promise<WorkItemState[] | undefined>>): Promise<string | undefined> {
+  private categoryOf(wi: WorkItem, cache: Map<string, Promise<WorkItemState[]>>): Promise<string | undefined> {
     const project = String(wi.fields['System.TeamProject'] ?? '');
     const type = String(wi.fields['System.WorkItemType'] ?? '');
     const key = `${project}\u0000${type}`;
     let states = cache.get(key);
     if (!states) {
-      states = this.deps.statesFor(project, type).catch(() => undefined);
+      states = this.deps.statesFor(project, type);
       cache.set(key, states);
     }
     const state = String(wi.fields['System.State'] ?? '');
-    return states.then(list => list?.find(x => x.name === state)?.category);
+    return states.then(list => list.find(x => x.name === state)?.category);
   }
 
   /** The iteration dates are a helper: a failure only costs rule W4. */
@@ -558,6 +597,7 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
       count: items.filter(i => i.tier !== 'later').length,
       multi: projects.length > 1,
       loadedAt: Math.max(0, ...loadedAts),
+      generation: this.generation,
     };
     return { result, listed };
   }

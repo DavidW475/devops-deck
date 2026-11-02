@@ -9,6 +9,7 @@ import { RunPipelinePanel } from './pipelines/runPanel';
 import { RunViewPanel } from './pipelines/runView';
 import { deferItem, voteOnPullRequest } from './myDay/commands';
 import { MyDayDefers } from './myDay/defers';
+import { importantBranchesOf } from './myDay/model';
 import { MyDayService } from './myDay/service';
 import { DesignerCodeLens, DesignerHost, PipelineDesignerPanel } from './pipelines/designerPanel';
 import { PipelinePreviewPanel, PreviewMode } from './pipelines/previewPanel';
@@ -63,7 +64,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     projects: () => connections.current?.projects ?? [],
     statesFor: (project, type) => sidebar.statesFor(project, type),
     assignedWiql: () => ASSIGNED_TO_ME.wiql,
-    importantBranches: () => vscode.workspace.getConfiguration('azureDevOps').get<string[]>('myDay.importantBranches', ['main', 'master', 'release/*']),
+    importantBranches: () => importantBranchesOf(vscode.workspace.getConfiguration('azureDevOps').get<unknown>('myDay.importantBranches')),
     refreshSeconds: () => vscode.workspace.getConfiguration('azureDevOps').get<number>('refreshInterval', 60),
     isFocused: () => vscode.window.state.focused,
     throttledUntil: () => client.throttledUntil,

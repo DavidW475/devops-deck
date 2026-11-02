@@ -1224,8 +1224,18 @@
   /** A My Day answer that is older than the data shown (a result the host pushed meanwhile) is dropped for the shown data. */
   const newest = (tab, data) => (tab === 'myday' && olderMyDay(data) ? S.data.myday : data);
 
-  /** True when the result holds older data than what is shown: an answer that arrives late must not replace a newer one. */
-  const olderMyDay = (result) => !!S.data.myday && (result.loadedAt || 0) < (S.data.myday.loadedAt || 0);
+  /**
+   * True when the result holds older data than what is shown: an answer that arrives late must not replace a newer one.
+   * The host counts its resets (`generation`, a new account or connection): a higher number always wins, whatever `loadedAt`
+   * says (everything may have failed, so `loadedAt` is 0), and a lower one is the previous account's.
+   */
+  const olderMyDay = (result) => {
+    const shown = S.data.myday;
+    if (!shown) return false;
+    const g = result.generation || 0;
+    const sg = shown.generation || 0;
+    return g < sg || (g === sg && (result.loadedAt || 0) < (shown.loadedAt || 0));
+  };
 
   /** A result pushed by the host (polling, defer, restore) replaces the data in place, unless it is older than what is shown. */
   function setMyDay(result) {
