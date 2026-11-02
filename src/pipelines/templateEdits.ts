@@ -19,6 +19,11 @@ export interface LineEdit {
   line: number;
   deleteCount: number;
   insert: string[];
+  /**
+   * The edit deletes the line that carries the list dash: after all edits are merged, the dash goes to the first key line
+   * left in the item (`indent` is the dash's column, `keyCol` the column of the keys).
+   */
+  dash?: { indent: number; keyCol: number };
 }
 
 /** A text replacement in line/character coordinates, ready for `WorkspaceEdit.replace`. */
@@ -275,8 +280,9 @@ const marksOf = (e: LineEdit): LineMark[] => e.insert.map((_, k): LineMark => (k
  * Sorts edits and merges the ones that touch. Inserts at the same line keep the order they were given in. This is the one
  * place that decides the order, so the preview (`applyLineEdits`) and the written text (`toRangeEdits`) agree.
  */
-function mergeEdits(edits: LineEdit[]): MarkedEdit[] {
-  const sorted = [...edits].sort((a, b) => a.line - b.line || b.deleteCount - a.deleteCount);
+function mergeEdits(edits: LineEdit[], src: string[]): MarkedEdit[] {
+  // An insert at a line goes before the replacement of that line.
+  const sorted = [...edits].sort((a, b) => a.line - b.line || Number(a.deleteCount > 0) - Number(b.deleteCount > 0));
   const out: MarkedEdit[] = [];
   for (const e of sorted) {
     const last = out.at(-1);
@@ -284,17 +290,70 @@ function mergeEdits(edits: LineEdit[]): MarkedEdit[] {
       const extra = Math.max(0, e.line + e.deleteCount - (last.line + last.deleteCount));
       out[out.length - 1] = {
         line: last.line, deleteCount: last.deleteCount + extra, insert: [...last.insert, ...e.insert], marks: [...last.marks, ...marksOf(e)],
+        dash: last.dash ?? e.dash,
       };
     } else {
       out.push({ ...e, insert: [...e.insert], marks: marksOf(e) });
     }
   }
+  for (let i = 0; i < out.length; i++) {
+    if (out[i].dash) {
+      moveDash(out, i, src);
+    }
+  }
   return out;
 }
 
+const isKeyLine = (line: string) => /^\s*[^\s#]/.test(line);
+
+/** Joins edit `i` and the next one; the unchanged lines between them are taken into the edit. */
+function joinNext(out: MarkedEdit[], i: number, src: string[]): void {
+  const m = out[i];
+  const n = out[i + 1];
+  const gap = src.slice(m.line + m.deleteCount, n.line);
+  m.insert.push(...gap, ...n.insert);
+  m.marks.push(...gap.map((): LineMark => '~'), ...n.marks);
+  m.deleteCount = n.line + n.deleteCount - m.line;
+  out.splice(i + 1, 1);
+}
+
+/**
+ * The list dash of a deleted first key goes to the first key line the item has left once all edits are applied. Edits and
+ * unchanged lines in between are taken into the merged edit until such a line is found.
+ */
+function moveDash(out: MarkedEdit[], i: number, src: string[]): void {
+  const m = out[i];
+  const { indent, keyCol } = m.dash!;
+  let k = m.insert.findIndex(isKeyLine);
+  while (k < 0) {
+    const end = m.line + m.deleteCount;
+    let to = end;
+    while (to < src.length && !isKeyLine(src[to])) {
+      to++;
+    }
+    if (out[i + 1] && out[i + 1].line <= to) {
+      joinNext(out, i, src);
+    } else if (to < src.length) {
+      m.insert.push(...src.slice(end, to + 1));
+      m.marks.push(...src.slice(end, to + 1).map((): LineMark => '~'));
+      m.deleteCount = to + 1 - m.line;
+      if (out[i + 1] && out[i + 1].line <= m.line + m.deleteCount) {
+        joinNext(out, i, src);
+      }
+    } else {
+      m.insert.push(`${' '.repeat(indent)}- {}`);
+      m.marks.push('+');
+      return;
+    }
+    k = m.insert.findIndex(isKeyLine);
+  }
+  m.insert[k] = `${m.insert[k].slice(0, indent)}-${' '.repeat(keyCol - indent - 1)}${m.insert[k].slice(keyCol)}`;
+  m.dash = undefined;
+}
+
 /** Sorts edits and merges the ones that touch, so the result has no overlapping or adjacent ranges. */
-export function normalizeEdits(edits: LineEdit[]): LineEdit[] {
-  return mergeEdits(edits).map(({ line, deleteCount, insert }) => ({ line, deleteCount, insert }));
+export function normalizeEdits(edits: LineEdit[], src: string[] = []): LineEdit[] {
+  return mergeEdits(edits, src).map(({ line, deleteCount, insert }) => ({ line, deleteCount, insert }));
 }
 
 /**
@@ -304,8 +363,9 @@ export function normalizeEdits(edits: LineEdit[]): LineEdit[] {
  */
 export function applyLineEdits(text: string, edits: LineEdit[]): { text: string; marks: Map<number, LineMark> } {
   const eol = text.includes('\r\n') ? '\r\n' : '\n';
-  const rows: { text: string; mark?: LineMark }[] = splitLines(text).map(t => ({ text: t }));
-  for (const e of mergeEdits(edits).reverse()) {
+  const src = splitLines(text);
+  const rows: { text: string; mark?: LineMark }[] = src.map(t => ({ text: t }));
+  for (const e of mergeEdits(edits, src).reverse()) {
     rows.splice(e.line, e.deleteCount, ...e.insert.map((t, k): { text: string; mark: LineMark } => ({ text: t, mark: e.marks[k] })));
   }
   const marks = new Map<number, LineMark>();
@@ -322,7 +382,7 @@ export function toRangeEdits(text: string, edits: LineEdit[]): RangeEdit[] {
   const eol = text.includes('\r\n') ? '\r\n' : '\n';
   const lines = splitLines(text);
   const n = lines.length;
-  return normalizeEdits(edits).map(e => {
+  return normalizeEdits(edits, lines).map(e => {
     const end = e.line + e.deleteCount;
     if (end < n) {
       return { startLine: e.line, startChar: 0, endLine: end, endChar: 0, text: e.insert.map(l => l + eol).join('') };
@@ -495,8 +555,7 @@ export function deleteLines(src: string[], scanned: YLine[], first: number, coun
   if (!next || next.dash || next.keyCol !== head.keyCol) {
     return [{ line: first, deleteCount: count, insert: [`${src[first].slice(0, head.indent)}- {}`] }];
   }
-  const carried = `${src[next.n].slice(0, head.indent)}-${' '.repeat(head.keyCol - head.indent - 1)}${src[next.n].slice(next.keyCol)}`;
-  return [{ line: first, deleteCount: count, insert: [] }, { line: next.n, deleteCount: 1, insert: [carried] }];
+  return [{ line: first, deleteCount: count, insert: [], dash: { indent: head.indent, keyCol: head.keyCol } }];
 }
 
 /** One declared parameter: replace, remove or add its line as the pending value asks. */

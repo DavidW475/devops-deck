@@ -46,6 +46,11 @@ describe('deleting the first key of a list item keeps the dash', () => {
     assert.equal(applyLineEdits(yaml, deleteLines(yaml.split('\n'), scanYaml(yaml), 1, 1)).text, 'steps:\n- {}\n- task: T@1');
   });
 
+  it('leaves a valid empty item when the edits leave no key line at all', () => {
+    const yaml = 'steps:\n- displayName: Build';
+    assert.equal(applyLineEdits(yaml, [{ line: 1, deleteCount: 1, insert: [], dash: { indent: 0, keyCol: 2 } }]).text, 'steps:\n- {}');
+  });
+
   it('still deletes a plain key line', () => {
     assert.equal(clearName('steps:\n- task: T@1\n  displayName: Build\n  inputs:\n    a: b'), 'steps:\n- task: T@1\n  inputs:\n    a: b');
   });

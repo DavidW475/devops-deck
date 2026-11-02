@@ -6,7 +6,7 @@ import {
   ageText, buildTaskForm, orgLabel, planNewTask, planTaskStep, taskListItems, taskListState, taskSummary, versionNote,
 } from '../pipelines/taskDesigner';
 import { asTemplateRef, findTaskSteps } from '../pipelines/taskRefs';
-import { applyLineEdits } from '../pipelines/templateEdits';
+import { applyLineEdits, RangeEdit, toRangeEdits } from '../pipelines/templateEdits';
 
 const NOW = 1_700_000_000_000;
 const tin = (name: string, over: Partial<TaskInput> = {}): TaskInput => ({
@@ -242,6 +242,76 @@ describe('task edits', () => {
     assert.deepEqual(out.text.split('\n').slice(1, 5), ['- task: ContosoDeploy@1', '  displayName: Deploy', '  inputs:', '    connectionName: Contoso']);
     assert.deepEqual([...out.marks], [[1, '~'], [2, '+'], [4, '~']]);
     assert.deepEqual(planTaskStep({ step: st, info: DEPLOY, form: f, text: TEXT, pending: {}, opts }), []);
+  });
+
+  describe('every combination of changes to one step keeps one dash and the right text', () => {
+    const AB = task('ContosoPair', 2, { inputs: [tin('a'), tin('b')] });
+    type Key = 'displayName' | 'task' | 'inputs';
+    const permutations = (rest: Key[]): Key[][] =>
+      rest.length === 0 ? [[]] : rest.flatMap((k, i) => permutations(rest.filter((_, j) => j !== i)).map(p => [k, ...p]));
+    const orders = [true, false].flatMap(dn => [true, false].flatMap(inputs =>
+      permutations(['task', ...(dn ? ['displayName' as const] : []), ...(inputs ? ['inputs' as const] : [])])));
+    const inputLines = (inputs: Record<string, string>): string[] => {
+      const names = Object.keys(inputs);
+      return names.length ? ['inputs:', ...names.map(n => `  ${n}: ${inputs[n]}`)] : [];
+    };
+    const lineOf = (k: Key): string[] => {
+      if (k === 'task') {
+        return ['task: ContosoPair@2'];
+      }
+      return k === 'displayName' ? ['displayName: Old'] : inputLines({ a: 'x' });
+    };
+    const dashed = (lines: string[]): string => ['steps:', ...lines.map((l, i) => (i === 0 ? '- ' : '  ') + l)].join('\n');
+    /** The expected text: the keys keep their order, a new displayName follows `task:`, new inputs go last. */
+    const render = (keys: Key[], dn: string | undefined, major: number, inputs: Record<string, string>): string => {
+      const lines: string[][] = keys.map(k => {
+        if (k === 'task') {
+          return [`task: ContosoPair@${major}`];
+        }
+        if (k === 'displayName') {
+          return dn ? [`displayName: ${dn}`] : [];
+        }
+        return inputLines(inputs);
+      });
+      if (!keys.includes('displayName') && dn) {
+        lines.splice(keys.indexOf('task') + 1, 0, [`displayName: ${dn}`]);
+      }
+      if (!keys.includes('inputs')) {
+        lines.push(inputLines(inputs));
+      }
+      return dashed(lines.flat());
+    };
+    const written = (text: string, edits: RangeEdit[]): string => {
+      const at = (line: number, ch: number) => text.split('\n').slice(0, line).reduce((n, l) => n + l.length + 1, 0) + ch;
+      return [...edits].reverse().reduce((t, e) => t.slice(0, at(e.startLine, e.startChar)) + e.text + t.slice(at(e.endLine, e.endChar)), text);
+    };
+    const check = (keys: Key[], major: number, name: string | undefined, change: string, eol: string) => {
+      const text = dashed(keys.flatMap(lineOf)) + eol;
+      const st = findTaskSteps(text)[0];
+      const pending: Record<string, string> = {};
+      const inputs: Record<string, string> = keys.includes('inputs') ? { a: 'x' } : {};
+      if (change === 'add' || change === 'both') {
+        pending.b = 'y';
+        inputs.b = 'y';
+      }
+      if (change === 'remove' || change === 'both') {
+        pending.a = '';
+        delete inputs.a;
+      }
+      const form = buildTaskForm(text, AB, st, asTemplateRef(st, AB), pending);
+      const edits = planTaskStep({ step: st, info: AB, form, text, pending, opts, displayName: name, major: major === 2 ? undefined : major });
+      const shownName = name === undefined && keys.includes('displayName') ? 'Old' : name;
+      const preview = applyLineEdits(text, edits).text;
+      assert.equal(preview, render(keys, shownName || undefined, major, inputs) + eol);
+      assert.equal(written(text, toRangeEdits(text, edits)), preview, 'the written text is the preview');
+      assert.equal(preview.split('\n').filter(l => l.trimStart().startsWith('- ')).length, 1, 'one dash');
+    };
+
+    const cases = orders.flatMap(keys => [2, 3].flatMap(major => [undefined, 'New', ''].flatMap(name =>
+      ['none', 'add', 'remove', 'both'].flatMap(change => ['', '\n'].map(eol => ({ keys, major, name, change, eol }))))));
+    for (const { keys, major, name, change, eol } of cases) {
+      it(`${keys.join('>')} v${major} name=${name ?? 'untouched'} inputs=${change}${eol ? ' +eol' : ''}`, () => check(keys, major, name, change, eol));
+    }
   });
 
   it('plans a new step at an insertion point', () => {
