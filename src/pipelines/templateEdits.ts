@@ -461,7 +461,7 @@ function planMultiline(s: CallScope, p: PipelineParameter, entry: ParamEntry | u
   }
   const deleteCount = current.end - entry.line + 1;
   if (!write) {
-    s.edits.push({ line: entry.line, deleteCount, insert: [] });
+    s.edits.push(...deleteLines(s.lines, s.scanned, entry.line, deleteCount));
     s.removed += s.scanned.slice(entry.line, current.end + 1).filter(l => !l.blank).length;
   } else if (text !== current.text) {
     s.edits.push({ line: entry.line, deleteCount, insert: replacedMultiline(s, p, entry, current, text) });
@@ -479,6 +479,24 @@ function replacedMultiline(s: CallScope, p: PipelineParameter, entry: ParamEntry
   const bodyCol = near ? current.childCol! : entry.start + s.unit;
   const header = blockHeader(current.header ?? '|', text, entry.start, bodyCol);
   return [withValue(line, entry.start, header), ...blockBody(text, bodyCol)];
+}
+
+/**
+ * Edits that delete `count` lines from `first`. When the first one carries the list dash (`- displayName: x`), the dash moves
+ * to the next key of the same mapping (searched from line `from`, default: the line after the deleted ones) so the list
+ * item survives; a mapping with no key left becomes `- {}`.
+ */
+export function deleteLines(src: string[], scanned: YLine[], first: number, count: number, from = first + count): LineEdit[] {
+  const head = scanned[first];
+  if (!head?.dash) {
+    return [{ line: first, deleteCount: count, insert: [] }];
+  }
+  const next = scanned.slice(from).find(l => !l.blank);
+  if (!next || next.dash || next.keyCol !== head.keyCol) {
+    return [{ line: first, deleteCount: count, insert: [`${src[first].slice(0, head.indent)}- {}`] }];
+  }
+  const carried = `${src[next.n].slice(0, head.indent)}-${' '.repeat(head.keyCol - head.indent - 1)}${src[next.n].slice(next.keyCol)}`;
+  return [{ line: first, deleteCount: count, insert: [] }, { line: next.n, deleteCount: 1, insert: [carried] }];
 }
 
 /** One declared parameter: replace, remove or add its line as the pending value asks. */
@@ -513,7 +531,7 @@ function planScalar(s: CallScope, p: PipelineParameter, entry: ParamEntry | unde
   if (entry && write && !sameValue(p, entry.value, value)) {
     s.edits.push({ line: entry.line, deleteCount: 1, insert: [withValue(s.lines[entry.line], entry.start, formatValue(p, value))] });
   } else if (entry && !write) {
-    s.edits.push({ line: entry.line, deleteCount: 1, insert: [] });
+    s.edits.push(...deleteLines(s.lines, s.scanned, entry.line, 1));
     s.removed++;
   } else if (!entry && write) {
     addParam(s, p.name, formatValue(p, value));
@@ -550,7 +568,7 @@ function planStructured(s: CallScope, p: PipelineParameter, entry: ParamEntry | 
   if (write && passed.text !== normalizeText(text)) {
     s.edits.push({ line: entry.line, deleteCount, insert: paramLines(p.name, text, entry.start, passed.childCol ?? entry.start + s.unit) });
   } else if (!write) {
-    s.edits.push({ line: entry.line, deleteCount, insert: [] });
+    s.edits.push(...deleteLines(s.lines, s.scanned, entry.line, deleteCount));
     s.removed += s.scanned.slice(entry.line, passed.end + 1).filter(l => !l.blank).length;
   }
 }
@@ -622,7 +640,7 @@ export function planCallEdits(text: string, ref: TemplateRef, declared: Pipeline
   const nested = hasKey ? scanned.slice(ref.paramsLine! + 1, s.insertAt).filter(l => !l.blank).length : 0;
   if (hasKey && !s.added.length && s.removed > 0 && s.removed === nested) {
     // Nothing left under the key: drop it as well.
-    s.edits.push({ line: ref.paramsLine!, deleteCount: 1, insert: [] });
+    s.edits.push(...deleteLines(s.lines, scanned, ref.paramsLine!, 1, s.insertAt));
   }
   return { edits: s.edits.toSorted((a, b) => a.line - b.line) };
 }
@@ -742,8 +760,11 @@ export function planDisplayName(text: string, step: TaskStepRef, value: string):
   if (found.value === next) {
     return [];
   }
-  const insert = next ? [withValue(splitLines(text)[found.line], found.keyCol, yamlScalar(next))] : [];
-  return [{ line: found.line, deleteCount: found.end - found.line + 1, insert }];
+  const src = splitLines(text);
+  if (!next) {
+    return deleteLines(src, scanYaml(text), found.line, found.end - found.line + 1);
+  }
+  return [{ line: found.line, deleteCount: found.end - found.line + 1, insert: [withValue(src[found.line], found.keyCol, yamlScalar(next))] }];
 }
 
 interface Where {
@@ -874,10 +895,10 @@ function repoItemLines(repo: RepoEntry, indent: number): string[] {
 }
 
 /** Edits for an existing entry: set, change or remove its `ref:`. */
-function updateRepoItem(src: string[], item: RepoItem, ref: string | undefined): LineEdit[] {
+function updateRepoItem(src: string[], scanned: YLine[], item: RepoItem, ref: string | undefined): LineEdit[] {
   const line = item.keys.get('ref');
   if (line && ref === undefined) {
-    return [{ line: line.n, deleteCount: 1, insert: [] }];
+    return deleteLines(src, scanned, line.n, 1);
   }
   if (line && ref !== undefined && unquote(line.rest) !== ref) {
     return [{ line: line.n, deleteCount: 1, insert: [withValue(src[line.n], line.keyCol, yamlScalar(ref))] }];
@@ -912,7 +933,7 @@ export function planRepositoryEdits(text: string, repo: RepoEntry): LineEdit[] {
     const items = repositoryItems(lines, repos.n);
     const own = items.find(i => unquote(i.keys.get('repository')?.rest ?? '') === repo.alias);
     if (own) {
-      return updateRepoItem(src, own, repo.ref);
+      return updateRepoItem(src, lines, own, repo.ref);
     }
     const indent = items[0] ? lines[items[0].start].indent : repos.keyCol + unit;
     return [{ line: blockEnd(lines, repos.n) + 1, deleteCount: 0, insert: repoItemLines(repo, indent) }];
