@@ -12,5 +12,7 @@ sonar-project.properties
 out/test/**
 coverage/**
 AGENTS.md
+CLAUDE.md
 docs/**
 tmp/**
+todo.md

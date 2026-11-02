@@ -9,6 +9,7 @@ export interface Reviewer extends IdentityRef {
   vote: number;
   isRequired?: boolean;
   isContainer?: boolean;
+  hasDeclined?: boolean;
 }
 
 export interface GitRepositoryRef {
@@ -32,6 +33,7 @@ export interface PullRequest {
   reviewers: Reviewer[];
   mergeStatus?: string;
   lastMergeSourceCommit?: { commitId: string };
+  lastMergeCommit?: { commitId: string };
   closedDate?: string;
   closedBy?: IdentityRef;
   autoCompleteSetBy?: IdentityRef;
@@ -43,6 +45,12 @@ export interface PrCompletionOptions {
   deleteSourceBranch?: boolean;
   transitionWorkItems?: boolean;
   mergeCommitMessage?: string;
+}
+
+/** Pull requests of one commit: those that created it as their merge commit, and those that merged it. */
+export interface CommitPrQueryResult {
+  byMergeCommit: PullRequest[];
+  byCommit: PullRequest[];
 }
 
 /** A person or group found with the identity picker. */
@@ -208,6 +216,8 @@ export interface Build {
   startTime?: string;
   finishTime?: string;
   reason?: string;
+  /** often empty in list answers */
+  repository?: { defaultBranch?: string };
 }
 
 export interface TimelineRecord {
@@ -274,6 +284,13 @@ export interface ClassificationNode {
   name: string;
   hasChildren?: boolean;
   children?: ClassificationNode[];
+  attributes?: { startDate?: string; finishDate?: string };
+}
+
+/** An iteration with its full path, as work items name it in System.IterationPath. */
+export interface ClassificationIteration {
+  path: string;
+  finishDate?: string;
 }
 
 export interface Approval {
@@ -282,6 +299,7 @@ export interface Approval {
   createdOn?: string;
   instructions?: string;
   minRequiredApprovers?: number;
+  blockedApprovers?: IdentityRef[];
   steps?: { assignedApprover: IdentityRef; status: string; comment?: string }[];
   pipeline?: { id?: number | string; name?: string; owner?: { id: number; name?: string } };
 }
@@ -325,4 +343,37 @@ export interface WikiPage {
   isParentPage?: boolean;
   subPages?: WikiPage[];
   content?: string;
+}
+
+/**
+ * A task definition of `GET {org}/_apis/distributedtask/tasks`. The route is not in the public REST reference (it exists in
+ * Microsoft's generated client), and the response was not verified against a real organization: treat every field as untrusted
+ * and optional.
+ */
+export interface TaskDefinition {
+  id?: string;
+  name?: string;
+  friendlyName?: string;
+  description?: string;
+  category?: string;
+  helpMarkDown?: string;
+  helpUrl?: string;
+  contributionIdentifier?: string;
+  deprecated?: boolean;
+  preview?: boolean;
+  version?: { major?: number; minor?: number; patch?: number; isTest?: boolean };
+  groups?: { name?: string; displayName?: string; isExpanded?: boolean; visibleRule?: string }[];
+  inputs?: {
+    name?: string;
+    label?: string;
+    type?: string;
+    required?: boolean;
+    defaultValue?: string;
+    helpMarkDown?: string;
+    visibleRule?: string;
+    groupName?: string;
+    aliases?: string[];
+    options?: Record<string, string>;
+    properties?: Record<string, string>;
+  }[];
 }

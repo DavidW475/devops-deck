@@ -21,7 +21,7 @@ These rules apply to npm packages, GitHub Actions, the devcontainer image and an
 - Allowed without asking: MIT, ISC, BSD-2-Clause, BSD-3-Clause, Apache-2.0, 0BSD, BlueOak-1.0.0.
 - Ask the maintainer before adding anything else: copyleft (GPL/LGPL/AGPL), proprietary, "SEE LICENSE IN …", or no license.
 - Build-only tools that are never shipped in the `.vsix` (e.g. `@vscode/vsce` and its dependencies) are less critical but still need a check.
-- Tools you only run locally in a scratch directory (see the SonarJS recipe in [testing-and-quality.md](testing-and-quality.md)) never go into `package.json`. `eslint-plugin-sonarjs` is LGPL, so it must not be added.
+- Tools you only run locally in a scratch directory (see the SonarJS recipe in [05-testing-and-quality.md](05-testing-and-quality.md)) never go into `package.json`. `eslint-plugin-sonarjs` is LGPL, so it must not be added.
 
 ## 4. No runtime dependencies unless there is no reasonable alternative
 
@@ -30,6 +30,8 @@ These rules apply to npm packages, GitHub Actions, the devcontainer image and an
 - If a runtime dependency becomes unavoidable, it must meet rules 1–3 and its license must be included in the package.
 
 Current dev dependencies (`package.json`): `@types/node`, `@types/vscode`, `@vscode/vsce`, `typescript`.
+
+`overrides` in `package.json` forces `minimatch` to `^11.0.3`: `@vscode/vsce` 4.1.0 asks for `^10.2.6`, which falls under GHSA-g3hv-75wg-m249 (fixed in 11.0.1). `vsce` only calls the named `minimatch()` export, and `vsce ls` lists the same files with it. Remove the override once `@vscode/vsce` depends on a fixed version.
 
 ## 5. Keep it clean
 

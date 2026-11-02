@@ -9,14 +9,17 @@ import * as vscode from 'vscode';
 import { AdoClient } from '../client';
 import { errorMessage, guarded, panelHtml, plural } from '../util';
 import {
-  catalogItems, excerpt, fullPreview, ParamView, paramViews, refLabel, refOptions, RefOption, structure, targetPathIn, templatePathFor, topLevelBlock,
-  unknownParams,
+  catalogItems, excerpt, fullPreview, ParamView, paramViews, itemAt, refLabel, refOptions, RefOption, structure, targetPathIn, templatePathFor,
+  topLevelBlock, unknownParams,
 } from './designerModel';
 import { asTree, defaultText, treeIssue, TreeNode, treeText } from './objectParams';
 import { buildModel } from './pipelineModel';
+import { CatalogSnapshot, TaskInfo, TaskIndex, TaskStepRef } from './taskModel';
+import { buildTaskForm, orgLabel, planNewTask, planTaskStep, TaskForm, taskListState, taskSummary } from './taskDesigner';
+import { asTemplateRef, findDisplayName, findTaskSteps } from './taskRefs';
 import {
   applyLineEdits, callReadOnlyReason, controlOf, findInsertionPoints, indentUnit, InsertionPoint, isBranchRef, LineEdit, LineMark, newCallLines,
-  planCallEdits, planRepositoryEdits, templateKind, TemplateKind, toRangeEdits,
+  newTaskLines, planCallEdits, planRepositoryEdits, templateKind, TemplateKind, toRangeEdits,
 } from './templateEdits';
 import { findTemplateRefs, parseRepositories, RepoResource, TemplateRef } from './templateRefs';
 import { Catalog, CatalogEntry, locationLabel, Origin, TemplateContext, TemplateResolver } from './templateResolver';
@@ -28,9 +31,28 @@ export interface DesignerHost {
   resolver: Pick<TemplateResolver, 'contextFor' | 'resolve' | 'catalog' | 'refsOf' | 'originOf'>;
   expandOnServer(doc: vscode.TextDocument, params?: Record<string, string>, definitionId?: number, text?: string): Promise<ServerPreview | undefined>;
   client: Pick<AdoClient, 'listRepositories'>;
+  /** The task catalog of the organization; without it (or with `azureDevOps.yaml.taskSupport` off) the designer has no task features. */
+  tasks?: TaskSource;
+  /** URL of the connected organization, for the catalog footer. */
+  orgUrl?(): string | undefined;
 }
 
-type Selection = { kind: 'call'; line: number; raw: string } | { kind: 'new'; path: string } | undefined;
+/** What the designer needs from `TaskCatalog`. */
+export interface TaskSource {
+  readonly onDidChange: vscode.Event<void>;
+  snapshot(): CatalogSnapshot;
+  ensure(): Promise<CatalogSnapshot>;
+  refresh(): Promise<CatalogSnapshot>;
+}
+
+type Selection =
+  | { kind: 'call'; line: number; raw: string }
+  | { kind: 'new'; path: string }
+  | { kind: 'task'; line: number; raw: string }
+  | { kind: 'newTask'; id: string; major: number }
+  | undefined;
+
+type CatalogMode = 'templates' | 'tasks';
 
 interface Notice {
   level: 'info' | 'ok' | 'warn' | 'error';
@@ -56,6 +78,19 @@ interface CallModel {
   point?: InsertionPoint;
   /** `template:` value of a new call */
   templatePath?: string;
+  /** set for a task step (existing or new): `ref` is then the step as a template reference */
+  task?: TaskModel;
+}
+
+/** A task step in the form: the step (existing ones), its definition and the form rows. */
+interface TaskModel {
+  step?: TaskStepRef;
+  stepIndex?: number;
+  info?: TaskInfo;
+  index?: TaskIndex;
+  form?: TaskForm;
+  /** `Name@Major` as shown, also when there is no definition */
+  label: string;
 }
 
 interface RepoChoice {
@@ -69,6 +104,7 @@ interface Computed {
   text: string;
   version: number;
   refs: TemplateRef[];
+  taskSteps: TaskStepRef[];
   ctx?: TemplateContext;
   repos: RepoChoice[];
   repo: RepoChoice;
@@ -98,6 +134,14 @@ export class PipelineDesignerPanel {
   /** last form tree per object parameter: keeps empty and duplicate keys visible that the YAML text can't hold */
   private readonly trees = new Map<string, TreeNode>();
   private writeDefaults = false;
+  /** per panel: what the catalog lists */
+  private catalogMode: CatalogMode = 'templates';
+  /** pending major of the selected task step (undefined = as in the file) */
+  private taskMajor?: number;
+  /** pending `displayName` of the selected or new task step (undefined = untouched) */
+  private displayName?: string;
+  private tasksRequested = false;
+  private tasksRefreshing = false;
   private alias = '';
   /** chosen ref of the catalog repository: undefined = as declared, '' = default branch */
   private refChoice?: string;
@@ -150,12 +194,26 @@ export class PipelineDesignerPanel {
       // Edits in the editor (or undo of an applied change) re-read the calls after a short pause.
       vscode.workspace.onDidChangeTextDocument(e => {
         if (e.document.uri.toString() === this.doc.uri.toString()) {
-          clearTimeout(this.timer);
-          this.timer = setTimeout(() => void this.render(), DEBOUNCE_MS);
+          this.schedule();
+        }
+      }),
+      vscode.workspace.onDidChangeConfiguration(e => {
+        if (e.affectsConfiguration('azureDevOps.yaml')) {
+          this.schedule();
         }
       }),
       { dispose: () => { this.disposed = true; clearTimeout(this.timer); } },
     );
+    const tasks = host.tasks?.onDidChange(() => this.schedule());
+    if (tasks) {
+      this.disposables.push(tasks);
+    }
+  }
+
+  /** Renders again after a short pause (edits, settings and catalog changes arrive in bursts). */
+  private schedule(): void {
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => void this.render(), DEBOUNCE_MS);
   }
 
   /** Sends a message to the page unless the panel was closed. */
@@ -167,13 +225,32 @@ export class PipelineDesignerPanel {
 
   /** Selects the call whose mapping contains `line` (the nearest call above it, else the first one). */
   private selectLine(line: number): void {
-    const refs = findTemplateRefs(this.doc.getText());
-    const hit = refs.find(r => r.line <= line && line <= r.end) ?? refs.findLast(r => r.line <= line) ?? refs[0];
-    this.select(hit ? { kind: 'call', line: hit.line, raw: hit.raw } : undefined);
+    const text = this.doc.getText();
+    const refs = findTemplateRefs(text);
+    const steps = this.taskSupport() ? findTaskSteps(text) : [];
+    const at = itemAt(refs.map(r => ({ line: r.line, last: r.end })), steps.map(t => ({ line: t.line, last: t.end - 1 })), line);
+    const ref = at?.kind === 'call' ? refs[at.index] : undefined;
+    const step = at?.kind === 'task' ? steps[at.index] : undefined;
+    if (ref) {
+      this.select({ kind: 'call', line: ref.line, raw: ref.raw });
+    } else {
+      this.select(step ? { kind: 'task', line: step.line, raw: step.raw } : undefined);
+    }
+  }
+
+  /** Task features are on: a task catalog is there and the setting is not off. */
+  private taskSupport(): boolean {
+    return !!this.host.tasks && this.setting('taskSupport');
+  }
+
+  private setting(key: string): boolean {
+    return vscode.workspace.getConfiguration('azureDevOps').get<boolean>(`yaml.${key}`, true);
   }
 
   private select(selection: Selection): void {
     this.selection = selection;
+    this.taskMajor = undefined;
+    this.displayName = undefined;
     this.pending = {};
     this.trees.clear();
     this.target = undefined;
@@ -199,6 +276,12 @@ export class PipelineDesignerPanel {
       open: x => this.openLine(x.line),
       addRepo: () => this.addRepository(),
       reloadCatalog: () => { this.catalogKey = ''; },
+      catalogMode: x => this.onCatalogMode(x.mode),
+      pickTask: x => this.onPickTask(x.id, x.major),
+      selectTask: x => this.onSelectTask(x.index),
+      taskVersion: x => this.onTaskVersion(x.major),
+      taskField: x => this.onTaskField(x.name, x.value),
+      reloadTasks: () => this.onReloadTasks(),
     };
     const fn = typeof m?.type === 'string' && Object.hasOwn(handlers, m.type) ? handlers[m.type] : undefined;
     if (!fn) {
@@ -216,6 +299,71 @@ export class PipelineDesignerPanel {
     }
     this.select({ kind: 'call', line: ref.line, raw: ref.raw });
     return true;
+  }
+
+  private onCatalogMode(mode: unknown): boolean {
+    if ((mode !== 'templates' && mode !== 'tasks') || (mode === 'tasks' && !this.taskSupport()) || mode === this.catalogMode) {
+      return false;
+    }
+    this.catalogMode = mode;
+    return true;
+  }
+
+  /** A task of the catalog (id and major must be in it) becomes a new step; a picked task keeps the chosen target list. */
+  private onPickTask(id: unknown, major: unknown): boolean {
+    const index = this.taskSupport() ? this.host.tasks?.snapshot().index : undefined;
+    if (typeof id !== 'string' || typeof major !== 'number' || !index?.all().some(t => t.id === id && t.major === major)) {
+      return false;
+    }
+    const target = this.selection?.kind === 'newTask' ? this.target : undefined;
+    this.select({ kind: 'newTask', id, major });
+    this.target = target;
+    return true;
+  }
+
+  private onSelectTask(index: unknown): boolean {
+    const step = typeof index === 'number' && this.taskSupport() ? findTaskSteps(this.doc.getText())[index] : undefined;
+    if (!step) {
+      return false;
+    }
+    this.select({ kind: 'task', line: step.line, raw: step.raw });
+    return true;
+  }
+
+  /** Another major of the selected step's task (it must be in the catalog); only the `task:` line changes. */
+  private onTaskVersion(major: unknown): boolean {
+    const step = this.selection?.kind === 'task' ? this.findStep(findTaskSteps(this.doc.getText())) : undefined;
+    const index = this.host.tasks?.snapshot().index;
+    if (typeof major !== 'number' || !step?.name || !index?.majors(step.name).includes(major)) {
+      return false;
+    }
+    this.taskMajor = major === step.major ? undefined : major;
+    this.validation = IDLE;
+    this.notice = undefined;
+    return true;
+  }
+
+  private onTaskField(name: unknown, value: unknown): boolean {
+    if (name !== 'displayName' || typeof value !== 'string' || (this.selection?.kind !== 'task' && this.selection?.kind !== 'newTask')) {
+      return false;
+    }
+    this.displayName = value;
+    this.validation = IDLE;
+    this.notice = undefined;
+    return true;
+  }
+
+  private async onReloadTasks(): Promise<void> {
+    if (!this.host.tasks || !this.taskSupport()) {
+      return;
+    }
+    this.tasksRefreshing = true;
+    void this.render();
+    try {
+      await this.host.tasks.refresh();
+    } finally {
+      this.tasksRefreshing = false;
+    }
   }
 
   private onPick(file: unknown): boolean {
@@ -279,6 +427,13 @@ export class PipelineDesignerPanel {
     const c = await this.compute();
     this.pending = {};
     this.trees.clear();
+    if (c.call?.task) {
+      // Task steps: Reset discards the form's changes (an input that is not set has no default to restore).
+      this.displayName = undefined;
+      this.taskMajor = undefined;
+      this.validation = IDLE;
+      return;
+    }
     const unit = indentUnit(c.text);
     for (const p of c.call?.declared ?? []) {
       const value = controlOf(p) === 'raw' ? defaultText(p, unit) : p.default;
@@ -330,10 +485,20 @@ export class PipelineDesignerPanel {
     return same.toSorted((a, b) => Math.abs(a.line - s.line) - Math.abs(b.line - s.line))[0];
   }
 
+  /** The selected task step: same text, nearest to the remembered line. */
+  private findStep(steps: TaskStepRef[]): TaskStepRef | undefined {
+    const s = this.selection;
+    if (s?.kind !== 'task') {
+      return undefined;
+    }
+    return steps.filter(t => t.raw === s.raw).toSorted((a, b) => Math.abs(a.line - s.line) - Math.abs(b.line - s.line))[0];
+  }
+
   private async compute(): Promise<Computed> {
     const doc = await this.current().catch(() => this.doc);
     const text = doc.getText();
     const refs = findTemplateRefs(text);
+    const taskSteps = this.taskSupport() ? findTaskSteps(text) : [];
     const ctx = await this.host.resolver.contextFor(doc.uri, text).catch(() => undefined);
     this.pipelinePath = ctx?.location.path ?? '/';
     const repos = this.repoChoices(text);
@@ -346,13 +511,16 @@ export class PipelineDesignerPanel {
     const call = await this.callModel(text, refs, ctx);
     const edits = this.plan(text, call, repo);
     const applied = applyLineEdits(text, edits);
-    const firstError = call && this.paramRows(text, call).find(p => p.error);
+    const firstError = call && this.rows(text, call).find(p => p.error);
     const blocking = call?.error ?? call?.readOnly ?? (firstError ? `${firstError.label}: ${firstError.error}` : undefined);
-    return { doc, text, version: doc.version, refs, ctx, repos, repo, ref, call, edits, newText: applied.text, marks: applied.marks, blocking };
+    return { doc, text, version: doc.version, refs, taskSteps, ctx, repos, repo, ref, call, edits, newText: applied.text, marks: applied.marks, blocking };
   }
 
   private async callModel(text: string, refs: TemplateRef[], ctx: TemplateContext | undefined): Promise<CallModel | undefined> {
     const s = this.selection;
+    if ((s?.kind === 'task' || s?.kind === 'newTask') && this.taskSupport()) {
+      return this.taskModel(text, s);
+    }
     if (s?.kind === 'new') {
       const entry = this.catalog?.value?.entries.find(e => e.path === s.path);
       return entry ? this.newCallModel(text, entry) : undefined;
@@ -380,6 +548,77 @@ export class PipelineDesignerPanel {
     return model;
   }
 
+  /** The form model of a task step or a new task. Without the task's definition it says why there is no form. */
+  private taskModel(text: string, s: Extract<Selection, { kind: 'task' | 'newTask' }>): CallModel | undefined {
+    const snap = this.host.tasks!.snapshot();
+    if (s.kind === 'newTask') {
+      const info = snap.index?.all().find(t => t.id === s.id && t.major === s.major);
+      return info && snap.index ? this.newTaskModel(text, info, snap.index) : undefined;
+    }
+    const steps = findTaskSteps(text);
+    const step = this.findStep(steps);
+    if (!step) {
+      return undefined;
+    }
+    const name = step.name ?? (step.raw || '(no task)');
+    const model: CallModel = {
+      isNew: false, ref: asTemplateRef(step), title: `${name} · line ${step.line + 1}`, declared: [], points: [],
+      task: { step, stepIndex: steps.indexOf(step), label: step.raw || '(no task)' },
+    };
+    if (step.name === undefined || step.major === undefined) {
+      model.readOnly = callReadOnlyReason(text, model.ref!, 'inputs');
+      return model;
+    }
+    const major = this.taskMajor ?? step.major;
+    model.task!.label = `${step.name}@${major}`;
+    const info = snap.index?.find(step.name, major);
+    if (!snap.index || !info) {
+      model.error = this.missingTaskText(snap, step.name, major);
+      return model;
+    }
+    model.ref = asTemplateRef(step, info);
+    model.readOnly = callReadOnlyReason(text, model.ref, 'inputs');
+    Object.assign(model.task!, { info, index: snap.index });
+    if (!model.readOnly) {
+      model.task!.form = buildTaskForm(text, info, step, model.ref, this.pending);
+      model.declared = model.task!.form.declared;
+    }
+    return model;
+  }
+
+  private missingTaskText(snap: CatalogSnapshot, name: string, major: number): string {
+    if (!snap.index) {
+      return snap.status === 'error' ? 'The task list could not be read, so this step has no form. Edit it in the text.' : 'The form appears when the task list is there.';
+    }
+    const org = orgLabel(this.host.orgUrl?.()) || 'your organization';
+    const what = snap.index.knowsName(name) ? `Version @${major} is not in the task list of ${org}.` : `This task is not in the task list of ${org}.`;
+    return `${what} Edit it in the text.`;
+  }
+
+  private newTaskModel(text: string, info: TaskInfo, index: TaskIndex): CallModel {
+    const points = findInsertionPoints(text, 'steps');
+    const point = points[this.target ?? points.length - 1] ?? points.at(-1);
+    const form = buildTaskForm(text, info, undefined, undefined, this.pending);
+    return {
+      isNew: true, title: `New: ${info.name}@${info.major}`, declared: form.declared, points, point,
+      readOnly: point ? undefined : 'The pipeline has no steps: list to add this task to.',
+      task: { info, index, form, label: `${info.name}@${info.major}` },
+    };
+  }
+
+  /** Edits for the selected task step, or the insertion of a new one. */
+  private planTask(text: string, call: CallModel): LineEdit[] {
+    const t = call.task;
+    if (!t?.info || !t.form || call.readOnly || call.error) {
+      return [];
+    }
+    const opts = { writeDefaults: this.writeDefaults };
+    if (call.isNew) {
+      return call.point ? [planNewTask(t.info, t.form, this.pending, { at: call.point.line, indent: call.point.indent, unit: indentUnit(text) }, opts, this.displayName)] : [];
+    }
+    return t.step ? planTaskStep({ step: t.step, info: t.info, form: t.form, text, pending: this.pending, opts, displayName: this.displayName, major: this.taskMajor }) : [];
+  }
+
   private newCallModel(text: string, entry: CatalogEntry): CallModel {
     const kind = entry.kind ?? 'steps';
     const points = findInsertionPoints(text, kind);
@@ -395,7 +634,9 @@ export class PipelineDesignerPanel {
   private plan(text: string, call: CallModel | undefined, repo: RepoChoice): LineEdit[] {
     const opts = { writeDefaults: this.writeDefaults };
     const edits: LineEdit[] = [];
-    if (call?.ref && !call.error) {
+    if (call?.task) {
+      edits.push(...this.planTask(text, call));
+    } else if (call?.ref && !call.error) {
       edits.push(...planCallEdits(text, call.ref, call.declared, this.pending, opts).edits);
     } else if (call?.isNew && call.point && call.templatePath) {
       const lines = newCallLines(call.templatePath, call.declared, this.pending, call.point.indent, indentUnit(text), opts);
@@ -417,8 +658,14 @@ export class PipelineDesignerPanel {
       return;
     }
     this.send('state', this.view(c));
+    this.loadTasks(c);
     this.loadCatalog(c);
     this.loadRefs(c.repo);
+  }
+
+  /** Form rows of the selected call or task step. */
+  private rows(text: string, call: CallModel): ParamView[] {
+    return call.task ? call.task.form?.rows ?? [] : this.paramRows(text, call);
   }
 
   /** Form rows; an object parameter edited in the form shows the form's tree (and its empty or duplicate keys as errors). */
@@ -435,7 +682,8 @@ export class PipelineDesignerPanel {
 
   private view(c: Computed) {
     const call = c.call;
-    const params = call ? this.paramRows(c.text, call) : [];
+    const params = call ? this.rows(c.text, call) : [];
+    const tasksOn = this.taskSupport();
     const removed = c.edits.reduce((n, e) => n + Math.max(0, e.deleteCount - e.insert.length), 0);
     const marks = [...c.marks.values()];
     return {
@@ -443,10 +691,13 @@ export class PipelineDesignerPanel {
       repos: c.repos.map(r => ({ alias: r.alias, label: r.resource ? `${r.alias} · ${r.resource.name}` : 'self · this repository' })),
       repo: this.repoView(c),
       catalog: this.catalogView(c),
-      structure: structure(c.text, c.refs, call?.index, call?.isNew ? { label: path.posix.basename(call.title), stage: call.point?.stage } : undefined),
+      catalogMode: tasksOn ? this.catalogMode : 'templates',
+      tasks: tasksOn ? this.tasksView() : undefined,
+      structure: structure(c.text, c.refs, call?.task ? undefined : call?.index, this.newItem(call), tasksOn ? { steps: c.taskSteps, selected: call?.task?.stepIndex } : undefined),
       call: call && {
         isNew: call.isNew, title: call.title, kind: call.kind, error: call.error, readOnly: call.readOnly, line: call.ref?.line,
-        status: callStatus(call), params: call.error ? [] : params, unknown: unknownParams(call.ref, call.declared),
+        status: callStatus(call), params: call.error ? [] : params, unknown: call.task ? call.task.form?.unknown ?? [] : unknownParams(call.ref, call.declared),
+        task: call.task && this.taskView(c.text, call.task),
         points: call.points.map(p => p.label), point: call.point ? call.points.indexOf(call.point) : -1,
         applyLabel: call.isNew ? 'Insert into pipeline' : 'Update in pipeline', blocking: c.blocking,
       },
@@ -459,6 +710,30 @@ export class PipelineDesignerPanel {
       },
       validation: this.validation,
       notices: this.notices(c),
+    };
+  }
+
+  /** The new, not yet inserted item of the structure strip. */
+  private newItem(call: CallModel | undefined): { label: string; stage?: string; kind: 'template' | 'task' } | undefined {
+    if (!call?.isNew) {
+      return undefined;
+    }
+    return call.task ? { label: call.task.label, stage: call.point?.stage, kind: 'task' } : { label: path.posix.basename(call.title), stage: call.point?.stage, kind: 'template' };
+  }
+
+  /** The task part of the catalog: state, age and (in Tasks mode) the short list items. */
+  private tasksView() {
+    return taskListState(this.host.tasks!.snapshot(), Date.now(), this.host.orgUrl?.(), this.tasksRefreshing, this.catalogMode === 'tasks');
+  }
+
+  /** What the page shows about the task of the form: summary, version choices, display name and groups. */
+  private taskView(text: string, t: TaskModel) {
+    const summary = t.info && t.index ? taskSummary(t.index, t.info, this.setting('taskVersionHints')) : undefined;
+    const inFile = t.step ? findDisplayName(text, t.step)?.value : undefined;
+    const shown = this.displayName ?? inFile ?? '';
+    return {
+      label: t.label, summary, hasForm: !!t.form, groups: t.form?.groups ?? [],
+      displayName: { value: shown, placeholder: t.info?.title ?? '', unsaved: this.displayName !== undefined && this.displayName.trim() !== (inFile ?? '') },
     };
   }
 
@@ -493,8 +768,15 @@ export class PipelineDesignerPanel {
     if (resources) {
       out.push(resources);
     }
-    const newRefs = findTemplateRefs(c.newText);
     const call = c.call;
+    if (call?.task) {
+      const step = this.focusStep(c);
+      if (step) {
+        out.push([step.line, step.end - 1]);
+      }
+      return out;
+    }
+    const newRefs = findTemplateRefs(c.newText);
     let ref: TemplateRef | undefined;
     if (call?.isNew && call.point) {
       const head = newCallLines(call.templatePath ?? '', [], {}, call.point.indent, 2, { writeDefaults: false })[0];
@@ -506,6 +788,18 @@ export class PipelineDesignerPanel {
       out.push([ref.line, ref.end]);
     }
     return out;
+  }
+
+  /** The selected task step in the new text: the inserted one (`+` on its line) or the existing one by index. */
+  private focusStep(c: Computed): TaskStepRef | undefined {
+    const call = c.call;
+    const steps = findTaskSteps(c.newText);
+    if (!call?.isNew) {
+      return steps[call?.task?.stepIndex ?? -1];
+    }
+    const head = newTaskLines(call.task?.label ?? '', [], {}, call.point?.indent ?? 0, 2, { writeDefaults: false })[0];
+    const lines = c.newText.split(/\r?\n/);
+    return steps.find(t => c.marks.get(t.line) === '+' && lines[t.line] === head);
   }
 
   private notices(c: Computed): Notice[] {
@@ -565,6 +859,20 @@ export class PipelineDesignerPanel {
     });
   }
 
+  /** Reads the task catalog once the designer needs it: Tasks mode, or a task in the form. Later changes arrive through `onDidChange`. */
+  private loadTasks(c: Computed): void {
+    const wanted = this.catalogMode === 'tasks' || !!c.call?.task;
+    if (!this.host.tasks || !this.taskSupport() || !wanted || this.tasksRequested) {
+      return;
+    }
+    this.tasksRequested = true;
+    void this.host.tasks.ensure().then(() => undefined, () => undefined).then(() => {
+      if (!this.disposed) {
+        void this.render();
+      }
+    });
+  }
+
   private loadRefs(repo: RepoChoice): void {
     const r = repo.resource;
     if (r?.type !== 'git' || this.refs.has(repo.alias)) {
@@ -604,12 +912,25 @@ export class PipelineDesignerPanel {
     }
     const file = path.basename(c.doc.uri.path);
     const what = c.call?.isNew ? 'Inserted' : 'Updated';
-    const target = c.call?.isNew ? this.newRefAfterApply(c) : c.call?.ref && findTemplateRefs(c.newText)[c.call.index ?? -1];
-    this.select(target ? { kind: 'call', line: target.line, raw: target.raw } : this.selection);
+    this.selectApplied(c);
     this.refChoice = undefined;
+    const subject = c.call?.task ? `the step ${c.call.task.label}` : `the call of ${c.call?.title}`;
     this.notice = c.call
-      ? { level: 'ok', title: `${what} the call of ${c.call.title}`, detail: `${file} has unsaved changes: save it to keep them (undo works as usual).` }
+      ? { level: 'ok', title: `${what} ${subject}`, detail: `${file} has unsaved changes: save it to keep them (undo works as usual).` }
       : { level: 'ok', title: 'Updated the repository resource', detail: `${file} has unsaved changes.` };
+  }
+
+  /** After applying: selects what was written, as an existing call or step (the pending values are in the file now). */
+  private selectApplied(c: Computed): void {
+    const call = c.call;
+    if (call?.task) {
+      const steps = findTaskSteps(c.newText);
+      const step = call.isNew ? steps.find(t => c.marks.get(t.line) === '+' && t.raw === call.task?.label) : steps[call.task.stepIndex ?? -1];
+      this.select(step ? { kind: 'task', line: step.line, raw: step.raw } : this.selection);
+      return;
+    }
+    const target = call?.isNew ? this.newRefAfterApply(c) : call?.ref && findTemplateRefs(c.newText)[call.index ?? -1];
+    this.select(target ? { kind: 'call', line: target.line, raw: target.raw } : this.selection);
   }
 
   private newRefAfterApply(c: Computed): TemplateRef | undefined {
@@ -690,6 +1011,13 @@ function describeOrigin(o: Origin): string {
 }
 
 function callStatus(call: CallModel): string {
+  const info = call.task?.info;
+  if (call.task && info) {
+    return call.isNew ? `New: goes to ${call.point?.label ?? 'no place to insert it'}` : `${info.title} · ${info.category} · installed ${info.version}`;
+  }
+  if (call.task) {
+    return call.ref ? `task · line ${call.ref.line + 1}` : 'task';
+  }
   if (call.isNew) {
     return call.point ? `New: goes to ${call.point.label}` : 'New: no place to insert it';
   }
@@ -697,17 +1025,23 @@ function callStatus(call: CallModel): string {
   return call.ref ? `${kind} · line ${call.ref.line + 1}` : kind;
 }
 
-/** "Open in Designer" above every `template:` / `extends:` call of local YAML files (setting `azureDevOps.yaml.designerCodeLens`). */
+/** "Open in Designer" above every `template:` / `extends:` call and `- task:` step of local YAML files (settings `azureDevOps.yaml.designerCodeLens`, `.taskSupport`). */
 export class DesignerCodeLens implements vscode.CodeLensProvider {
   private readonly changed = new vscode.EventEmitter<void>();
   readonly onDidChangeCodeLenses = this.changed.event;
 
   provideCodeLenses(doc: vscode.TextDocument): vscode.CodeLens[] {
-    if (doc.uri.scheme !== 'file' || !vscode.workspace.getConfiguration('azureDevOps').get<boolean>('yaml.designerCodeLens', true)) {
+    const config = vscode.workspace.getConfiguration('azureDevOps');
+    if (doc.uri.scheme !== 'file' || !config.get<boolean>('yaml.designerCodeLens', true)) {
       return [];
     }
-    return findTemplateRefs(doc.getText()).map(ref => new vscode.CodeLens(new vscode.Range(ref.line, 0, ref.line, 0), {
-      title: 'Open in Designer', tooltip: 'Edit the parameters of this template call in a form', command: 'azureDevOps.yaml.openDesigner', arguments: [doc.uri, ref.line],
+    const text = doc.getText();
+    const lines = findTemplateRefs(text).map(ref => ({ line: ref.line, tooltip: 'Edit the parameters of this template call in a form' }));
+    if (config.get<boolean>('yaml.taskSupport', true)) {
+      lines.push(...findTaskSteps(text).map(step => ({ line: step.line, tooltip: 'Edit the inputs of this task step in a form' })));
+    }
+    return lines.map(l => new vscode.CodeLens(new vscode.Range(l.line, 0, l.line, 0), {
+      title: 'Open in Designer', tooltip: l.tooltip, command: 'azureDevOps.yaml.openDesigner', arguments: [doc.uri, l.line],
     }));
   }
 

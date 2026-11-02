@@ -6,14 +6,14 @@ DevOps Deck is a VS Code extension (TypeScript, strict mode) for Azure DevOps Se
 
 ## Non-negotiable rules
 
-- **Dependencies:** latest stable versions only, reputable vendor packages, MIT-compatible licenses, no runtime `dependencies`, committed `package-lock.json`, `npm audit` clean. `@types/vscode` must not be newer than `engines.vscode`. Details: [docs/agents/dependencies.md](docs/agents/dependencies.md).
+- **Dependencies:** latest stable versions only, reputable vendor packages, MIT-compatible licenses, no runtime `dependencies`, committed `package-lock.json`, `npm audit` clean. `@types/vscode` must not be newer than `engines.vscode`. Details: [docs/agents/06-dependencies.md](docs/agents/06-dependencies.md).
 - **Credentials** may only be sent to `https://dev.azure.com` and `https://*.visualstudio.com` (`isAzureDevOpsUrl` in `src/connection.ts`). Do not loosen this check.
 - **Webviews:** escape all server data (`escapeHtml` / `esc`); user-written HTML/Markdown goes through `sanitizeHtml` (or `renderMarkdown`, which sanitizes).
 - **Webviews:** scripts only with the CSP nonce (`panelHtml` / the sidebar's own CSP).
 - **Webviews:** commands requested by a webview are executed only within the `azureDevOps.` namespace.
 - **Fictitious data only** in screenshots, examples, tests and docs (Contoso, Fabrikam, made-up names), never real organizations, people or customer data.
-- **Test coverage:** new code needs at least **80 % line coverage** (SonarCloud quality gate). Every change comes with unit tests; check with `npm run test:coverage`. Details: [docs/agents/testing-and-quality.md](docs/agents/testing-and-quality.md).
-- **No SonarQube issues:** a pull request must not leave any open SonarCloud issue on new code (bugs, vulnerabilities, code smells of every severity, unreviewed security hotspots), not only pass the quality gate. Fix the code; `// NOSONAR: <reason>` is allowed only where a rule does not apply (e.g. an `await` in a loop whose order matters), with the reason on the same line or in the doc comment. Check the PR's issues before finishing: [docs/agents/testing-and-quality.md](docs/agents/testing-and-quality.md#sonarqube).
+- **Test coverage:** new code needs at least **80 % line coverage** (SonarCloud quality gate). Every change comes with unit tests; check with `npm run test:coverage`. Details: [docs/agents/05-testing-and-quality.md](docs/agents/05-testing-and-quality.md).
+- **No SonarQube issues:** a pull request must not leave any open SonarCloud issue on new code (bugs, vulnerabilities, code smells of every severity, unreviewed security hotspots), not only pass the quality gate. Fix the code; `// NOSONAR: <reason>` is allowed only where a rule does not apply (e.g. an `await` in a loop whose order matters), with the reason on the same line or in the doc comment. Check the PR's issues before finishing: [docs/agents/05-testing-and-quality.md](docs/agents/05-testing-and-quality.md#sonarqube).
 - **Trademark:** "Azure DevOps" is a Microsoft trademark. Keep the "not affiliated with or endorsed by Microsoft" notice in the README and do not use Microsoft logos.
 
 ## Checks before finishing a change
@@ -22,19 +22,25 @@ DevOps Deck is a VS Code extension (TypeScript, strict mode) for Azure DevOps Se
 npm ci
 npm test            # compile (strict, no unused locals/parameters) + unit tests
 npm run test:coverage  # new code must reach ≥ 80 % line coverage
-# SonarCloud: no open issues on the pull request (see docs/agents/testing-and-quality.md#sonarqube)
+# SonarCloud: no open issues on the pull request (see docs/agents/05-testing-and-quality.md#sonarqube)
 npm outdated        # should print nothing
 npm audit           # 0 vulnerabilities
 npx vsce ls         # only out/, media/ (no screenshots), README, CHANGELOG, LICENSE, package.json
 ```
 
+## Documentation layout
+
+- **Regular docs:** `NN-name.md`, numbered per folder with two digits (`docs/agents/01-architecture.md`).
+- **Analyses and concepts:** `YYYY-MM-DD-name.md`, dated instead of numbered (`docs/concepts/2026-11-01-feature-konzepte.md`).
+- **Mocks:** `docs/mocks/<name>/<mock>.md` or `docs/mocks/<name>/<mock>.dc.html`, without a number.
+
 ## Read this when…
 
 | You are about to… | Read |
 | --- | --- |
-| add, update or remove a package, GitHub Action or the devcontainer image | [docs/agents/dependencies.md](docs/agents/dependencies.md) |
-| add a command, a module, a panel or touch activation / multi-project handling | [docs/agents/architecture.md](docs/agents/architecture.md) |
-| call a new Azure DevOps REST endpoint or change auth / routes | [docs/agents/azure-devops-api.md](docs/agents/azure-devops-api.md) |
-| write or change webview HTML, CSS or scripts (`media/`, `panelHtml`) | [docs/agents/webviews.md](docs/agents/webviews.md) |
-| write tests, check coverage or keep SonarQube clean | [docs/agents/testing-and-quality.md](docs/agents/testing-and-quality.md) |
-| find where a user feature lives or learn its known pitfalls | [docs/agents/features.md](docs/agents/features.md) |
+| add, update or remove a package, GitHub Action or the devcontainer image | [docs/agents/06-dependencies.md](docs/agents/06-dependencies.md) |
+| add a command, a module, a panel or touch activation / multi-project handling | [docs/agents/01-architecture.md](docs/agents/01-architecture.md) |
+| call a new Azure DevOps REST endpoint or change auth / routes | [docs/agents/03-azure-devops-api.md](docs/agents/03-azure-devops-api.md) |
+| write or change webview HTML, CSS or scripts (`media/`, `panelHtml`) | [docs/agents/04-webviews.md](docs/agents/04-webviews.md) |
+| write tests, check coverage or keep SonarQube clean | [docs/agents/05-testing-and-quality.md](docs/agents/05-testing-and-quality.md) |
+| find where a user feature lives or learn its known pitfalls | [docs/agents/02-features.md](docs/agents/02-features.md) |

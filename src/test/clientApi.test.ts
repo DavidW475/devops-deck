@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
-import { AdoClient, AdoError, isSafeApiPath, prArtifactUrl, refName, ZERO_OBJECT_ID } from '../client';
+import { AdoClient, AdoError, commitArtifactUrl, isSafeApiPath, prArtifactUrl, refName, ZERO_OBJECT_ID } from '../client';
 import { ConnectionManager } from '../connection';
 import * as vscode from './vscodeStub';
 
@@ -80,6 +80,12 @@ const cases: Case[] = [
     reply: { value: [{ name: 'refs/heads/main' }] }, path: `${P}git/repositories/repo-1/refs`, query: { filter: 'heads/', $top: '500' },
     result: { tags: ['refs/heads/main'], branches: ['refs/heads/main'] },
   },
+  {
+    name: 'listTaskDefinitions reads the org-wide task list', call: c => c.listTaskDefinitions(),
+    reply: { value: [{ id: GUID, name: 'ContosoDeploy' }] }, path: `${O}distributedtask/tasks`, query: { 'api-version': '7.1' },
+    result: [{ id: GUID, name: 'ContosoDeploy' }],
+  },
+  { name: 'listTaskDefinitions tolerates a missing value', call: c => c.listTaskDefinitions(), reply: {}, path: `${O}distributedtask/tasks`, result: [] },
   {
     name: 'listProjects sorts the project names', call: c => c.listProjects(),
     reply: { value: [{ name: 'Zeta' }, { name: 'Alpha' }] }, path: `${O}projects`, query: { $top: '500' }, result: ['Alpha', 'Zeta'],
@@ -292,6 +298,25 @@ const cases: Case[] = [
     name: 'listBuildsSince started builds', call: c => c.listBuildsSince(new Date('2026-10-01T00:00:00Z'), 'started'), path: `${P}build/builds`,
     query: { queryOrder: 'startTimeDescending' }, result: [],
   },
+  {
+    name: 'listBuildsSince sends no requestedFor by default and top 200', call: c => c.listBuildsSince(new Date('2026-10-01T00:00:00Z'), 'started'),
+    path: `${P}build/builds`, query: { $top: '200' }, result: [],
+  },
+  {
+    name: 'listBuildsSince passes requestedFor and top', call: c => c.listBuildsSince(new Date('2026-10-01T00:00:00Z'), 'finished', { requestedFor: 'me-1', top: 25 }),
+    path: `${P}build/builds`, query: { requestedFor: 'me-1', $top: '25', statusFilter: 'completed' }, result: [],
+  },
+  {
+    name: 'listIterationDates flattens the tree with finish dates', call: c => c.listIterationDates(),
+    reply: { name: 'Fabrikam Shop', children: [{ name: 'Sprint 1', attributes: { finishDate: '2026-10-14T00:00:00Z' } }, { name: 'Release 2', children: [{ name: 'Sprint 2' }] }] },
+    path: `${P}wit/classificationnodes/Iterations`, query: { $depth: '10' },
+    result: [
+      { path: 'Fabrikam Shop', finishDate: undefined },
+      { path: 'Fabrikam Shop\\Sprint 1', finishDate: '2026-10-14T00:00:00Z' },
+      { path: 'Fabrikam Shop\\Release 2', finishDate: undefined },
+      { path: 'Fabrikam Shop\\Release 2\\Sprint 2', finishDate: undefined },
+    ],
+  },
   { name: 'listWikis', call: c => c.listWikis(), reply: { value: [{ id: 'w' }] }, path: `${P}wiki/wikis`, result: [{ id: 'w' }] },
   {
     name: 'getWikiPageTree reads the full tree', call: c => c.getWikiPageTree('Fabrikam Shop.wiki'), reply: { path: '/' }, path: `${P}wiki/wikis/Fabrikam%20Shop.wiki/pages`,
@@ -347,6 +372,104 @@ describe('AdoClient API calls', () => {
     assert.equal(lastCall().headers['Content-Type'], 'application/json-patch+json');
     await newClient().getBuild(1);
     assert.equal(lastCall().headers['Content-Type'], undefined, 'no content type without a body');
+  });
+
+  it('listBuildsSince leaves out requestedFor when it is not given', async () => {
+    await newClient().listBuildsSince(new Date('2026-10-01T00:00:00Z'), 'finished');
+    assert.equal(lastCall().url.searchParams.has('requestedFor'), false);
+    assert.equal(lastCall().url.searchParams.get('$top'), '200');
+  });
+
+  describe('throttledUntil', () => {
+    const answerWith = (headers: Record<string, string>, status = 200) => { reply = () => json({ value: [] }, status, headers); };
+    const near = (value: number, expectedMs: number) => assert.ok(Math.abs(value - (Date.now() + expectedMs)) < 2000, `${value} is about ${expectedMs} ms ahead`);
+
+    it('is 0 without a header', async () => {
+      const client = newClient();
+      await client.listWikis();
+      assert.equal(client.throttledUntil, 0);
+    });
+
+    it('reads Retry-After seconds from a 200 answer', async () => {
+      answerWith({ 'Retry-After': '30' });
+      const client = newClient();
+      await client.listWikis();
+      near(client.throttledUntil, 30_000);
+    });
+
+    it('reads Retry-After as an HTTP date', async () => {
+      answerWith({ 'Retry-After': new Date(Date.now() + 45_000).toUTCString() });
+      const client = newClient();
+      await client.listWikis();
+      near(client.throttledUntil, 45_000);
+    });
+
+    it('ignores invalid, zero and past values', async () => {
+      const client = newClient();
+      for (const value of ['soon', '0', '-5', new Date(Date.now() - 60_000).toUTCString()]) {
+        answerWith({ 'Retry-After': value });
+        await client.listWikis();
+        assert.equal(client.throttledUntil, 0, value);
+      }
+    });
+
+    it('pauses for 60 seconds on a 429 without header and still throws', async () => {
+      answerWith({}, 429);
+      const client = newClient();
+      await assert.rejects(client.listWikis(), (e: unknown) => e instanceof AdoError && e.status === 429);
+      near(client.throttledUntil, 60_000);
+    });
+
+    it('falls back to 60 seconds for a 429 whose Retry-After cannot be read', async () => {
+      answerWith({ 'Retry-After': 'soon' }, 429);
+      const client = newClient();
+      await assert.rejects(client.listWikis(), (e: unknown) => e instanceof AdoError && e.status === 429);
+      near(client.throttledUntil, 60_000);
+      assert.ok(Number.isFinite(client.throttledUntil));
+    });
+
+    it('caps a very long pause at 15 minutes', async () => {
+      answerWith({ 'Retry-After': '86400' });
+      const client = newClient();
+      await client.listWikis();
+      near(client.throttledUntil, 15 * 60_000);
+    });
+
+    it('forgets the pause on reset and does not apply it to another organization', async () => {
+      answerWith({ 'Retry-After': '30' });
+      const client = newClient();
+      await client.listWikis();
+      near(client.throttledUntil, 30_000);
+      const first = conn;
+      conn = { ...conn!, orgUrl: 'https://dev.azure.com/fabrikam' };
+      assert.equal(client.throttledUntil, 0, 'another organization is not paused');
+      conn = first;
+      near(client.throttledUntil, 30_000);
+      client.reset();
+      assert.equal(client.throttledUntil, 0);
+      await client.listWikis();
+      client.forProject('Contoso Web').reset();
+      assert.equal(client.throttledUntil, 0, 'a project client resets the shared pause');
+    });
+
+    it('is shared between the root client and its project children', async () => {
+      answerWith({ 'Retry-After': '30' });
+      const root = newClient();
+      const child = root.forProject('Contoso Web');
+      await child.listWikis();
+      near(root.throttledUntil, 30_000);
+      assert.equal(child.throttledUntil, root.throttledUntil);
+    });
+
+    it('never shortens the pause', async () => {
+      const client = newClient();
+      answerWith({ 'Retry-After': '120' });
+      await client.listWikis();
+      const first = client.throttledUntil;
+      answerWith({ 'Retry-After': '5' });
+      await client.listWikis();
+      assert.equal(client.throttledUntil, first);
+    });
   });
 
   it('getLatestIteration fails without iterations', async () => {
@@ -649,5 +772,50 @@ describe('AdoClient identity, auth and errors', () => {
   it('uses the status when the JSON error has no message', async () => {
     reply = () => json({}, 409);
     await assert.rejects(newClient().getBuild(1), (e: unknown) => e instanceof AdoError && e.status === 409 && /^409/.test(e.message));
+  });
+});
+
+describe('commit lookups', () => {
+  const SHA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
+
+  it('queryPullRequestsByCommit asks both queries in one organization-route request', async () => {
+    const pr = { pullRequestId: 7 };
+    const other = { pullRequestId: 9 };
+    replyWith({ results: [{ [SHA]: [pr] }, { [SHA]: [other, pr] }] });
+    const r = await newClient().queryPullRequestsByCommit(GUID, SHA);
+    assert.deepEqual(r, { byMergeCommit: [pr], byCommit: [other, pr] });
+    const c = lastCall();
+    assert.equal(c.method, 'POST');
+    assert.equal(c.url.pathname, `${O}git/repositories/${GUID}/pullrequestquery`);
+    assert.deepEqual(c.body, { queries: [{ type: 'lastMergeCommit', items: [SHA] }, { type: 'commit', items: [SHA] }] });
+  });
+
+  it('queryPullRequestsByCommit gives empty lists for missing results', async () => {
+    replyWith({});
+    assert.deepEqual(await newClient().queryPullRequestsByCommit(GUID, SHA), { byMergeCommit: [], byCommit: [] });
+    replyWith({ results: [{}, { other: [{ pullRequestId: 1 }] }] });
+    assert.deepEqual(await newClient().queryPullRequestsByCommit(GUID, SHA), { byMergeCommit: [], byCommit: [] });
+  });
+
+  it('getCommitWorkItemIds posts the commit artifact URI and maps the ids', async () => {
+    const uri = `vstfs:///Git/Commit/proj-1%2Frepo-1%2F${SHA}`;
+    replyWith({ artifactUrisQueryResult: { [uri]: [{ id: 12 }, { id: 15 }] } });
+    assert.deepEqual(await newClient().getCommitWorkItemIds('proj-1', 'repo-1', SHA), [12, 15]);
+    const c = lastCall();
+    assert.equal(c.method, 'POST');
+    assert.equal(c.url.pathname, `${O}wit/artifacturiquery`);
+    assert.deepEqual(c.body, { artifactUris: [uri] });
+  });
+
+  it('getCommitWorkItemIds is empty without a result', async () => {
+    replyWith({});
+    assert.deepEqual(await newClient().getCommitWorkItemIds('proj-1', 'repo-1', SHA), []);
+    replyWith({ artifactUrisQueryResult: {} });
+    assert.deepEqual(await newClient().getCommitWorkItemIds('proj-1', 'repo-1', SHA), []);
+  });
+
+  it('commitWebUrl encodes project and repository name', async () => {
+    assert.equal(newClient().commitWebUrl('web shop', SHA), `https://dev.azure.com/contoso/Fabrikam%20Shop/_git/web%20shop/commit/${SHA}`);
+    assert.equal(commitArtifactUrl('p', 'r', SHA), `vstfs:///Git/Commit/p%2Fr%2F${SHA}`);
   });
 });

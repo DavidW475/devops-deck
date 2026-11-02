@@ -2,10 +2,12 @@ import * as vscode from 'vscode';
 import { AdoClient, AdoError } from '../client';
 import { ConnectionManager, normalizeOrgUrl } from '../connection';
 import { buildDto, timelineTree } from '../pipelines/timeline';
-import { summarizeChecks } from '../pullRequests/checks';
+import { ChecksSummary, summarizeChecks } from '../pullRequests/checks';
 import { changeVersion, ReviewedFiles } from '../pullRequests/reviewed';
 import { Approval, PullRequest, TeamIteration, WorkItem, WorkItemState } from '../types';
-import { errorMessage, mapLimit, nonce, shortRef } from '../util';
+import type { MyDayService } from '../myDay/service';
+import type { MyDayResult } from '../myDay/types';
+import { errorMessage, mapLimit, nonce, plural, shortRef } from '../util';
 import { loadByPerson, sprintStructure, workingDays } from '../workItems/sprint';
 
 export interface BuiltinQuery {
@@ -22,10 +24,25 @@ const DEFAULT_QUERIES: BuiltinQuery[] = [
   { name: 'Created by me', wiql: "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project AND [System.CreatedBy] = @Me AND [System.State] NOT IN ('Closed', 'Done', 'Removed', 'Completed') ORDER BY [System.CreatedDate] DESC" },
 ];
 
+/** The built-in "Assigned to me" query, also the work item source of My Day. */
+export const ASSIGNED_TO_ME: BuiltinQuery = DEFAULT_QUERIES[0];
+
+/** How long the policy status of a pull request is reused: switching filters or refreshing in a burst asks once. */
+const CHECKS_TTL_MS = 15_000;
+/** Entries kept at most: the cache is bounded in a long session that sees many pull requests. */
+export const CHECKS_CACHE_MAX = 200;
+
+const badgeTooltip = (count: number): string => (count === 1 ? '1 item needs you in My Day' : `${plural(count, 'item')} need you in My Day`);
+
 /** The sidebar dashboard: a single webview with tabs for pull requests, work items and pipelines. */
 export class SidebarProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
   private readonly stateCache = new Map<string, Promise<WorkItemState[]>>();
+  private readonly checksCache = new Map<string, { at: number; checks: Promise<ChecksSummary | undefined> }>();
+  private myDay?: MyDayService;
+  private myDaySubscribed = false;
+  private lastCount = 0;
+  private lastTab = '';
 
   constructor(
     private readonly client: AdoClient,
@@ -49,10 +66,51 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 <meta name="viewport" content="width=device-width, initial-scale=1.0"><link rel="stylesheet" href="${css}"></head>
 <body><div id="app"></div><script nonce="${n}" src="${js}"></script></body></html>`;
     view.webview.onDidReceiveMessage(m => this.onMessage(m));
+    view.onDidChangeVisibility(() => this.syncVisible());
+    this.setBadge(this.lastCount);
+    this.myDay?.start();
+  }
+
+  /** Connects My Day: its changes are pushed to the page and shown as the badge of the view. */
+  useMyDay(service: MyDayService): void {
+    this.myDay = service;
+    if (this.myDaySubscribed) {
+      return;
+    }
+    this.myDaySubscribed = true;
+    service.onDidChange((result: MyDayResult) => {
+      this.setBadge(result.count);
+      void this.view?.webview.postMessage({ type: 'myDay', result });
+    });
+  }
+
+  private setBadge(count: number): void {
+    this.lastCount = count;
+    if (this.view) {
+      this.view.badge = count > 0 ? { value: count, tooltip: badgeTooltip(count) } : undefined;
+    }
+  }
+
+  /** The service refreshes faster while its tab is on screen. */
+  private syncVisible(): void {
+    this.myDay?.setVisible(!!this.view?.visible && this.lastTab === 'myday');
+  }
+
+  /** The work item states of a project's type, cached; a failure caches an empty list. */
+  statesFor(project: string, type: string, client?: AdoClient): Promise<WorkItemState[]> {
+    // States depend on the project's process, so the cache is per project and type.
+    const key = `${project}\n${type}`;
+    let states = this.stateCache.get(key);
+    if (!states) {
+      states = (client ?? this.client.forProject(project || undefined)).getWorkItemStates(type).catch(() => []);
+      this.stateCache.set(key, states);
+    }
+    return states;
   }
 
   refresh(): void {
     this.stateCache.clear();
+    this.checksCache.clear();
     void this.view?.webview.postMessage({ type: 'refresh' });
   }
 
@@ -76,6 +134,15 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private async myDayResult(force: boolean): Promise<MyDayResult> {
+    if (!this.myDay) {
+      throw new Error('My Day is not available');
+    }
+    const result = await this.myDay.get({ force });
+    this.setBadge(result.count);
+    return result;
+  }
+
   private async rpc(method: string, p: any): Promise<unknown> {
     const c = this.client;
     switch (method) {
@@ -89,7 +156,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       case 'me':
         return c.getMe();
       case 'prs':
-        return this.pullRequests(String(p.filter));
+        return this.pullRequests(String(p.filter), !!p.force);
       case 'prFiles':
         return this.prFiles(String(p.repoId), Number(p.prId));
       case 'setReviewed':
@@ -139,7 +206,13 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       case 'sprint':
         return this.sprint(c.forProject(optText(p.project)), String(p.team), p.iteration ? String(p.iteration) : undefined);
       case 'approvals':
-        return this.perProject(x => this.approvals(x));
+        return this.perProject((x, project) => this.approvals(x, project));
+      case 'myDay':
+        return this.myDayResult(!!p.force);
+      case 'tab':
+        this.lastTab = typeof p.tab === 'string' ? p.tab : '';
+        this.syncVisible();
+        return null;
       default:
         throw new Error(`Unknown method ${method}`);
     }
@@ -192,8 +265,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   }
 
   /** Pending approvals of pipeline runs; `mine` marks the ones the signed-in user may answer. */
-  private async approvals(c: AdoClient) {
-    const [list, me] = await Promise.all([c.listPendingApprovals(), c.getMe()]);
+  private async approvals(c: AdoClient, project: string) {
+    const pending = this.myDay ? this.myDay.rawApprovals(this.projectName(project)) : c.listPendingApprovals();
+    const [list, me] = await Promise.all([pending, c.getMe()]);
     return list.map((a: Approval) => ({
       id: a.id,
       pipeline: a.pipeline?.name,
@@ -235,16 +309,52 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   }
 
   /** Pull requests of the selected projects, newest first, with the state of their required checks. */
-  private async pullRequests(filter: string) {
+  private async pullRequests(filter: string, force: boolean) {
     const c = this.client;
     const me = await c.getMe();
     const criteria: Record<string, { creatorId?: string; reviewerId?: string }> = { mine: { creatorId: me.id }, review: { reviewerId: me.id } };
-    const prs = (await this.perProject(x => x.listPullRequests(criteria[filter] ?? {}))).toSorted((a, b) => b.creationDate.localeCompare(a.creationDate));
+    const list = (x: AdoClient, project: string) => filter === 'review' && this.myDay
+      ? this.myDay.rawReviews(this.projectName(project))
+      : x.listPullRequests(criteria[filter] ?? {});
+    const prs = (await this.perProject<PullRequest>(list)).toSorted((a, b) => b.creationDate.localeCompare(a.creationDate));
     // Policy status per PR (at most 6 requests at a time); a PR whose policies cannot be read just shows no checks.
     const checks = await mapLimit(prs, 6, pr => pr.repository.project?.id
-      ? c.getPolicyEvaluations(pr.repository.project.id, pr.pullRequestId).then(summarizeChecks, () => undefined)
+      ? this.checksOf(pr.repository.project.id, pr.pullRequestId, force)
       : Promise.resolve(undefined));
     return prs.map((pr, i) => ({ ...this.prDto(pr, me.id), project: pr.project, checks: checks[i] }));
+  }
+
+  /** The required-check summary of a PR; reused for CHECKS_TTL_MS unless `force` asks again. */
+  private checksOf(projectId: string, prId: number, force: boolean): Promise<ChecksSummary | undefined> {
+    const key = `${projectId}/${prId}`;
+    const cached = this.checksCache.get(key);
+    if (cached && !force && Date.now() - cached.at < CHECKS_TTL_MS) {
+      return cached.checks;
+    }
+    const checks = this.client.getPolicyEvaluations(projectId, prId).then(summarizeChecks, () => undefined);
+    this.rememberChecks(key, checks);
+    return checks;
+  }
+
+  /** Stores the entry; expired entries go first, then the oldest, so the cache never exceeds CHECKS_CACHE_MAX. */
+  private rememberChecks(key: string, checks: Promise<ChecksSummary | undefined>): void {
+    const now = Date.now();
+    this.checksCache.delete(key);
+    if (this.checksCache.size >= CHECKS_CACHE_MAX) {
+      for (const [k, entry] of this.checksCache) {
+        if (now - entry.at >= CHECKS_TTL_MS) {
+          this.checksCache.delete(k);
+        }
+      }
+    }
+    while (this.checksCache.size >= CHECKS_CACHE_MAX) {
+      const oldest = this.checksCache.keys().next();
+      if (oldest.done) {
+        break;
+      }
+      this.checksCache.delete(oldest.value);
+    }
+    this.checksCache.set(key, { at: now, checks });
   }
 
   /** Files of a PR's latest update with their reviewed check marks. */
@@ -259,6 +369,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         return { path: change.item.path, changeType: change.changeType, change, version, reviewed };
       }),
     };
+  }
+
+  /** `perProject` passes '' for a single project: that is the primary one. */
+  private projectName(project: string): string {
+    return project || this.connections.current?.project || '';
   }
 
   private multi(): boolean {
@@ -309,14 +424,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     const f = w.fields;
     const type = f['System.WorkItemType'];
     const project = String(f['System.TeamProject'] ?? '');
-    // States depend on the project's process, so the cache is per project and type.
-    const key = `${project}\n${type}`;
-    let states = this.stateCache.get(key);
-    if (!states) {
-      states = (client ?? this.client.forProject(project || undefined)).getWorkItemStates(type).catch(() => []);
-      this.stateCache.set(key, states);
-    }
-    const state = (await states).find(s => s.name === f['System.State']);
+    const state = (await this.statesFor(project, String(type), client)).find(s => s.name === f['System.State']);
     return {
       id: w.id,
       title: f['System.Title'],

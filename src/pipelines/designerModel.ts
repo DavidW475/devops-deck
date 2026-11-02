@@ -5,8 +5,11 @@
 import * as path from 'node:path';
 import type { CatalogEntry } from './templateResolver';
 import { defaultText, isBlockScalarText, normalizeText, parseValueText, structureIssue, toTree, TreeNode } from './objectParams';
-import { controlOf, ControlKind, indentUnit, isBlockEntry, LineMark, locationOf, passedValue, sameValue, stageNames, TemplateKind } from './templateEdits';
-import { joinTemplatePath, scanYaml, TemplatePath, TemplateRef, valueIssue } from './templateRefs';
+import {
+  controlOf, ControlKind, indentUnit, isBlockEntry, LineMark, locationOf, passedValue, sameValue, scalarValue, stageNames, TemplateKind,
+} from './templateEdits';
+import type { TaskStepRef } from './taskModel';
+import { joinTemplatePath, ParamEntry, scanYaml, TemplatePath, TemplateRef, valueIssue } from './templateRefs';
 import { PipelineParameter } from './yamlParameters';
 
 export interface ParamView {
@@ -29,12 +32,24 @@ export interface ParamView {
   line?: number;
   /** object parameters: the value as a form tree (undefined when the YAML text doesn't parse into one) */
   tree?: TreeNode;
+  /** task inputs: the input's own type (`filepath`), shown instead of the parameter type */
+  typeLabel?: string;
+  /** task inputs: the help text (plain text) */
+  help?: string;
+  /** task inputs: name of the group the input belongs to */
+  group?: string;
+  /** task inputs: the rule hides it, but the file sets it */
+  hidden?: boolean;
+  /** task inputs: optional without a default, so a value can be taken back (unset) */
+  clearable?: boolean;
 }
 
 export interface StructureItem {
   label: string;
   title: string;
-  /** index into the document's template references; undefined for the new call */
+  /** a template call or a task step */
+  kind: 'template' | 'task';
+  /** index into the document's template references (kind `template`) or task steps (kind `task`); undefined for the new call */
   index?: number;
   isNew: boolean;
   selected: boolean;
@@ -114,6 +129,42 @@ function structuredIssue(p: PipelineParameter, value: string, required: boolean,
   return structureIssue(p, value);
 }
 
+/** Form row of a multi-line input (`inlineScript: |`): the text of the block scalar without its header and indentation. */
+function multilineView(text: string, p: PipelineParameter, entry: ParamEntry | undefined, pending: Record<string, string>,
+  callReadOnly: string | undefined): ParamView {
+  const scalar = entry ? scalarValue(text, entry) : undefined;
+  let readOnly = callReadOnly;
+  if (!readOnly && entry?.conditional) {
+    readOnly = CONDITIONAL;
+  } else if (!readOnly && entry && !scalar) {
+    readOnly = 'Nested value: edit it in the text.';
+  }
+  const fileValue = scalar?.text;
+  const touched = isOwn(pending, p.name) && !readOnly;
+  const value = touched ? pending[p.name] : fileValue ?? p.default ?? '';
+  const required = p.default === undefined;
+  const error = !readOnly && !entry && required && !value.trim() ? 'Required: the template has no default.' : undefined;
+  return scalarRow(p, pending, { entry, value, fileValue, touched, readOnly, error });
+}
+
+/** What a scalar form row needs besides the parameter. */
+interface RowState {
+  entry?: ParamEntry;
+  value: string;
+  fileValue?: string;
+  touched: boolean;
+  readOnly?: string;
+  error?: string;
+}
+
+function scalarRow(p: PipelineParameter, pending: Record<string, string>, r: RowState): ParamView {
+  return {
+    name: p.name, label: p.displayName || p.name, type: p.type, control: controlOf(p), values: p.values, default: p.default, value: r.value,
+    required: p.default === undefined, unsaved: r.touched && !sameValue(p, pending[p.name], r.fileValue ?? p.default), inFile: !!r.entry,
+    readOnly: r.readOnly, error: r.error, line: r.entry?.line,
+  };
+}
+
 /** Form rows for the declared parameters of a call (`ref` undefined for a new call). */
 export function paramViews(text: string, declared: PipelineParameter[], ref: TemplateRef | undefined, pending: Record<string, string>,
   callReadOnly?: string): ParamView[] {
@@ -121,6 +172,9 @@ export function paramViews(text: string, declared: PipelineParameter[], ref: Tem
     const entry = ref?.params.find(e => e.name === p.name);
     if (controlOf(p) === 'raw') {
       return structuredView(text, p, entry, pending, callReadOnly);
+    }
+    if (controlOf(p) === 'multiline') {
+      return multilineView(text, p, entry, pending, callReadOnly);
     }
     const block = !!entry && isBlockEntry(text, entry.line, entry.start);
     const readOnly = callReadOnly ?? readOnlyReason(entry, block);
@@ -132,10 +186,7 @@ export function paramViews(text: string, declared: PipelineParameter[], ref: Tem
     if (!readOnly && !(entry?.conditional)) {
       error = required && !entry && !value.trim() ? 'Required: the template has no default.' : valueIssue(p, value);
     }
-    return {
-      name: p.name, label: p.displayName || p.name, type: p.type, control: controlOf(p), values: p.values, default: p.default, value, required,
-      unsaved: touched && !sameValue(p, pending[p.name], fileValue ?? p.default), inFile: !!entry, readOnly, error, line: entry?.line,
-    };
+    return scalarRow(p, pending, { entry, value, fileValue, touched, readOnly, error });
   });
 }
 
@@ -143,6 +194,25 @@ export function paramViews(text: string, declared: PipelineParameter[], ref: Tem
 export function unknownParams(ref: TemplateRef | undefined, declared: PipelineParameter[]): string[] {
   const names = new Set(declared.map(p => p.name));
   return (ref?.params ?? []).filter(e => !e.conditional && !names.has(e.name)).map(e => e.name);
+}
+
+/** A call or step as a line range (inclusive). */
+interface Span {
+  line: number;
+  last: number;
+}
+
+/**
+ * What a line belongs to: the call or task step that starts on it, else the first one whose range contains it, else the
+ * nearest one above it, else the first one of the document.
+ */
+export function itemAt(calls: Span[], steps: Span[], line: number): { kind: 'call' | 'task'; index: number } | undefined {
+  const all = [
+    ...calls.map((c, index) => ({ kind: 'call' as const, index, ...c })),
+    ...steps.map((c, index) => ({ kind: 'task' as const, index, ...c })),
+  ].toSorted((a, b) => a.line - b.line);
+  const hit = all.find(a => a.line === line) ?? all.find(a => a.line <= line && line <= a.last) ?? all.findLast(a => a.line <= line) ?? all[0];
+  return hit && { kind: hit.kind, index: hit.index };
 }
 
 /** Short label of a reference: file name and alias, e.g. `dotnet.yml@templates`. */
@@ -158,8 +228,9 @@ export function refLabel(ref: TemplateRef): string {
  * Stages with the template calls inside them, in document order. Calls outside a stage are grouped under
  * "Pipeline", `extends:` under "Extends". A new (not yet inserted) call shows in the group of its target.
  */
-export function structure(text: string, refs: TemplateRef[], selected: number | undefined, newItem?: { label: string; stage?: string }): StructureGroup[] {
-  const groups = new Map<string, StructureItem[]>();
+export function structure(text: string, refs: TemplateRef[], selected: number | undefined, newItem?: { label: string; stage?: string; kind?: 'template' | 'task' },
+  tasks?: { steps: TaskStepRef[]; selected?: number }): StructureGroup[] {
+  const groups = new Map<string, (StructureItem & { line: number })[]>();
   const group = (name: string) => {
     const list = groups.get(name) ?? [];
     groups.set(name, list);
@@ -169,12 +240,17 @@ export function structure(text: string, refs: TemplateRef[], selected: number | 
   stageNames(text).forEach(s => group(s));
   refs.forEach((ref, index) => {
     const name = ref.kind === 'extends' ? 'Extends' : locationOf(text, ref.line).stage ?? 'Pipeline';
-    group(name).push({ label: refLabel(ref), title: ref.raw, index, isNew: false, selected: index === selected });
+    group(name).push({ label: refLabel(ref), title: ref.raw, kind: 'template', index, isNew: false, selected: index === selected, line: ref.line });
+  });
+  (tasks?.steps ?? []).forEach((step, index) => {
+    const stage = locationOf(text, step.line).stage ?? 'Pipeline';
+    group(stage).push({ label: step.raw || '(no task)', title: `Task step, line ${step.line + 1}`, kind: 'task', index, isNew: false, selected: index === tasks?.selected, line: step.line });
   });
   if (newItem) {
-    group(newItem.stage ?? 'Pipeline').push({ label: newItem.label, title: 'New call (not inserted yet)', isNew: true, selected: true });
+    group(newItem.stage ?? 'Pipeline').push({ label: newItem.label, title: 'New (not inserted yet)', kind: newItem.kind ?? 'template', isNew: true, selected: true, line: Infinity });
   }
-  return [...groups].filter(([name, items]) => items.length || name !== 'Pipeline').map(([name, items]) => ({ name, items }));
+  return [...groups].filter(([name, items]) => items.length || name !== 'Pipeline')
+    .map(([name, items]) => ({ name, items: items.toSorted((a, b) => a.line - b.line).map(i => ({ label: i.label, title: i.title, kind: i.kind, index: i.index, isNew: i.isNew, selected: i.selected })) }));
 }
 
 /** First and last line of a top-level key's block (`resources:` …), or undefined when the key is missing. */

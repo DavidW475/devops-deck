@@ -1,0 +1,78 @@
+# Architecture
+
+## Module map
+
+| Path | Purpose |
+| --- | --- |
+| `src/extension.ts` | `activate()`: creates the shared services, registers providers and every command. |
+| `src/connection.ts` | `ConnectionManager` (org + projects from settings or a git remote), `normalizeOrgUrl`, `trimSlashes`, `isAzureDevOpsUrl`, `parseRemote`, `gitApi`. |
+| `src/client.ts` | `AdoClient`: every Azure DevOps REST call, auth, URL building. Also `fieldOps`, `refName`, `prArtifactUrl`/`parsePrArtifact`. See [03-azure-devops-api.md](03-azure-devops-api.md). |
+| `src/types.ts` | REST response types. |
+| `src/util.ts` | `escapeHtml`, `mdEscape` (text for Markdown hovers), `sanitizeHtml`, `renderMarkdown`, `panelHtml`, `nonce`, `guarded`/`showError`, link picker, `mapLimit`, `plural`, time/duration formatting, avatars. |
+| `src/git.ts` | Local git repositories that belong to the selected projects (`localAdoRepos`, `pickLocalRepo`), the Azure Repos remote of a repository or file in any project of the organization (`adoRemoteOf`, `adoRepoForFile`), work item IDs from branch names / commit text, PR title suggestions. |
+| `src/sidebar/sidebarProvider.ts` + `media/sidebar.js`, `media/sidebar.css` | The "Dashboard" webview view: tabs for My Day, pull requests, work items, sprint, pipelines. |
+| `src/myDay/` | The "My Day" tab: `types.ts` (DTOs, `MyDayItem`, `DeferEntry`), `rank.ts` (pure: `RULES` table of weights, `rankItem`), `model.ts` (pure: turns pull requests, approvals, builds and work items into items with actions), `defers.ts` (`MyDayDefers`: snooze / done / hide in `globalState`, per organization), `commands.ts` (`deferItem`, `voteOnPullRequest`), `service.ts` (`MyDayService`: sources, caches, host timer, change events; everything it needs from the client comes in through `MyDayDeps`). |
+| `src/pullRequests/` | `prPanel.ts` (overview), `createPrPanel.ts`, `prStatusBar.ts`, `iterations.ts` (compare updates), `prComments.ts` (inline threads in diffs), `prFiles.ts` (`ado-pr:` / `ado-git:` content, diff, checkout), `reviewed.ts` (local "reviewed" marks), `checks.ts` (policy summary). |
+| `src/workItems/` | `wiPanel.ts` (detail panel), `wiCommands.ts` (state, assign, comment, create, branch, from code + `TodoCodeActions`), `wiModel.ts` and `sprint.ts` (pure logic). |
+| `src/pipelines/` | `runView.ts` + `media/runView.js` (run overview), `runPanel.ts` (run form), `logs.ts` (log terminal, `ado-log:` documents), `timeline.ts`, `stageGraph.ts`, `yamlParameters.ts` (YAML subset parser, `topLevelValue`), `approvals.ts`; YAML editing: `templateRefs.ts` (pure: references, parameters, checks, completion context), `templateResolver.ts` (`TemplateResolver`, `ado-template:` documents), `yamlTemplates.ts` (`YamlTemplateSupport`: completion, hover, definition, diagnostics, template tree, `expandLocally` / `expandOnServer`), task support: `taskModel.ts` (types), `taskRefs.ts` (pure: `- task:` steps, completion context, `checkTaskStep`), `taskRules.ts` (pure: `visibleRule` parser and three-valued evaluation), `taskRetirement.ts` (Microsoft's retirement table), `taskCatalog.ts` (`TaskCatalog`: per-organization cache in `globalStorageUri`, stale-while-revalidate), `yamlTasks.ts` (`YamlTaskSupport`: completion, hover, diagnostics collection `azureDevOps.tasks`, quick fixes; takes a small `TaskCatalogSource` so tests fake it), `templateExpressions.ts` (`${{ }}` evaluator), `templateExpander.ts` (local expansion with sources), `pipelineModel.ts` (stages/jobs/steps), `previewPanel.ts` + `media/pipelinePreview.js` (pipeline preview); designer: `templateEdits.ts` (pure line edits for template calls and repository resources, `blockKey: 'inputs'` for task steps, `newTaskLines`, `planTaskVersion`, `planDisplayName`, multi-line inputs), `taskDesigner.ts` (pure: the short task list and catalog state, the task step form with `visibleRule` visibility, edit planning for task steps; `toParameter` / `asTemplateRef` in `taskRefs.ts` map a task step onto the template edit functions), `objectParams.ts` (pure: object/list values as YAML text, form tree ↔ YAML, checks, the lines written back), `designerModel.ts` (pure view model), `designerPanel.ts` + `media/pipelineDesigner.js` (panel and CodeLens; `DesignerHost.tasks` is the `TaskCatalog`, wired in `extension.ts`, and its `onDidChange` re-renders the panel). |
+| `src/blame/` | Trace a line to its pull request and work items: `blameGit.ts` (`blameArgs`, `parsePorcelain`, `isFullSha`, `makeGitRunner`, the only place that starts a process), `blameModel.ts` (pure: `pickPullRequest`, `prIdFromMessage`, `mergeWorkItems`, hover Markdown, trace rows, annotation text, `HOVER_COMMANDS`), `blameService.ts` (`BlameService`: caches, request budget, lookup steps; git runner and client are injected through `BlameDeps`), `blameUi.ts` (`BlameUi`: trace quick pick, the details provider for VS Code's blame hover, opt-in status bar entry and inline annotation), `blameTypes.ts`. |
+| `src/watchers/` | `watchers.ts` (polling engine), `watchersPanel.ts` (editor), `watchersTree.ts` (tree view). |
+| `src/wiki/wiki.ts` | `WikiFileSystem` (`ado-wiki:` scheme), page picker. |
+| `src/repos/reposPanel.ts` + `media/repos.js` | Repositories and branches panel. |
+| `media/panel.css` | Shared styles of all editor panels. |
+| `src/test/` | Unit tests, see [05-testing-and-quality.md](05-testing-and-quality.md). |
+
+## Activation flow (`src/extension.ts`)
+
+Activation event is `onStartupFinished`.
+
+1. Creates one instance each of `ConnectionManager`, `AdoClient`, `ReviewedFiles`, `SidebarProvider`, `PrCommentController`, `Watchers`, `PrStatusBar`, `LogDocumentProvider`, `BlameUi` (around a `BlameService`), `MyDayService` (with `MyDayDefers`; `sidebar.useMyDay(myDay)` connects it and `invalidate()` runs inside `refresh()`); `PullRequestPanel.useStore(globalState)`.
+2. Registers disposables: the code action provider, the `azureDevOps.dashboard` webview view (`retainContextWhenHidden`), content providers for `ado-pr`, `ado-git`, `ado-log`, `ado-template` (via `YamlTemplateSupport.register()`, which also adds the YAML language providers; `YamlTaskSupport.register()` adds the task providers and `TaskCatalog` is reset where the connection changes; `blame.reset()` and `myDay.reset()` run at the same places through one helper (`resetState` in `extension.ts`; a settings change skips the task catalog) and drop the blame and My Day caches; `BlameUi` does not listen to the connection itself), the `ado-wiki` file system provider.
+3. Listeners: connection change, `azureDevOps.*` configuration change and Microsoft session change call `client.reset()` and `refresh()` (sidebar + PR status bar).
+4. Registers all commands (below), among them `azureDevOps.myDay.defer`, `.restore` and `azureDevOps.pr.vote`.
+5. `await connections.resolve()`, then `connections.watchGit()` (re-resolves when the git extension opens repositories), then `blame.start()` (also when `watchGit` failed, which is then shown as a warning), which registers the blame hover provider with the git extension and the annotation listeners (it needs the git API, so it runs after `watchGit`).
+
+## Registering commands
+
+Every command must also be declared in `package.json` (`contributes.commands`, menus).
+
+- `command(id, fn)` registers `fn` wrapped in `guarded()`: any thrown error becomes a notification (auth errors offer "Sign In" / "Use PAT").
+- `mutation(id, fn)` is for commands that change server data: after `fn` it calls `refresh()`, unless `fn` returned `false` (e.g. the user cancelled).
+- `AdoClient.throttledUntil` is the time (ms since epoch) until which Azure DevOps asked for a pause (`Retry-After`, or 60 s after a 429); the root client holds it for all project clients. Background pollers (My Day) read it through their deps and start nothing before it passes; direct user actions are not blocked. It is capped at 15 minutes, falls back to 60 s for an unreadable header, and is dropped by `AdoClient.reset()` and for another organization.
+- `at(project)` returns `client.forProject(project)` when `project` is a non-empty string, else the primary client. Use it for every project-bound command.
+
+```ts
+mutation('azureDevOps.pipelines.cancel', async (buildId: number, project?: string) => { /* ... */ await at(project).cancelBuild(buildId); });
+```
+
+Commands are also invoked from webviews with JSON arguments, so validate types (`typeof x === 'number' ? x : undefined`, `uri instanceof vscode.Uri`).
+
+## Sidebar: webview ↔ SidebarProvider
+
+The sidebar has its own HTML (not `panelHtml`) with a nonce CSP and loads `media/sidebar.js`. Two message types from the page:
+
+- `{ type: 'rpc', id, method, params }`: `SidebarProvider.rpc()` answers with `{ type: 'rpc', id, result }` or `{ type: 'rpc', id, error: { message, auth } }`. Methods: `context`, `projects`, `setProject`, `me`, `prs`, `prFiles`, `setReviewed`, `queries`, `workItems`, `builds`, `definitions`, `definitionBuilds`, `timeline`, `teams`, `sprint`, `approvals`, `myDay` (`{ force }`, returns the ranked result), `tab` (the page tells which tab is open, so the service knows when to refresh faster). Unknown methods throw. In `sidebar.js`: `rpc(method, params)` returns a promise.
+- `{ type: 'command', name, args }`: executed only if `name` starts with `azureDevOps.`. In `sidebar.js`: `command(name, ...args)` or a `data-cmd` / `data-args` attribute.
+
+Extension → page: `refresh`, `focus` (window focus state), `reviewed` (check mark changed elsewhere), `myDay` (`{ result }`, pushed when the service's content changed; the badge of the view shows its count).
+
+To add data to the sidebar: add a `case` to `rpc()` returning a small DTO (not the raw REST object), then call `rpc('name')` from `sidebar.js`.
+
+## Editor panels
+
+Pattern used by `PullRequestPanel`, `WorkItemPanel`, `RunViewPanel`, `CreatePullRequestPanel`, `RunPipelinePanel`, `ReposPanel`, `WatchersPanel`, `PipelinePreviewPanel`, `PipelineDesignerPanel` (the last two keyed by document URI):
+
+- A static `show(...)` is the only entry point. It reveals an existing panel instead of opening a second one: a static `Map` keyed by PR (`repoId/prId`), work item ID or build ID, or a single `static current` for the create-PR, run-pipeline, repos and watchers panels.
+- The constructor is private. It only wires `onDidReceiveMessage(guarded(m => this.handle(m)))` and sets a placeholder (`panelHtml(..., 'Loading', spinner)`).
+- `show` stores the instance, then starts the first `render()` / `load()`. Never start async rendering in the constructor.
+- `onDidDispose` removes the instance from the map / `current` and clears timers.
+- Panels that keep their script in `media/` (`runView.js`, `repos.js`) set the HTML once and the page posts `ready`; data then flows as messages.
+
+## Multi-project model
+
+- `Connection` (`src/connection.ts`): `orgUrl`, `project` (primary), `projects` (primary first, then `azureDevOps.additionalProjects`, deduplicated case-insensitively), `detected` (from git remote).
+- `AdoClient.forProject(project)` returns a cached child client whose `connection.project` is that project; it returns the root client for no project or the primary one. `client.reset()` clears the cache.
+- Sidebar lists aggregate with `perProject(fn)`: runs `fn` for each project (at most 4 at a time via `mapLimit`), tags results with `project` when there are several, skips failing projects unless all fail.
+- The item's project travels to commands as the **last argument** (e.g. `[b.id, b.project]` in `sidebar.js`), and the command uses `at(project)`.
+- Saved queries, settings, watchers and newly created items use the primary project. Built-in/custom WIQL queries run in every selected project.
+- Repository calls by GUID and work item calls by ID use organization routes, so they work for any project (see [03-azure-devops-api.md](03-azure-devops-api.md)).

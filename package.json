@@ -2,7 +2,7 @@
   "name": "devops-deck",
   "displayName": "DevOps Deck for Azure DevOps",
   "description": "Review and create pull requests, plan sprints, manage work items, watch pipelines with live logs, approve deployments and browse the wiki from inside VS Code.",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "publisher": "davidw475",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -20,7 +20,7 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "In untrusted workspaces, organization, project, tenant, queries and watchers from workspace settings are ignored.",
+      "description": "In untrusted workspaces, organization, project, tenant, queries and watchers from workspace settings are ignored. Tracing lines to pull requests runs git and is off.",
       "restrictedConfigurations": [
         "azureDevOps.organization",
         "azureDevOps.project",
@@ -367,6 +367,43 @@
         "title": "Open Pipeline Designer",
         "category": "DevOps Deck",
         "icon": "$(edit)"
+      },
+      {
+        "command": "azureDevOps.yaml.refreshTaskCatalog",
+        "title": "Refresh Task Catalog",
+        "category": "DevOps Deck",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "azureDevOps.blame.traceLine",
+        "title": "Trace Line to Pull Request",
+        "category": "DevOps Deck",
+        "icon": "$(git-pull-request)"
+      },
+      {
+        "command": "azureDevOps.blame.openForCommit",
+        "title": "Pull Request & Work Items of Commit",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.blame.openCommit",
+        "title": "Open Commit in Browser",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.myDay.defer",
+        "title": "Defer My Day Item",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.myDay.restore",
+        "title": "Restore My Day Item",
+        "category": "DevOps Deck"
+      },
+      {
+        "command": "azureDevOps.pr.vote",
+        "title": "Vote on Pull Request",
+        "category": "DevOps Deck"
       }
     ],
     "keybindings": [
@@ -478,6 +515,11 @@
           "command": "azureDevOps.yaml.openDesigner",
           "when": "resourceScheme == file && (resourceLangId == yaml || resourceLangId == azure-pipelines)",
           "group": "1_ado@7"
+        },
+        {
+          "command": "azureDevOps.blame.traceLine",
+          "when": "resourceScheme == file && azureDevOps.configured",
+          "group": "1_ado@9"
         }
       ],
       "editor/title": [
@@ -708,6 +750,34 @@
         {
           "command": "azureDevOps.yaml.openDesigner",
           "when": "resourceScheme == file && (editorLangId == yaml || editorLangId == azure-pipelines)"
+        },
+        {
+          "command": "azureDevOps.yaml.refreshTaskCatalog",
+          "when": "editorLangId == yaml || editorLangId == azure-pipelines"
+        },
+        {
+          "command": "azureDevOps.blame.traceLine",
+          "when": "resourceScheme == file && azureDevOps.configured"
+        },
+        {
+          "command": "azureDevOps.blame.openForCommit",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.blame.openCommit",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.myDay.defer",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.myDay.restore",
+          "when": "false"
+        },
+        {
+          "command": "azureDevOps.pr.vote",
+          "when": "false"
         }
       ],
       "view/item/context": [
@@ -1007,10 +1077,64 @@
           "default": true,
           "markdownDescription": "Read templates of a repository resource (`template: file.yml@alias`) from a local clone in the workspace when there is one, so unpushed template changes count. Turn off to always read Azure Repos repositories from the server at the resource's `ref`."
         },
+        "azureDevOps.yaml.taskSupport": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Help for `- task:` steps in pipeline YAML: completion of task names, versions, inputs and values, hovers, checks and quick fixes, from the tasks installed in your organization. Needs the PAT scope *Agent Pools (Read)* when you sign in with a token. Turn off to disable all of it."
+        },
+        "azureDevOps.yaml.taskDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Mark problems of `- task:` steps: tasks that are not installed, missing required inputs (respecting which inputs are visible), unknown inputs, values outside the allowed ones, and deprecated or retired tasks."
+        },
+        "azureDevOps.yaml.taskVersionHints": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show an information hint when a newer major version of a task is installed in your organization, with a quick fix that raises the version."
+        },
         "azureDevOps.yaml.designerCodeLens": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Show \"Open in Designer\" above `template:` and `extends:` calls in pipeline YAML. The designer edits the parameters of a call in a form, inserts calls of templates from a template repository and validates the result with Azure DevOps."
+          "markdownDescription": "Show \"Open in Designer\" above `template:` and `extends:` calls and `- task:` steps in pipeline YAML (task steps need `azureDevOps.yaml.taskSupport`). The designer edits the parameters of a call or the inputs of a task step in a form, inserts calls of templates from a template repository and steps of tasks from the task catalog, and validates the result with Azure DevOps."
+        },
+        "azureDevOps.blame.annotations": {
+          "type": "string",
+          "enum": [
+            "off",
+            "statusBar",
+            "inline",
+            "both"
+          ],
+          "default": "off",
+          "enumDescriptions": [
+            "Only the command and the link in the blame hover of VS Code.",
+            "A status bar entry for the cursor line.",
+            "Text after the cursor line, with a hover.",
+            "Status bar entry and text after the cursor line."
+          ],
+          "markdownDescription": "Show the author, age and pull request of the cursor line. Runs `git blame` and asks Azure DevOps when the cursor rests on a line of another commit."
+        },
+        "azureDevOps.blame.ignoreWhitespace": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Skip commits that only changed whitespace when tracing a line (`git blame -w`). VS Code does not by default (`#git.blame.ignoreWhitespace#`), so both can name a different commit."
+        },
+        "azureDevOps.blame.detectCopies": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Also follow lines moved from other files of the same commit when tracing a line (`git blame -C`). Slower on large histories."
+        },
+        "azureDevOps.myDay.importantBranches": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "main",
+            "master",
+            "release/*"
+          ],
+          "markdownDescription": "Branches where a failed run of yours ranks higher in *My Day*, in addition to the default branch of the repository. `*` matches any text."
         }
       }
     },
@@ -1030,9 +1154,12 @@
     "test:coverage": "npm run compile && node -e \"require('fs').mkdirSync('coverage',{recursive:true})\" && node --test --enable-source-maps --experimental-test-coverage --test-coverage-exclude=\"out/test/**\" --require ./out/test/setup.js --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov --test-reporter-destination=coverage/lcov.info \"out/test/**/*.test.js\""
   },
   "devDependencies": {
-    "@types/node": "^26.6.5",
+    "@types/node": "^26.6.6",
     "@types/vscode": "^1.140.0",
-    "@vscode/vsce": "^4.0.0",
+    "@vscode/vsce": "^4.1.0",
     "typescript": "^7.0.2"
+  },
+  "overrides": {
+    "minimatch": "^11.0.3"
   }
 }

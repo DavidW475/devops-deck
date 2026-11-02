@@ -14,7 +14,8 @@
       },
       "extensions": [
         "Anthropic.claude-code",
-        "GitHub.vscode-github-actions"
+        "GitHub.vscode-github-actions",
+        "ms-vscode.live-server"
       ]
     }
   },

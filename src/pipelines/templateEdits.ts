@@ -5,10 +5,13 @@
  * `WorkspaceEdit`s (native undo/redo and dirty state).
  */
 import {
-  defaultText, defaultValue, normalizeText, paramLines, PassedValue, passedText, parseValueText, sameStructured, structureIssue, yamlScalar,
+  defaultText, defaultValue, isBlockScalarText, normalizeText, paramLines, PassedValue, passedText, parseValueText, sameStructured, structureIssue,
+  yamlScalar,
 } from './objectParams';
+import { TaskStepRef } from './taskModel';
+import { findDisplayName } from './taskRefs';
 import { ParamEntry, scanYaml, TemplateRef, YLine } from './templateRefs';
-import { PipelineParameter, stripComment, unquote } from './yamlParameters';
+import { isBlockHeader, PipelineParameter, stripComment, unquote } from './yamlParameters';
 
 export { yamlScalar } from './objectParams';
 
@@ -39,8 +42,11 @@ export interface CallPlan {
   readOnly?: string;
 }
 
-/** The form control of a parameter; `raw` = no generic form (objects, steps, jobs, stages). */
-export type ControlKind = 'text' | 'number' | 'enum' | 'boolean' | 'raw';
+/** The form control of a parameter; `raw` = no generic form (objects, steps, jobs, stages); `multiline` = task inputs like `inlineScript`. */
+export type ControlKind = 'text' | 'number' | 'enum' | 'boolean' | 'multiline' | 'raw';
+
+/** The key whose block holds the passed values: `parameters:` of a template call, `inputs:` of a task step. */
+export type BlockKey = 'parameters' | 'inputs';
 
 /** What a template provides, from its top-level keys. */
 export type TemplateKind = 'stages' | 'jobs' | 'steps' | 'variables';
@@ -71,14 +77,27 @@ const KINDS = new Set<TemplateKind>(['stages', 'jobs', 'steps', 'variables']);
 const pad = (n: number) => ' '.repeat(Math.max(n, 0));
 const splitLines = (text: string) => text.split(/\r?\n/);
 const isOwn = (o: object, k: string) => Object.hasOwn(o, k);
+const indentOf = (s: string) => s.length - s.trimStart().length;
+
+/** Text without line breaks at its end (a loop: no regex on user text). */
+export function trimNewlines(text: string): string {
+  let end = text.length;
+  while (end > 0 && (text[end - 1] === '\n' || text[end - 1] === '\r')) {
+    end--;
+  }
+  return text.slice(0, end);
+}
 
 export function controlOf(p: PipelineParameter): ControlKind {
   if (p.values?.length) {
     return 'enum';
   }
-  const kinds: Record<string, ControlKind> = { string: 'text', number: 'number', boolean: 'boolean' };
+  const kinds: Record<string, ControlKind> = { string: 'text', number: 'number', boolean: 'boolean', multiline: 'multiline' };
   return isOwn(kinds, p.type) ? kinds[p.type] : 'raw';
 }
+
+/** A blank value of a task input that has no default: it means "not set", so no `opt: ''` line is written. */
+const isUnset = (p: PipelineParameter, value: string) => p.unsetWhenBlank === true && value.trim() === '';
 
 const isNumeric = (v: string) => v.trim() !== '' && Number.isFinite(Number(v));
 
@@ -105,6 +124,9 @@ export function sameValue(p: PipelineParameter, a: string | undefined, b: string
   }
   if (control === 'number' && isNumeric(a) && isNumeric(b)) {
     return Number(a) === Number(b);
+  }
+  if (control === 'multiline') {
+    return trimNewlines(a.replaceAll('\r\n', '\n')) === trimNewlines(b.replaceAll('\r\n', '\n'));
   }
   return a === b;
 }
@@ -167,7 +189,7 @@ function valueSpan(text: string, keyCol: number): ValueSpan | undefined {
 }
 
 /** The line with the value of `key` replaced; a trailing comment stays. */
-function withValue(text: string, keyCol: number, value: string): string {
+export function withValue(text: string, keyCol: number, value: string): string {
   const span = valueSpan(text, keyCol);
   if (!span) {
     return text;
@@ -179,7 +201,7 @@ function withValue(text: string, keyCol: number, value: string): string {
 /** True when the entry's value continues on the following lines (block scalar or nested collection). */
 function isBlockValue(lines: YLine[], line: number, keyCol: number): boolean {
   const own = lines[line];
-  if (own.rest && !/^[|>][-+]?\d*$/.test(own.rest)) {
+  if (own.rest && !isBlockScalarText(own.rest)) {
     return false;
   }
   const next = lines.slice(line + 1).find(l => !l.blank);
@@ -193,12 +215,21 @@ export function isBlockEntry(text: string, line: number, keyCol: number): boolea
 }
 
 /** Last non-blank line nested under the key at lines[at] (the key line itself when nothing is nested). */
-function blockEnd(lines: YLine[], at: number): number {
+export function blockEnd(lines: YLine[], at: number): number {
   const col = lines[at].keyCol;
   let end = at;
+  // Column of the key whose block scalar we are inside, if any.
+  let scalarCol = isBlockHeader(lines[at].rest) ? col : undefined;
   for (let j = at + 1; j < lines.length && (lines[j].blank || lines[j].indent > col || (lines[j].indent === col && lines[j].dash && !lines[at].dash)); j++) {
-    // Lines of a block scalar (`script: |`) are scanned as blank but still belong to the block.
-    if (!lines[j].blank || lines[j].indent > col) {
+    const l = lines[j];
+    if (!l.blank) {
+      end = j;
+      scalarCol = isBlockHeader(l.rest) ? l.keyCol : undefined;
+    } else if (l.indent > col) {
+      // Lines of a block scalar (`script: |`) are scanned as blank but still belong to the block.
+      end = j;
+    } else if (scalarCol !== undefined && l.commentCol !== undefined && l.commentCol > scalarCol) {
+      // A `# …` line inside a block scalar is text, not a comment.
       end = j;
     }
   }
@@ -211,35 +242,52 @@ export function passedValue(text: string, entry: ParamEntry): PassedValue {
   return passedText(splitLines(text), entry.line, scanned[entry.line].rest, blockEnd(scanned, entry.line));
 }
 
-/** Sorts edits and merges the ones that touch, so the result has no overlapping or adjacent ranges. */
-export function normalizeEdits(edits: LineEdit[]): LineEdit[] {
+export type LineMark = '+' | '~';
+
+/** A merged edit with the mark of each inserted line. */
+interface MarkedEdit extends LineEdit {
+  marks: LineMark[];
+}
+
+/** Marks of one edit's inserted lines: the ones that take the place of a deleted line are changed (~), the others inserted (+). */
+const marksOf = (e: LineEdit): LineMark[] => e.insert.map((_, k): LineMark => (k < e.deleteCount ? '~' : '+'));
+
+/**
+ * Sorts edits and merges the ones that touch. Inserts at the same line keep the order they were given in. This is the one
+ * place that decides the order, so the preview (`applyLineEdits`) and the written text (`toRangeEdits`) agree.
+ */
+function mergeEdits(edits: LineEdit[]): MarkedEdit[] {
   const sorted = [...edits].sort((a, b) => a.line - b.line || b.deleteCount - a.deleteCount);
-  const out: LineEdit[] = [];
+  const out: MarkedEdit[] = [];
   for (const e of sorted) {
     const last = out.at(-1);
     if (last && e.line <= last.line + last.deleteCount) {
       const extra = Math.max(0, e.line + e.deleteCount - (last.line + last.deleteCount));
-      out[out.length - 1] = { line: last.line, deleteCount: last.deleteCount + extra, insert: [...last.insert, ...e.insert] };
+      out[out.length - 1] = {
+        line: last.line, deleteCount: last.deleteCount + extra, insert: [...last.insert, ...e.insert], marks: [...last.marks, ...marksOf(e)],
+      };
     } else {
-      out.push({ ...e, insert: [...e.insert] });
+      out.push({ ...e, insert: [...e.insert], marks: marksOf(e) });
     }
   }
   return out;
 }
 
-export type LineMark = '+' | '~';
+/** Sorts edits and merges the ones that touch, so the result has no overlapping or adjacent ranges. */
+export function normalizeEdits(edits: LineEdit[]): LineEdit[] {
+  return mergeEdits(edits).map(({ line, deleteCount, insert }) => ({ line, deleteCount, insert }));
+}
 
 /**
  * Applies line edits; returns the new text and, per new line number, whether it was changed (~) or inserted (+).
- * The edits are applied one by one from the bottom (not merged), so a removed line next to inserted ones does not
- * turn them into "changed" lines.
+ * The edits are merged like the ones written to the document (`toRangeEdits`), but each edit keeps its own marks, so a
+ * removed line next to inserted ones does not turn them into "changed" lines.
  */
 export function applyLineEdits(text: string, edits: LineEdit[]): { text: string; marks: Map<number, LineMark> } {
   const eol = text.includes('\r\n') ? '\r\n' : '\n';
   const rows: { text: string; mark?: LineMark }[] = splitLines(text).map(t => ({ text: t }));
-  const ordered = [...edits].sort((a, b) => b.line - a.line || b.deleteCount - a.deleteCount);
-  for (const e of ordered) {
-    rows.splice(e.line, e.deleteCount, ...e.insert.map((t, k): { text: string; mark: LineMark } => ({ text: t, mark: k < e.deleteCount ? '~' : '+' })));
+  for (const e of mergeEdits(edits).reverse()) {
+    rows.splice(e.line, e.deleteCount, ...e.insert.map((t, k): { text: string; mark: LineMark } => ({ text: t, mark: e.marks[k] })));
   }
   const marks = new Map<number, LineMark>();
   rows.forEach((r, n) => {
@@ -301,6 +349,112 @@ function addParam(s: CallScope, name: string, value: string): void {
   s.added.push(`${pad(s.col)}${yamlScalar(name)}: ${value}`);
 }
 
+/** A scalar value as text: a plain value, or the body of a block scalar (`|`, `|-`, `>`) without its indentation. */
+export interface ScalarText {
+  /** the block scalar header as written (`|-`); undefined for a value on the key's line */
+  header?: string;
+  text: string;
+  /** last line of the value */
+  end: number;
+  /** column of the block's lines */
+  childCol?: number;
+}
+
+/** The value of a passed key as text; undefined when it is a nested collection (not a scalar). */
+export function scalarValue(text: string, entry: ParamEntry): ScalarText | undefined {
+  return scalarOf(splitLines(text), scanYaml(text), entry);
+}
+
+function scalarOf(lines: string[], scanned: YLine[], entry: ParamEntry): ScalarText | undefined {
+  const l = scanned[entry.line];
+  if (!l) {
+    return undefined;
+  }
+  if (l.rest && !isBlockScalarText(l.rest)) {
+    return { text: entry.value, end: entry.line };
+  }
+  const end = blockEnd(scanned, entry.line);
+  if (!l.rest) {
+    return end > entry.line ? undefined : { text: '', end: entry.line };
+  }
+  const body = lines.slice(entry.line + 1, end + 1);
+  const content = body.filter(x => x.trim());
+  const childCol = content.length ? Math.min(...content.map(indentOf)) : undefined;
+  const cut = childCol ?? 0;
+  return { header: l.rest, text: trimNewlines(body.map(x => x.slice(Math.min(cut, indentOf(x))).trimEnd()).join('\n')), end, childCol };
+}
+
+/**
+ * `|` with an indentation indicator when the first line starts with spaces (YAML would read them as the block's
+ * indentation). The indicator is the body's column minus the key's column (1 to 9); the readers accept `|2-` and `|-2`.
+ */
+function blockHeader(header: string, text: string, keyCol: number, bodyCol: number): string {
+  const indicator = bodyCol - keyCol;
+  const written = /\d/.exec(header)?.[0];
+  if (written !== undefined && Number(written) === indicator) {
+    return header;
+  }
+  // A stale indicator (the body moved) is dropped; one is added only when the first line starts with spaces.
+  const base = header.replace(/\d/, '');
+  const first = text.split('\n').find(x => x.trim());
+  return first?.startsWith(' ') && indicator >= 1 && indicator <= 9 ? `${base[0]}${indicator}${base.slice(1)}` : base;
+}
+
+/** Lines of a block scalar below an existing key line: the text indented at `col`, empty lines stay empty. */
+function blockBody(text: string, col: number): string[] {
+  return text.split('\n').map(x => (x ? pad(col) + x : ''));
+}
+
+/** `key: value` for a multi-line input: one line for a single line of text, else a `|` block scalar. */
+function multilineLines(p: PipelineParameter, text: string, col: number, unit: number): string[] {
+  if (!text.includes('\n')) {
+    return [`${pad(col)}${yamlScalar(p.name)}: ${formatValue(p, text)}`];
+  }
+  return [`${pad(col)}${yamlScalar(p.name)}: ${blockHeader('|', text, col, col + unit)}`, ...blockBody(text, col + unit)];
+}
+
+/** A multi-line input (`inlineScript: |`): replace, remove or add it; an existing header (`|-`) and the key's spelling stay. */
+function planMultiline(s: CallScope, p: PipelineParameter, entry: ParamEntry | undefined, pending: Record<string, string>, opts: EditOptions): void {
+  if (!isOwn(pending, p.name)) {
+    if (opts.writeDefaults && !entry && p.default) {
+      s.added.push(...multilineLines(p, p.default, s.col, s.unit));
+    }
+    return;
+  }
+  const text = trimNewlines(pending[p.name].replaceAll('\r\n', '\n'));
+  const write = (opts.writeDefaults || p.default === undefined || text !== trimNewlines(p.default)) && !isUnset(p, text);
+  if (!entry) {
+    if (write) {
+      s.added.push(...multilineLines(p, text, s.col, s.unit));
+    }
+    return;
+  }
+  const current = scalarOf(s.lines, s.scanned, entry);
+  if (!current) {
+    return;
+  }
+  const deleteCount = current.end - entry.line + 1;
+  if (!write) {
+    s.edits.push({ line: entry.line, deleteCount, insert: [] });
+    s.removed += s.scanned.slice(entry.line, current.end + 1).filter(l => !l.blank).length;
+  } else if (text !== current.text) {
+    s.edits.push({ line: entry.line, deleteCount, insert: replacedMultiline(s, p, entry, current, text) });
+  }
+}
+
+/** The lines that replace an existing multi-line input: one line for single-line text without a block header, else header and body. */
+function replacedMultiline(s: CallScope, p: PipelineParameter, entry: ParamEntry, current: ScalarText, text: string): string[] {
+  const line = s.lines[entry.line];
+  if (!current.header && !text.includes('\n')) {
+    return [withValue(line, entry.start, formatValue(p, text))];
+  }
+  // An indicator needs a column 1 to 9 right of the key; else the body moves to the file's indentation.
+  const near = current.childCol !== undefined && current.childCol > entry.start && current.childCol - entry.start <= 9;
+  const bodyCol = near ? current.childCol! : entry.start + s.unit;
+  const header = blockHeader(current.header ?? '|', text, entry.start, bodyCol);
+  return [withValue(line, entry.start, header), ...blockBody(text, bodyCol)];
+}
+
 /** One declared parameter: replace, remove or add its line as the pending value asks. */
 function planParam(s: CallScope, p: PipelineParameter, pending: Record<string, string>, opts: EditOptions): void {
   if (s.ref.params.some(e => e.name === p.name && e.conditional)) {
@@ -311,17 +465,25 @@ function planParam(s: CallScope, p: PipelineParameter, pending: Record<string, s
     planStructured(s, p, entry, pending, opts);
     return;
   }
+  if (controlOf(p) === 'multiline') {
+    planMultiline(s, p, entry, pending, opts);
+    return;
+  }
   if (entry && isBlockValue(s.scanned, entry.line, entry.start)) {
     return;
   }
   if (!isOwn(pending, p.name)) {
-    if (opts.writeDefaults && !entry && p.default !== undefined) {
+    if (opts.writeDefaults && !entry && p.default !== undefined && !isUnset(p, p.default)) {
       addParam(s, p.name, formatValue(p, p.default));
     }
     return;
   }
-  const value = pending[p.name];
-  const write = opts.writeDefaults || p.default === undefined || !sameValue(p, value, p.default);
+  planScalar(s, p, entry, pending[p.name], opts);
+}
+
+/** A scalar parameter with a pending value: replace, remove or add its line. */
+function planScalar(s: CallScope, p: PipelineParameter, entry: ParamEntry | undefined, value: string, opts: EditOptions): void {
+  const write = (opts.writeDefaults || p.default === undefined || !sameValue(p, value, p.default)) && !isUnset(p, value);
   if (entry && write && !sameValue(p, entry.value, value)) {
     s.edits.push({ line: entry.line, deleteCount: 1, insert: [withValue(s.lines[entry.line], entry.start, formatValue(p, value))] });
   } else if (entry && !write) {
@@ -367,19 +529,21 @@ function planStructured(s: CallScope, p: PipelineParameter, entry: ParamEntry | 
   }
 }
 
-/** Why the designer can't edit the parameters of this call, if it can't. */
-export function callReadOnlyReason(text: string, ref: TemplateRef): string | undefined {
+/** Why the designer can't edit the parameters (`inputs` of a task step) of this call, if it can't. */
+export function callReadOnlyReason(text: string, ref: TemplateRef, blockKey: BlockKey = 'parameters'): string | undefined {
   if (!ref.target) {
-    return 'The template path is an expression: it is only known when the pipeline runs.';
+    return blockKey === 'inputs'
+      ? 'The task name is an expression: it is only known when the pipeline runs.'
+      : 'The template path is an expression: it is only known when the pipeline runs.';
   }
   const lines = scanYaml(text);
   const paramsLine = ref.paramsLine === undefined ? undefined : lines[ref.paramsLine];
   const expressionKeys = paramsLine ? expressionKeysOf(lines, paramsLine) : [];
   if (paramsLine?.rest.startsWith('${{') || expressionKeys.some(k => !CONDITION_KEY.test(k))) {
-    return 'The parameters are built with expressions (${{ }}): edit them in the text.';
+    return `The ${blockKey} are built with expressions (\${{ }}): edit them in the text.`;
   }
   if (paramsLine?.rest) {
-    return 'The parameters are written as one flow mapping ({ … }): edit them in the text.';
+    return `The ${blockKey} are written as one flow mapping ({ … }): edit them in the text.`;
   }
   return undefined;
 }
@@ -397,11 +561,12 @@ function expressionKeysOf(lines: YLine[], paramsLine: YLine): string[] {
 /**
  * Edits that make the parameters of an existing call match `pending` (name → value, only the parameters the user
  * changed). A value equal to the default removes the line unless `writeDefaults` is on; parameters under
- * `${{ if }}` / `${{ each }}`, block values and `raw` parameters are never touched.
+ * `${{ if }}` / `${{ each }}` and non-scalar block values are never touched. `blockKey` is `inputs` for task steps
+ * (`asTemplateRef` in `taskRefs.ts`).
  */
 export function planCallEdits(text: string, ref: TemplateRef, declared: PipelineParameter[], pending: Record<string, string>,
-  opts: EditOptions): CallPlan {
-  const readOnly = callReadOnlyReason(text, ref);
+  opts: EditOptions, blockKey: BlockKey = 'parameters'): CallPlan {
+  const readOnly = callReadOnlyReason(text, ref, blockKey);
   if (readOnly) {
     return { edits: [], readOnly };
   }
@@ -417,11 +582,11 @@ export function planCallEdits(text: string, ref: TemplateRef, declared: Pipeline
   };
   declared.forEach(p => planParam(s, p, pending, opts));
   if (s.added.length) {
-    s.edits.push({ line: s.insertAt, deleteCount: 0, insert: hasKey ? s.added : [`${pad(keyCol)}parameters:`, ...s.added] });
+    s.edits.push({ line: s.insertAt, deleteCount: 0, insert: hasKey ? s.added : [`${pad(keyCol)}${blockKey}:`, ...s.added] });
   }
   const nested = hasKey ? scanned.slice(ref.paramsLine! + 1, s.insertAt).filter(l => !l.blank).length : 0;
   if (hasKey && !s.added.length && s.removed > 0 && s.removed === nested) {
-    // Nothing left under `parameters:`: drop the key as well.
+    // Nothing left under the key: drop it as well.
     s.edits.push({ line: ref.paramsLine!, deleteCount: 1, insert: [] });
   }
   return { edits: s.edits.toSorted((a, b) => a.line - b.line) };
@@ -461,6 +626,59 @@ function newStructuredLines(p: PipelineParameter, pending: Record<string, string
   const text = pending[p.name];
   const write = opts.writeDefaults || def === undefined || !sameStructured(parseValueText(text), def);
   return write && writable(p, text) ? paramLines(p.name, text, col, col + unit) : [];
+}
+
+/** `key: value` lines of a task input (a block scalar for multi-line text). */
+function inputLines(p: PipelineParameter, value: string, col: number, unit: number): string[] {
+  return controlOf(p) === 'multiline' ? multilineLines(p, trimNewlines(value), col, unit) : [`${pad(col)}${yamlScalar(p.name)}: ${formatValue(p, value)}`];
+}
+
+/**
+ * The lines of a new `- task: Name@Major` step at `indent`: `displayName`, then `inputs:` with the inputs that differ from
+ * their default (all with `writeDefaults`). Required inputs without a value are written as `''` so they show in the
+ * preview; the form reports them before anything is inserted.
+ */
+export function newTaskLines(taskRef: string, declared: PipelineParameter[], pending: Record<string, string>, indent: number, unit: number,
+  opts: EditOptions, displayName?: string): string[] {
+  const inner = indent + 2;
+  const out = [`${pad(indent)}- task: ${yamlScalar(taskRef)}`];
+  const name = displayName?.trim();
+  if (name) {
+    out.push(`${pad(inner)}displayName: ${yamlScalar(name)}`);
+  }
+  const inputs: string[] = [];
+  for (const p of declared) {
+    const value = isOwn(pending, p.name) ? pending[p.name] : p.default;
+    if ((opts.writeDefaults || p.default === undefined || !sameValue(p, value, p.default)) && !isUnset(p, value ?? '')) {
+      inputs.push(...inputLines(p, value ?? '', inner + unit, unit));
+    }
+  }
+  return inputs.length ? [...out, `${pad(inner)}inputs:`, ...inputs] : out;
+}
+
+/** Edit that moves a task step to another major version: only the `task:` line changes (a comment after it stays). */
+export function planTaskVersion(text: string, step: TaskStepRef, major: number): LineEdit[] {
+  const at = step.raw.indexOf('@');
+  const next = `${step.raw.slice(0, Math.max(at, 0))}@${major}`;
+  if (at < 1 || next === step.raw) {
+    return [];
+  }
+  const line = splitLines(text)[step.line];
+  return [{ line: step.line, deleteCount: 1, insert: [line.slice(0, step.valueStart) + next + line.slice(step.valueEnd)] }];
+}
+
+/** Edit for the `displayName:` of a step: set, change or (empty value) remove it. */
+export function planDisplayName(text: string, step: TaskStepRef, value: string): LineEdit[] {
+  const next = value.trim();
+  const found = findDisplayName(text, step);
+  if (!found) {
+    return next ? [{ line: step.line + 1, deleteCount: 0, insert: [`${pad(step.keyCol)}displayName: ${yamlScalar(next)}`] }] : [];
+  }
+  if (found.value === next) {
+    return [];
+  }
+  const insert = next ? [withValue(splitLines(text)[found.line], found.keyCol, yamlScalar(next))] : [];
+  return [{ line: found.line, deleteCount: 1, insert }];
 }
 
 interface Where {

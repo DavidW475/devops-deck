@@ -20,7 +20,7 @@ All REST traffic goes through `AdoClient`. Do not call `fetch` elsewhere.
 - Setting `azureDevOps.authMethod`: `microsoft` (default) or `pat`.
 - Microsoft: `vscode.authentication.getSession('microsoft', ['499b84ac-1321-427f-aa17-267ca6975798/.default', optional 'VSCODE_TENANT:<azureDevOps.tenantId>'])`, sent as `Bearer`. Requests never prompt; only `signIn()` is interactive.
 - PAT: stored in secret storage under `azureDevOps.pat` (`PAT_SECRET_KEY`), sent as `Basic base64(':' + pat)`.
-- PAT scopes (setPat prompt in `extension.ts` and README): Code (Read & Write), Work Items (Read & Write), Build (Read & Execute), Wiki (Read & Write), Project and Team (Read), Identity (Read), Test Management (Read). A new endpoint that needs another scope must update both places.
+- PAT scopes (setPat prompt in `extension.ts` and README): Code (Read & Write), Work Items (Read & Write), Build (Read & Execute), Wiki (Read & Write), Project and Team (Read), Identity (Read), Test Management (Read), Agent Pools (Read, task catalog). A new endpoint that needs another scope must update both places.
 - `getMe()` uses `<org>/_apis/connectionData`, cached on the root client.
 
 ## API versions
@@ -65,6 +65,38 @@ Default `7.1`. These calls pass a preview version explicitly:
 ## Files at a ref
 
 `getFileTextAtRef(repoId, path, ref?)` maps a repository resource `ref` to a version descriptor: `refs/tags/x` → tag, a 40-character SHA → commit, `refs/heads/x` or a plain name → branch, none → the repository's default branch. `listYamlDefinitions(repoId)` lists the YAML pipelines of a repository (`includeAllProperties` for `process.yamlFilename`). For the designer's catalog, `listFilePaths(repoId, ref?)` lists every file at the same kind of ref (Git Items API, `scopePath=/`, `recursionLevel=Full`; folders dropped) and `listRefNames(repoId)` reads tags and branches (`git/repositories/{id}/refs` with `filter=tags/` and `filter=heads/`, 500 each).
+
+## Task catalog (undocumented route)
+
+`listTaskDefinitions()` reads `GET <org>/_apis/distributedtask/tasks` (api-version 7.1). The route is **not in the REST reference** (Learn has no page for it); it is known from the generated Microsoft client (`getTaskDefinitions`) and from `OPTIONS _apis`. It is the only source with `visibleRule`, `helpMarkDown` and input defaults, so the YAML task support (`taskCatalog.ts`) depends on it. Pitfalls:
+
+- Scope: the PAT needs **Agent Pools (Read)** (`vso.agentpools`); inferred, not verified. A missing scope probably arrives as 401 and cannot be told apart from an expired token (`isAuthError`), so the background never prompts for a sign-in and never shows an error: the catalog snapshot carries `status: 'error'` and `error`, and `YamlTaskSupport` stays quiet (no task completion, no "not installed" marks; retirement checks need no catalog and keep working). A failed refresh starts a **backoff** in `TaskCatalog` (30 s, doubling per failure, at most 10 minutes) during which `ensure()` and `refreshForUnknownTask()` make no request, because every change event revalidates the open pipeline files; the explicit `refresh()` (command, designer reload) always tries at once.
+- Fallback: the response is reduced to `TaskInfo` and cached per organization in `globalStorageUri`; failures keep the old data (`stale`/`error` status). If the route disappears, task help degrades to nothing rather than wrong warnings. A planned fallback is `distributedtask/yamlschema` (documented, but without `visibleRule`, help and defaults).
+- Not verified against a real organization: whether every major version is returned, `deprecationMessage` / `removalDate`, response size.
+- Server text (titles, help, options) is untrusted: hovers use `mdEscape`, `MarkdownString` is neither trusted nor HTML, `helpUrl` is only linked for `https:` and never fetched.
+
+## Blame: commit to pull request and work items
+
+Used by `src/blame/` (see [02-features.md](02-features.md)). Calls go through `AdoClient`; the project comes from the file's own Azure Repos remote, so any project of the organization works.
+
+- `queryPullRequestsByCommit(repoId, sha)`: `POST git/repositories/{id}/pullrequestquery` with two queries in one request, `lastMergeCommit` and `commit`, each with `items: [sha]`. Route, body and types are in the REST reference. **Not verified live:**
+  - Whether the results are full pull requests or only a few fields. The service therefore loads each result that lacks a title or status with `getPullRequest` (a few at most) before it picks one.
+  - Whether squash, rebase and rebase-merge commits are found. The reference says `lastMergeCommit` finds the PRs that "created the supplied merge commits" and `commit` those that "merged the supplied commits"; whether a squash commit counts as a merge commit is not stated. When both queries are empty, the service tries the id in the commit summary (`Merged PR 123: ...`, checked with `getPullRequestById`, same repository and completed). Without either, the result is "no pull request found", which is also what a direct push gives.
+  - The limit of `items` per query and the behaviour for an unknown commit (assumed: empty lists, not an error).
+- `getCommitWorkItemIds(projectId, repoId, sha)`: `POST wit/artifacturiquery` (organization route) with the artifact URI `vstfs:///Git/Commit/{projectId}%2F{repoId}%2F{sha}` from `commitArtifactUrl`, the same form as the documented example for pull requests. Needs the project GUID, which comes from `getRepository`. Reading the result for commits was not tested live either.
+- Work items of the pull request: `getPullRequestWorkItemIds`; titles and states: `getWorkItems` (missing items are left out). Work items mentioned in the commit message (`#123`) come from `workItemIdsFromText`.
+- `git/commits/{id}/workitems` is **not a documented route** (not in the REST reference's list of commit operations), so it is not used.
+- `commitWebUrl(repoName, sha)` builds `<repo URL>/commit/<sha>`; `webUrl` takes numbers for its second part, so a SHA does not fit there.
+- No new PAT scope: Code (Read) and Work Items (Read) are enough.
+
+## My Day
+
+Used by `src/myDay/` (see [02-features.md](02-features.md)).
+
+- **Throttling:** every answer goes through `AdoClient.noteThrottling`. `Retry-After` is read in seconds or as an HTTP date, on any status (also 200, which Azure DevOps uses for "slow down"); a 429 without a readable header (missing, or text such as `soon`) pauses 60 s and the call still throws `AdoError`. A pause never exceeds 15 minutes. The pause is stored on the root client together with its organization (another organization is not paused), so project clients share it, and a later shorter header never shortens it; `AdoClient.reset()` clears it. `throttledUntil` exposes it; the My Day timer honours it. Direct user actions are not blocked: `MyDayService.get({ force })` (Retry) and the raw lists of the PR and Approvals tabs load although a pause is active. Without any load yet, the result carries a `throttled` failure per source, so the page does not say "All done".
+- `listIterationDates()`: `GET wit/classificationnodes/Iterations?$depth=10`, flattened to `{ path, finishDate }` with backslash paths (`Fabrikam Shop\Sprint 1`); `finishDate` is `attributes.finishDate` and may be missing.
+- `listBuildsSince(since, order, { requestedFor, top })`: `requestedFor` (identity id) and `$top` (default 200) are query parameters of `GET build/builds`. **The combination of `requestedFor` with `minTime`, `queryOrder` and `statusFilter` has not been tested live.**
+- `Approval.pipeline` (the run, with `owner.id` as run id and `id` as the definition id) is **not in Learn's object definition** of the approvals API; it is what the service returns in practice. `src/types.ts` marks it optional and the model skips the run link when it is missing.
 
 ## Code search is intentionally not supported
 

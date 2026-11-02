@@ -1,12 +1,19 @@
 import * as vscode from 'vscode';
+import { BlameService, defaultBlameDeps } from './blame/blameService';
+import { BlameUi } from './blame/blameUi';
 import { AdoClient, PAT_SECRET_KEY } from './client';
 import { ConnectionManager, normalizeOrgUrl } from './connection';
 import { BuildLogTerminal, LOG_SCHEME, LogDocumentProvider, makeLogUri } from './pipelines/logs';
 import { answerApproval } from './pipelines/approvals';
 import { RunPipelinePanel } from './pipelines/runPanel';
 import { RunViewPanel } from './pipelines/runView';
+import { deferItem, voteOnPullRequest } from './myDay/commands';
+import { MyDayDefers } from './myDay/defers';
+import { MyDayService } from './myDay/service';
 import { DesignerCodeLens, DesignerHost, PipelineDesignerPanel } from './pipelines/designerPanel';
 import { PipelinePreviewPanel, PreviewMode } from './pipelines/previewPanel';
+import { TaskCatalog } from './pipelines/taskCatalog';
+import { YamlTaskSupport } from './pipelines/yamlTasks';
 import { YamlTemplateSupport } from './pipelines/yamlTemplates';
 import { PrCommentController } from './pullRequests/prComments';
 import { CreatePullRequestPanel } from './pullRequests/createPrPanel';
@@ -16,9 +23,9 @@ import { PullRequestPanel } from './pullRequests/prPanel';
 import { PrStatusBar } from './pullRequests/prStatusBar';
 import { ReviewedFiles } from './pullRequests/reviewed';
 import { ReposPanel } from './repos/reposPanel';
-import { SidebarProvider } from './sidebar/sidebarProvider';
+import { ASSIGNED_TO_ME, SidebarProvider } from './sidebar/sidebarProvider';
 import { openWiki, WIKI_SCHEME, WikiFileSystem } from './wiki/wiki';
-import { guarded } from './util';
+import { errorMessage, guarded, plural } from './util';
 import {
   assignWorkItemToMe, changeWorkItemState, commentOnWorkItem, createBranchForWorkItem, createWorkItem, createWorkItemFromCode, TodoCodeActions,
 } from './workItems/wiCommands';
@@ -37,6 +44,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const prStatus = new PrStatusBar(client, connections);
   const logDocs = new LogDocumentProvider(client);
   const yamlTemplates = new YamlTemplateSupport(client, connections).register();
+  const taskCatalog = new TaskCatalog(client, connections, context.globalStorageUri);
+  const yamlTasks = new YamlTaskSupport(taskCatalog, connections).register();
+  const blame = new BlameUi(new BlameService(defaultBlameDeps(client, connections)), connections);
   PullRequestPanel.useStore(context.globalState);
   PipelinePreviewPanel.useStore(context.globalState);
   const designerLens = new DesignerCodeLens();
@@ -44,10 +54,37 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     resolver: yamlTemplates.resolver,
     expandOnServer: (doc, params, definitionId, text) => yamlTemplates.expandOnServer(doc, params, definitionId, text),
     client,
+    tasks: taskCatalog,
+    orgUrl: () => connections.current?.orgUrl,
   };
+  const myDay = new MyDayService({
+    getMe: () => client.getMe(),
+    clientFor: project => client.forProject(project),
+    projects: () => connections.current?.projects ?? [],
+    statesFor: (project, type) => sidebar.statesFor(project, type),
+    assignedWiql: () => ASSIGNED_TO_ME.wiql,
+    importantBranches: () => vscode.workspace.getConfiguration('azureDevOps').get<string[]>('myDay.importantBranches', ['main', 'master', 'release/*']),
+    refreshSeconds: () => vscode.workspace.getConfiguration('azureDevOps').get<number>('refreshInterval', 60),
+    isFocused: () => vscode.window.state.focused,
+    throttledUntil: () => client.throttledUntil,
+  }, new MyDayDefers(context.globalState, () => connections.current?.orgUrl ?? ''));
+  sidebar.useMyDay(myDay);
   const refresh = () => {
+    myDay.invalidate();
     sidebar.refresh();
     prStatus.refresh();
+  };
+  /**
+   * Forgets what belongs to the connection or the sign-in: the client, the blame caches and My Day, and (unless
+   * `withCatalog` is false) the task catalog. A settings change leaves the catalog alone: it follows the organization by itself.
+   */
+  const resetState = (withCatalog = true) => {
+    client.reset();
+    if (withCatalog) {
+      taskCatalog.reset();
+    }
+    blame.reset();
+    myDay.reset();
   };
 
   /** Client for the project a sidebar item belongs to (passed as the last command argument when several are selected). */
@@ -70,6 +107,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     reviewed,
     prStatus,
     yamlTemplates,
+    taskCatalog,
+    yamlTasks,
+    blame,
+    myDay,
     designerLens,
     vscode.languages.registerCodeLensProvider([{ language: 'yaml', scheme: 'file' }, { language: 'azure-pipelines', scheme: 'file' }], designerLens),
     vscode.languages.registerCodeActionsProvider({ scheme: 'file' }, new TodoCodeActions(), { providedCodeActionKinds: TodoCodeActions.kinds }),
@@ -79,21 +120,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.workspace.registerFileSystemProvider(WIKI_SCHEME, new WikiFileSystem(client), { isCaseSensitive: true }),
     vscode.workspace.registerTextDocumentContentProvider(LOG_SCHEME, logDocs),
     connections.onDidChange(() => {
-      client.reset();
+      resetState();
       refresh();
     }),
     vscode.workspace.onDidChangeConfiguration(e => {
-      if (e.affectsConfiguration('azureDevOps.yaml.designerCodeLens')) {
+      if (e.affectsConfiguration('azureDevOps.yaml.designerCodeLens') || e.affectsConfiguration('azureDevOps.yaml.taskSupport')) {
         designerLens.refresh();
       }
       if (e.affectsConfiguration('azureDevOps')) {
-        client.reset();
+        resetState(false);
         void connections.resolve().then(refresh);
       }
     }),
     vscode.authentication.onDidChangeSessions(e => {
       if (e.provider.id === 'microsoft') {
-        client.reset();
+        resetState();
         refresh();
       }
     }),
@@ -107,12 +148,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   command('azureDevOps.signIn', async () => {
     await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'microsoft', vscode.ConfigurationTarget.Global);
     await client.signIn();
+    resetState();
     refresh();
   });
   command('azureDevOps.setPat', async () => {
     const pat = await vscode.window.showInputBox({
       title: 'Azure DevOps Personal Access Token',
-      prompt: 'Scopes: Code (Read & Write), Work Items (Read & Write), Build (Read & Execute), Wiki (Read & Write), Project and Team (Read), Identity (Read), Test Management (Read)',
+      prompt: 'Scopes: Code (Read & Write), Work Items (Read & Write), Build (Read & Execute), Wiki (Read & Write), Project and Team (Read), Identity (Read), Test Management (Read), Agent Pools (Read, for the task catalog)',
       password: true,
       ignoreFocusOut: true,
     });
@@ -121,7 +163,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     await context.secrets.store(PAT_SECRET_KEY, pat.trim());
     await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'pat', vscode.ConfigurationTarget.Global);
-    client.reset();
+    resetState();
     refresh();
   });
   command('azureDevOps.configure', async () => {
@@ -189,6 +231,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   command('azureDevOps.pr.openOverview', async (repoId: string, prId: number) =>
     PullRequestPanel.show(client, context.extensionUri, repoId, prId, refresh));
   command('azureDevOps.pr.openDiff', async (args: PrFileArgs) => openPrDiff(args));
+  mutation('azureDevOps.pr.vote', (repoId: unknown, prId: unknown, project?: unknown) => voteOnPullRequest(at(project), repoId, prId));
   command('azureDevOps.pr.checkout', async (repoId: string, prId: number) =>
     checkoutPullRequest(await client.getPullRequest(repoId, prId)));
   command('azureDevOps.pr.create', async (repoName?: string, source?: string) =>
@@ -198,6 +241,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     compareIterations(client, repoId, prId, base, target));
   command('azureDevOps.pr.openInBrowser', async (repoName: string, prId: number, project?: string) =>
     vscode.env.openExternal(vscode.Uri.parse(client.webUrl('pr', repoName, prId, at(project).connection.project))));
+
+  // ----- my day -----
+  command('azureDevOps.myDay.defer', (key: unknown) => deferItem(myDay, key));
+  command('azureDevOps.myDay.restore', (key: unknown) => myDay.restore(key));
+
+  // ----- blame -----
+  command('azureDevOps.blame.traceLine', () => blame.traceLine());
+  command('azureDevOps.blame.openForCommit', (root: unknown, sha: unknown) => blame.openForCommit(root, sha));
+  command('azureDevOps.blame.openCommit', (project: unknown, repoName: unknown, sha: unknown) => blame.openCommit(project, repoName, sha));
 
   // ----- work items -----
   command('azureDevOps.watchers.checkNow', () => watchers.checkNow());
@@ -305,6 +357,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const cursor = editor?.document.uri.toString() === doc.uri.toString() ? editor.selection.active.line : undefined;
     PipelineDesignerPanel.show(designerHost, context.extensionUri, doc, typeof line === 'number' && Number.isInteger(line) ? line : cursor);
   });
+  command('azureDevOps.yaml.refreshTaskCatalog', async () => {
+    const snap = await taskCatalog.refresh();
+    if (snap.status === 'ready' && snap.index) {
+      void vscode.window.showInformationMessage(`Task catalog refreshed: ${plural(snap.index.all().length, 'task')}.`);
+    } else if (snap.status === 'empty') {
+      void vscode.window.showInformationMessage('Configure an Azure DevOps organization first.');
+    } else {
+      const why = snap.error ? ` (${snap.error})` : '';
+      void vscode.window.showWarningMessage(`Could not read the tasks of the organization${why}. Sign in again, or give the PAT the scope Agent Pools (Read).`);
+    }
+  });
   command('azureDevOps.yaml.previewPipeline', (uri?: vscode.Uri) => yamlTemplates.previewPipeline(uri instanceof vscode.Uri ? uri : undefined));
 
   async function queue(api: AdoClient, definitionId: number, name: string, branch: string): Promise<void> {
@@ -318,7 +381,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 
   await connections.resolve();
-  void connections.watchGit();
+  // Blame starts also when watching git failed; the failure is shown instead of ending as an unhandled rejection.
+  void (async () => {
+    try {
+      await connections.watchGit();
+    } catch (e) {
+      void vscode.window.showWarningMessage(`DevOps Deck: watching Git repositories failed: ${errorMessage(e)}`);
+    }
+    try {
+      blame.start();
+    } catch (e) {
+      void vscode.window.showWarningMessage(`DevOps Deck: line blame could not start: ${errorMessage(e)}`);
+    }
+  })();
 }
 
 export function deactivate(): void {}

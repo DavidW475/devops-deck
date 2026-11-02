@@ -3,7 +3,8 @@
  * the parameters passed to them, and checks those parameters against what a template declares. Pure functions,
  * line based: the extension has no YAML dependency, and positions are needed for completions and diagnostics.
  */
-import { isRecord, PipelineParameter, splitFlow, splitKey, stripComment, topLevelValue, unquote } from './yamlParameters';
+import { mdEscape } from '../util';
+import { isBlockHeader, isRecord, PipelineParameter, splitFlow, splitKey, stripComment, topLevelValue, unquote } from './yamlParameters';
 
 /** `path@alias` of a template reference; alias undefined = same repository as the including file. */
 export interface TemplatePath {
@@ -76,6 +77,8 @@ export interface YLine {
   key?: string;
   rest: string;
   restCol: number;
+  /** Column of the `#` when the whole line is a comment: inside a block scalar such a line is text. */
+  commentCol?: number;
 }
 
 export const isExpression = (s: string) => s.includes('${{') || s.includes('$[') || s.includes('$(');
@@ -136,7 +139,9 @@ function scanLine(raw: string, n: number): YLine {
   }
   const kv = splitKey(text.slice(pos));
   const rest = kv?.[1] ?? '';
-  return { n, blank: !text.trim(), indent, dash, keyCol: pos, key: kv?.[0], rest, restCol: text.length - rest.length };
+  const bare = raw.trimStart();
+  const commentCol = bare.startsWith('#') ? raw.length - bare.length : undefined;
+  return { n, blank: !text.trim(), indent, dash, keyCol: pos, key: kv?.[0], rest, restCol: text.length - rest.length, commentCol };
 }
 
 /** Scans every line; contents of block scalars (`script: |`) count as blank so their text is never read as keys. */
@@ -144,7 +149,7 @@ export function scanYaml(text: string): YLine[] {
   const lines = text.split(/\r?\n/).map((raw, n) => scanLine(raw, n));
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i];
-    if (l.key !== undefined && /^[|>][-+]?\d*$/.test(l.rest)) {
+    if (l.key !== undefined && isBlockHeader(l.rest)) {
       for (let j = i + 1; j < lines.length && (lines[j].blank || lines[j].indent > l.keyCol); j++) {
         lines[j].blank = true;
       }
@@ -187,7 +192,7 @@ function siblingsBefore(lines: YLine[], i: number): YLine[] {
 }
 
 /** Lines of the mapping that contains the key at lines[i]: sibling keys (same column) and nested content. */
-function mappingOf(lines: YLine[], i: number): { siblings: YLine[]; end: number } {
+export function mappingOf(lines: YLine[], i: number): { siblings: YLine[]; end: number } {
   const k = lines[i].keyCol;
   const siblings = siblingsBefore(lines, i);
   let end = i;
@@ -203,7 +208,7 @@ function mappingOf(lines: YLine[], i: number): { siblings: YLine[]; end: number 
   return { siblings, end };
 }
 
-function flowParams(l: YLine): ParamEntry[] {
+export function flowParams(l: YLine): ParamEntry[] {
   const out: ParamEntry[] = [];
   let from = 0;
   for (const part of splitFlow(l.rest.slice(1, -1))) {
@@ -246,7 +251,7 @@ function addParamLine(s: ParamScan, l: YLine & { key: string }): void {
 }
 
 /** Parameters passed in the block under `parameters:`; keys under `${{ if }}` / `${{ each }}` are taken one level deeper. */
-function blockParams(lines: YLine[], p: YLine): { params: ParamEntry[]; dynamic: boolean } {
+export function blockParams(lines: YLine[], p: YLine): { params: ParamEntry[]; dynamic: boolean } {
   const s: ParamScan = { params: [], dynamic: false, childCol: -1, conditionalCol: -1 };
   for (let j = p.n + 1; j < lines.length && (lines[j].blank || lines[j].indent > p.keyCol); j++) {
     const l = lines[j];
@@ -372,11 +377,6 @@ export function checkTemplateParameters(ref: TemplateRef, declared: PipelinePara
   return [...ref.params.map(e => entryIssue(e, declared)), missingIssue(ref, declared)].filter((i): i is ParamIssue => !!i);
 }
 
-/** Escapes text for a Markdown hover (no links, emphasis or HTML from template content). */
-export function mdEscape(s: string): string {
-  return s.replace(/[\\`*_{}[\]()#+\-.!|<>~]/g, c => '\\' + c);
-}
-
 /** Markdown summary of one parameter: type, default and allowed values. */
 export function describeParameter(p: PipelineParameter): string {
   const parts = [inlineValue(p.type)];
@@ -405,7 +405,7 @@ export function parameterSnippet(p: PipelineParameter, stop: number): string {
   return `${p.name}: \${${stop}${def ? ':' + def : ''}}`;
 }
 
-function snippetEscape(s: string): string {
+export function snippetEscape(s: string): string {
   return s.replace(/[$}\\]/g, c => '\\' + c);
 }
 

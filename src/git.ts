@@ -9,11 +9,25 @@ export interface LocalRepo {
   remoteName: string;
   /** Azure Repos repository name */
   repoName: string;
-  /** project of the repository (one of the selected projects) */
+  /** project of the repository */
   project: string;
 }
 
 const sameText = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: 'accent' }) === 0;
+
+/** The remotes of a repository in the current organization, origin first. The URL is only compared, never used as a target. */
+function adoRemotes(repo: any, conn: Connection): LocalRepo[] {
+  const remotes: any[] = [...repo.state.remotes].sort((a, b) => Number(b.name === 'origin') - Number(a.name === 'origin'));
+  return remotes.flatMap(remote => {
+    const parsed = parseRemote(remote.fetchUrl ?? remote.pushUrl ?? '');
+    return parsed && sameText(parsed.orgUrl, conn.orgUrl) ? [{ repo, remoteName: remote.name, repoName: parsed.repo, project: parsed.project }] : [];
+  });
+}
+
+/** The first Azure Repos remote of a repository, in any project of the current organization. */
+export function adoRemoteOf(repo: any, conn: Connection | undefined): LocalRepo | undefined {
+  return conn ? adoRemotes(repo, conn)[0] : undefined;
+}
 
 /** Local repositories with a remote in the current organization and one of the selected projects. */
 export function localAdoRepos(conn: Connection | undefined): LocalRepo[] {
@@ -22,17 +36,24 @@ export function localAdoRepos(conn: Connection | undefined): LocalRepo[] {
   }
   const out: LocalRepo[] = [];
   for (const repo of gitApi()?.repositories ?? []) {
-    const remotes: any[] = [...repo.state.remotes].sort((a, b) => Number(b.name === 'origin') - Number(a.name === 'origin'));
-    for (const remote of remotes) {
-      const parsed = parseRemote(remote.fetchUrl ?? remote.pushUrl ?? '');
-      const project = parsed && sameText(parsed.orgUrl, conn.orgUrl) ? (conn.projects ?? [conn.project]).find(p => sameText(p, parsed.project)) : undefined;
-      if (parsed && project) {
-        out.push({ repo, remoteName: remote.name, repoName: parsed.repo, project });
+    for (const remote of adoRemotes(repo, conn)) {
+      const project = (conn.projects ?? [conn.project]).find(p => sameText(p, remote.project));
+      if (project) {
+        out.push({ ...remote, project });
         break;
       }
     }
   }
   return out;
+}
+
+/**
+ * The Azure Repos repository a file belongs to: the innermost one, also a submodule. Unlike `localAdoRepos`
+ * it accepts any project of the organization, because looking something up needs no selected project.
+ */
+export function adoRepoForFile(conn: Connection | undefined, uri: { fsPath: string }): LocalRepo | undefined {
+  const repo = gitApi()?.getRepository?.(uri);
+  return repo ? adoRemoteOf(repo, conn) : undefined;
 }
 
 /** The repository of the active editor, the only one, or one the user picks. */

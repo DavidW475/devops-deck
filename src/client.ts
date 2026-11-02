@@ -10,6 +10,9 @@ const ADO_RESOURCE_SCOPE = '499b84ac-1321-427f-aa17-267ca6975798/.default';
 const API_VERSION = '7.1';
 /** A hung connection must not block polling loops (watchers, log streaming) forever. */
 const REQUEST_TIMEOUT_MS = 60_000;
+/** Pause after a 429 without a readable `Retry-After`, and the longest pause we accept. */
+const DEFAULT_PAUSE_MS = 60_000;
+const MAX_PAUSE_MS = 15 * 60_000;
 export const PAT_SECRET_KEY = 'azureDevOps.pat';
 
 export class AdoError extends Error {
@@ -58,6 +61,9 @@ const REPO_BY_ID = /^git\/repositories\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9
 export class AdoClient {
   private me?: Promise<T.IdentityRef>;
   private readonly scoped = new Map<string, AdoClient>();
+  private pauseUntil = 0;
+  /** The organization the pause belongs to: another one is not paused. */
+  private pauseOrg?: string;
 
   constructor(private readonly secrets: vscode.SecretStorage, private readonly connections: Pick<ConnectionManager, 'current'>,
     private readonly parent?: AdoClient) {}
@@ -92,6 +98,10 @@ export class AdoClient {
   reset(): void {
     this.me = undefined;
     this.scoped.clear();
+    // A new sign-in or organization starts without the old pause.
+    const root = this.parent ?? this;
+    root.pauseUntil = 0;
+    root.pauseOrg = undefined;
   }
 
   // ---------- auth & http ----------
@@ -151,6 +161,36 @@ export class AdoClient {
     return await res.json() as R;
   }
 
+  /** Time (ms) until which Azure DevOps asked to pause; background polling honours it. 0 when it did not (or for another organization). */
+  get throttledUntil(): number {
+    const root = this.parent ?? this;
+    return root.pauseOrg === undefined || root.pauseOrg === this.connections.current?.orgUrl ? root.pauseUntil : 0;
+  }
+
+  /**
+   * `Retry-After` can come with any status, also 200; a 429 without a usable value pauses for a minute. A pause is at
+   * most 15 minutes: a larger value (or a typo) must not silence the background work for a day.
+   */
+  private noteThrottling(res: Response): void {
+    const header = res.headers.get('retry-after')?.trim();
+    const throttled = res.status === 429;
+    let waitMs = 0;
+    if (header) {
+      const seconds = Number(header);
+      waitMs = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header) - Date.now();
+    }
+    if (Number.isNaN(waitMs) || (!header && throttled)) {
+      waitMs = throttled ? DEFAULT_PAUSE_MS : 0; // unreadable value
+    }
+    if (waitMs > 0) {
+      const root = this.parent ?? this;
+      const until = Date.now() + Math.min(waitMs, MAX_PAUSE_MS);
+      const org = this.connections.current?.orgUrl;
+      root.pauseUntil = root.pauseOrg === org ? Math.max(root.pauseUntil, until) : until;
+      root.pauseOrg = org;
+    }
+  }
+
   /** Sends a request with credentials; only to Azure DevOps hosts. Non-2xx answers become AdoErrors. */
   private async send(method: string, url: string, body?: unknown,
     opts: { contentType?: string; raw?: boolean; binary?: boolean; headers?: Record<string, string>; timeoutMs?: number } = {}): Promise<Response> {
@@ -176,6 +216,7 @@ export class AdoClient {
     const res = await fetch(url, {
       method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(opts.timeoutMs ?? REQUEST_TIMEOUT_MS),
     });
+    this.noteThrottling(res);
     const contentType = res.headers.get('content-type') ?? '';
     if (res.status === 401 || res.status === 203 || contentType.includes('text/html')) {
       throw new AdoError('Azure DevOps rejected the credentials.', 401, true);
@@ -218,6 +259,15 @@ export class AdoClient {
     u.searchParams.set('api-version', API_VERSION);
     const r = await this.request<{ value: { name: string }[] }>('GET', u.toString());
     return r.value.map(p => p.name).sort((a, b) => a.localeCompare(b));
+  }
+
+  /**
+   * The task definitions of the organization. The route `distributedtask/tasks` is not part of the public REST reference
+   * (it exists in Microsoft's generated client), so the response shape is unverified; callers must validate it.
+   */
+  async listTaskDefinitions(): Promise<T.TaskDefinition[]> {
+    const r = await this.get<{ value?: T.TaskDefinition[] }>('org', 'distributedtask/tasks');
+    return Array.isArray(r?.value) ? r.value : [];
   }
 
   // ---------- pull requests ----------
@@ -314,6 +364,21 @@ export class AdoClient {
   async getPullRequestWorkItemIds(repoId: string, prId: number): Promise<number[]> {
     const r = await this.get<{ value: { id: string }[] }>('project', `git/repositories/${repoId}/pullRequests/${prId}/workitems`);
     return r.value.map(w => Number(w.id));
+  }
+
+  /** Pull requests of a commit, in one request: as their merge commit and as a merged commit. */
+  async queryPullRequestsByCommit(repoId: string, sha: string): Promise<T.CommitPrQueryResult> {
+    const r = await this.request<{ results?: Record<string, T.PullRequest[]>[] }>('POST', this.url('project', `git/repositories/${repoId}/pullrequestquery`), {
+      queries: [{ type: 'lastMergeCommit', items: [sha] }, { type: 'commit', items: [sha] }],
+    });
+    return { byMergeCommit: r.results?.[0]?.[sha] ?? [], byCommit: r.results?.[1]?.[sha] ?? [] };
+  }
+
+  /** Work items linked to a commit on the server. */
+  async getCommitWorkItemIds(projectId: string, repoId: string, sha: string): Promise<number[]> {
+    const uri = commitArtifactUrl(projectId, repoId, sha);
+    const r = await this.request<{ artifactUrisQueryResult?: Record<string, { id: number }[]> }>('POST', this.url('org', 'wit/artifacturiquery'), { artifactUris: [uri] });
+    return (r.artifactUrisQueryResult?.[uri] ?? []).map(w => w.id);
   }
 
   async getPolicyEvaluations(projectId: string, prId: number): Promise<T.PolicyEvaluation[]> {
@@ -701,6 +766,20 @@ export class AdoClient {
     return r.daysOff ?? [];
   }
 
+  /** Iterations of the project with their end dates. */
+  async listIterationDates(): Promise<T.ClassificationIteration[]> {
+    const root = await this.get<T.ClassificationNode>('project', 'wit/classificationnodes/Iterations', { $depth: 10 });
+    const out: T.ClassificationIteration[] = [];
+    const visit = (node: T.ClassificationNode, path: string) => {
+      out.push({ path, finishDate: node.attributes?.finishDate });
+      for (const c of node.children ?? []) {
+        visit(c, `${path}\\${c.name}`);
+      }
+    };
+    visit(root, root.name);
+    return out;
+  }
+
   /** Iteration or area paths of the project, e.g. "Fabrikam\\Sprint 1". */
   async listClassificationPaths(group: 'Iterations' | 'Areas'): Promise<string[]> {
     const root = await this.get<T.ClassificationNode>('project', `wit/classificationnodes/${group}`, { $depth: 10 });
@@ -818,10 +897,10 @@ export class AdoClient {
   }
 
   /** Builds that finished (or, with 'started', started) after `since`, newest first. */
-  async listBuildsSince(since: Date, order: 'finished' | 'started'): Promise<T.Build[]> {
+  async listBuildsSince(since: Date, order: 'finished' | 'started', opts: { requestedFor?: string; top?: number } = {}): Promise<T.Build[]> {
     const r = await this.get<{ value: T.Build[] }>('project', 'build/builds', {
       minTime: since.toISOString(), queryOrder: order === 'finished' ? 'finishTimeDescending' : 'startTimeDescending',
-      statusFilter: order === 'finished' ? 'completed' : undefined, $top: 200,
+      statusFilter: order === 'finished' ? 'completed' : undefined, requestedFor: opts.requestedFor, $top: opts.top ?? 200,
     });
     return r.value;
   }
@@ -866,6 +945,11 @@ export class AdoClient {
 
   // ---------- web links ----------
 
+  /** Browser URL of a commit in a repository of this client's project. */
+  commitWebUrl(repoName: string, sha: string): string {
+    return `${this.webUrl('repo', repoName)}/commit/${sha}`;
+  }
+
   webUrl(kind: 'pr' | 'workItem' | 'build' | 'definition' | 'repo', a: string | number, b?: number, project?: string): string {
     const c = this.connection;
     const p = `${c.orgUrl}/${encodeURIComponent(project ?? c.project)}`;
@@ -886,6 +970,10 @@ export interface PrArtifact {
 }
 
 const PR_ARTIFACT = 'vstfs:///Git/PullRequestId/';
+
+export function commitArtifactUrl(projectId: string, repoId: string, sha: string): string {
+  return `vstfs:///Git/Commit/${projectId}%2F${repoId}%2F${sha}`;
+}
 
 export function prArtifactUrl(pr: PrArtifact): string {
   return `${PR_ARTIFACT}${pr.projectId}%2F${pr.repoId}%2F${pr.prId}`;

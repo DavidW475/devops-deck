@@ -8,7 +8,7 @@ Review and create pull requests, plan sprints, manage work items, watch pipeline
 
 ### Dashboard
 
-A sidebar with tabs for pull requests, work items, the current sprint and pipelines. It has search, filter chips, avatars and status badges, and it follows your VS Code theme. Buttons at the top open repositories and the wiki.
+A sidebar with tabs for My Day, pull requests, work items, the current sprint and pipelines. It has search, filter chips, avatars and status badges, and it follows your VS Code theme. Buttons at the top open repositories and the wiki.
 
 <p align="center">
   <img src="media/screenshots/pull-requests.png" width="24%" alt="Pull requests tab with an expanded pull request, its checks and changed files">
@@ -20,6 +20,10 @@ A sidebar with tabs for pull requests, work items, the current sprint and pipeli
 **Several projects at once:** in the project picker, tick more projects of the organization and choose *Show N projects*. Pull requests, work items, sprints, pipelines and approvals of all of them are then listed together, each card marked with its project. Clicking a project name still switches to just that project.
 
 <p align="center"><img src="media/screenshots/projects.png" width="36%" alt="Project picker with two projects ticked and pull requests of both projects in the list"></p>
+
+### My Day
+
+The *My Day* tab is a short, ranked list of what needs you now: approvals waiting for you, failed pipeline runs you started, pull requests waiting for your review and work items assigned to you, with the most urgent first. Each entry says why it ranks where it does, and has quick actions such as *Approve*, *Vote*, *Open run*, *Run again* or *Change state*. Defer what can wait: snooze an item for a few hours, until tomorrow or next Monday, mark it done until it changes, or hide it; deferred items are listed in their own section where you can bring them back. Approvals can only be snoozed. The number of open items is shown as a badge on the view. Failed runs on your important branches rank higher; set them with `azureDevOps.myDay.importantBranches`.
 
 ### Pull requests
 
@@ -79,6 +83,11 @@ Help for `template:` and `extends:` references in local pipeline files (language
 - **Recursive:** templates from other repositories open as read-only documents that know where they come from. References inside them work the same way: relative paths stay in that repository, `@self` is the pipeline's repository, and aliases resolve through the template's own `resources.repositories` and those of the files that include it. A template opened on its own finds aliases declared in other YAML files of the workspace.
 - **Hover and go to definition:** hover a template path to see where it is read from, its parameters and the templates it includes; hover a parameter for its type and default. *Go to Definition* (F12) opens the template, or jumps to a parameter's declaration.
 - **Checks while you type:** unknown parameters, missing required parameters, values outside `values` and non-boolean or non-number values are marked, as are templates that cannot be found (`azureDevOps.yaml.templateDiagnostics`). Values with expressions (`${{ }}`, `$( )`, `$[ ]`) and parameters inside `${{ if }}` blocks are not checked.
+- **Tasks:** `- task: Name@Major` steps get help from the tasks installed in your organization (including Marketplace tasks), read once per organization, cached for 24 hours and refreshed in the background (*Refresh Task Catalog* forces it). Only files that contain a task step trigger a request.
+  - *Completion:* task names (deprecated and retiring ones last, newest major first) with the required inputs as a snippet, majors after the `@`, an `inputs:` block, input names not yet passed (required first; inputs hidden by their visibility rule are left out) and values of choices and booleans. If Microsoft's Azure Pipelines extension is active in an `azure-pipelines` document, task completion is left to it (hover and checks stay).
+  - *Hover:* the task shows its title, version, category, description, deprecation or retirement and a newer major version; an input shows its type, when it is visible and its help text.
+  - *Checks:* tasks that are not installed, missing required inputs (only those visible with the values you wrote), unknown inputs, values outside the allowed ones, deprecated tasks, tasks Microsoft retires on 2026-11-24 (removed 2027-03-15) and newer major versions. Quick fixes add a missing input, raise the version or refresh the catalog. Steps with expressions (`${{ }}`, `$( )`) in the name or `inputs:` are not checked. Without a sign-in, scope or network, the task checks stay quiet.
+  Turn parts off with `azureDevOps.yaml.taskSupport`, `.taskDiagnostics` and `.taskVersionHints`.
 - **Pipeline Preview** (button in the editor title): shows what the templates produce, without running anything: the stage graph with the `dependsOn` lines, and for each stage its jobs (pool, environment, strategy, conditions) and steps. Switch between two sources at the top:
   - **Local** expands the templates in VS Code. Templates come from local files and clones, unsaved changes included, and the preview follows your edits. Every stage, job and step links to the template file and line it comes from. `${{ }}` expressions, `if` / `elseif` / `else`, `each` and `insert` are evaluated; runtime expressions (`$[ ]`, `$( )`) and `condition:` are shown as written.
   - **Azure DevOps** lets the server expand the pipeline with the content of the file (same as *Validate and Preview Expanded Pipeline*), so the result is exactly what a run would use. It updates when you save.
@@ -92,6 +101,8 @@ Help for `template:` and `extends:` references in local pipeline files (language
   - Object parameters get a tree form: edit keys and values, add or remove keys and list items, switch a node between text, yes/no, mapping and list. `${{ if }}` / `${{ each }}` keys stay keys. *Form* / *YAML* switches to the value as YAML text. Step, job and stage parameters (`stepList`, `jobList`, `stageList`, `step`, `job`, `stage`) get a YAML field with the block as it is written, comments included. Only that parameter's block is rewritten, with the file's indentation. The form rebuilds the block, so comments inside it are lost; the YAML field keeps them.
   - *Update in pipeline* changes only the affected lines (comments and formatting stay); the file is not saved, so undo works as usual. Values equal to the default are removed unless *Write defaults* is checked; *Reset to defaults* sets every parameter back.
   - The catalog on the left lists the templates of a repository resource at a tag or branch (or of the pipeline's own repository) and marks the ones already used. Picking a new one shows it as a dashed card in the structure strip; *Insert into pipeline* adds the call at the end of the chosen `steps:` / `jobs:` / `stages:` list. Switching the `ref` updates `resources.repositories` as well and warns when it points to a branch. *Add repository…* declares another repository of the project.
+  - **Task steps:** *Open in Designer* also appears above `- task:` lines, and task steps are listed in the structure strip next to the template calls. A step's form has the task version (with a note when a newer major, deprecation or Microsoft's retirement applies), the display name and the inputs in the groups of the task (the *Advanced* group is collapsed unless it holds something). Inputs appear and disappear with the task's `visibleRule` as you change values; an input the rule hides but the file sets stays, marked, and is never removed for you. Multi-line inputs such as `inlineScript` are text areas that keep the block scalar header (`|-`). Help texts are shown as plain text. Changing the version edits only the `task:` line; inputs the new version does not know are listed. A step whose `inputs` are built with expressions is read-only with a link to the line.
+  - **Task catalog:** the *Templates* / *Tasks* switch on the left lists the tasks of your organization by category with a chip per major version; *Deprecated* tasks are collapsed. Pick a task (or one of its versions), choose the `steps:` list to insert it into and fill the form; *Insert into pipeline* adds the step with the inputs that differ from their defaults. The footer shows the organization and the age of the list, ↻ reads it again, and with old data and no connection the list stays usable with an offline note. A token without the *Agent Pools (Read)* scope shows an error that names it. `azureDevOps.yaml.taskSupport` off hides all of this.
   - The YAML preview shows the pending changes with `+` (inserted) and `~` (changed); *YAML only* shows the whole file. *Validate* lets Azure DevOps expand the pipeline with the pending changes and lists the errors.
 
   ![Pipeline designer with the template catalog, the stages and their template calls, the parameter form of a .NET build template with two unsaved changes, the YAML preview with the inserted line marked, and a successful validation](media/screenshots/pipeline-designer.png)
@@ -100,6 +111,16 @@ Help for `template:` and `extends:` references in local pipeline files (language
 
 - **Show Pipeline Templates:** lists every template the file includes, recursively, with nesting, source and number of parameters; pick one to open it.
 - **Validate and Preview Expanded Pipeline** (button in the editor title): Azure DevOps expands the pipeline with the local content of the file, without starting a run. You see the final YAML, or the errors marked in the file. Other files, including local templates, are read from the server at the checked-out branch.
+
+### Tracing a line to its pull request
+
+Ask "why is this line here?" and get the pull request and work items behind it, opened in the DevOps Deck panels instead of the browser.
+
+- **Command:** *DevOps Deck: Trace Line to Pull Request* (editor context menu or Command Palette) shows the commit of the cursor line, its pull request and the linked work items, which fill in step by step. Pick a row to open the pull request, a work item or the commit in the browser.
+- **Blame hover of VS Code:** the hover of VS Code's own blame (status bar entry) gets a *Pull Request & Work Items* link for commits of Azure Repos. Nothing is requested until you click.
+- **Annotations (off by default):** `azureDevOps.blame.annotations` adds the author, age and pull request of the cursor line to the status bar, as text after the line, or both.
+
+It works in clones whose remote is in your organization (any of its projects), runs `git blame` locally and asks Azure DevOps for the pull request of the commit. Uncommitted and unpushed lines get a note instead of a request. See *Known limitations*.
 
 ### Repositories and wiki
 
@@ -176,7 +197,7 @@ If there is no Azure Repos remote, or you want a different project, click the pr
 ### Authentication
 
 - **Microsoft account (default):** uses VS Code's built-in Microsoft sign-in (Entra ID). If the organization belongs to a different tenant than your account, set `azureDevOps.tenantId`.
-- **Personal Access Token:** run *DevOps Deck: Use Personal Access Token*. The token needs these scopes: **Code** (Read & Write), **Work Items** (Read & Write), **Build** (Read & Execute), **Wiki** (Read & Write), **Project and Team** (Read), **Identity** (Read) and **Test Management** (Read). It is stored in VS Code's secret storage.
+- **Personal Access Token:** run *DevOps Deck: Use Personal Access Token*. The token needs these scopes: **Code** (Read & Write), **Work Items** (Read & Write), **Build** (Read & Execute), **Wiki** (Read & Write), **Project and Team** (Read), **Identity** (Read), **Test Management** (Read) and **Agent Pools** (Read, for the task catalog of the YAML editor; without it everything else works and task help stays off). It is stored in VS Code's secret storage.
 
 ## Settings
 
@@ -189,12 +210,19 @@ If there is no Azure Repos remote, or you want a different project, click the pr
 | `azureDevOps.tenantId` | | Entra ID tenant, if it differs from your account's home tenant |
 | `azureDevOps.workItems.queries` | `[]` | Custom WIQL queries for the work item dropdown; these replace the built-in ones |
 | `azureDevOps.refreshInterval` | `60` | Seconds between automatic refreshes of the visible sidebar tab, paused while VS Code is not focused (`0` = off) |
+| `azureDevOps.myDay.importantBranches` | `["main", "master", "release/*"]` | Branches where a failed run of yours ranks higher in *My Day*, besides the repository's default branch (`*` matches any text) |
 | `azureDevOps.pipelines.refreshInterval` | `10` | Seconds between refreshes while a run is in progress |
 | `azureDevOps.pipelines.logPollInterval` | `3` | Seconds between polls when streaming logs |
 | `azureDevOps.pipelines.showTimestamps` | `false` | Show timestamps in pipeline logs |
 | `azureDevOps.yaml.templateDiagnostics` | `true` | Check the parameters passed to `template:` and `extends:` in pipeline YAML |
 | `azureDevOps.yaml.preferLocalRepositories` | `true` | Read templates of repository resources from a clone in the workspace when there is one |
-| `azureDevOps.yaml.designerCodeLens` | `true` | Show *Open in Designer* above `template:` and `extends:` calls |
+| `azureDevOps.yaml.designerCodeLens` | `true` | Show *Open in Designer* above `template:` and `extends:` calls and `- task:` steps |
+| `azureDevOps.yaml.taskSupport` | `true` | Completion, hover, checks and quick fixes for `- task:` steps (`false` turns all of it off) |
+| `azureDevOps.yaml.taskDiagnostics` | `true` | Mark problems of `- task:` steps |
+| `azureDevOps.yaml.taskVersionHints` | `true` | Hint when a newer major version of a task is installed |
+| `azureDevOps.blame.annotations` | `off` | Show author, age and pull request of the cursor line: `off`, `statusBar`, `inline` or `both` |
+| `azureDevOps.blame.ignoreWhitespace` | `true` | Skip whitespace-only commits when tracing a line (`git blame -w`) |
+| `azureDevOps.blame.detectCopies` | `false` | Also follow lines moved from other files of the same commit (`git blame -C`) |
 
 Example of a custom query:
 
@@ -210,7 +238,7 @@ Example of a custom query:
 ## Security and privacy
 
 - Credentials are only ever sent to `https://dev.azure.com` and `https://*.visualstudio.com`. Requests to any other host are refused, even if a workspace's settings point elsewhere.
-- In untrusted workspaces (see [Workspace Trust](https://code.visualstudio.com/docs/editor/workspace-trust)), the organization, project, tenant, query and watcher settings from the workspace are ignored.
+- In untrusted workspaces (see [Workspace Trust](https://code.visualstudio.com/docs/editor/workspace-trust)), the organization, project, tenant, query and watcher settings from the workspace are ignored. Tracing lines runs git and is off there.
 - Work item descriptions, comments and pull request text are written by other people. They are sanitized before they are shown: scripts, event handlers, styles, forms and non-http(s) links are removed.
 - DevOps Deck collects no telemetry. Reviewed-file check marks are stored locally on your machine.
 
@@ -220,7 +248,9 @@ Example of a custom query:
 - **Live logs arrive per step, not line by line.** The public REST API only returns log lines once the agent uploads them, usually when a step finishes. Step status updates live, though. The web UI's line-by-line streaming uses an undocumented channel.
 - **Reviewed-file check marks are not synced** with the check marks in the Azure DevOps web UI, because that storage is not a public API. The same applies to "new since your last visit" in pull requests, which is remembered locally.
 - **Stage dependencies of classic pipelines and of YAML that cannot be expanded** (for example with required runtime parameters that have no default) are inferred from start and finish times, which is right for runs that have started but can only guess for stages that have not.
+- **My Day finds only direct assignments:** pull requests that are waiting for a team or group you belong to, and approvals assigned to a group, do not show up.
 - **Watchers, saved queries, the wiki and repositories** use the primary project when several projects are selected.
+- **Tracing a line:** the pull request is found through the commit. Whether squash, rebase and rebase-merge commits are found has not been tested against a live organization; if none is found, the pull request number in a `Merged PR 123:` commit message is used. Needs `git` and a trusted workspace; organizations configured as `https://<name>.visualstudio.com` do not match remotes (same as the other git features).
 - **Template checks are local:** template paths built from expressions (`${{ }}`) are not followed by hovers and checks. The *Local* pipeline preview evaluates them, but it is a re-implementation and can differ from Azure DevOps in edge cases (for example YAML anchors or variable templates in compile-time expressions); the *Azure DevOps* preview gives the exact result.
 - **No code search:** Azure DevOps Code Search is only served from `almsearch.dev.azure.com`, and DevOps Deck sends credentials to `dev.azure.com` and `*.visualstudio.com` only.
 

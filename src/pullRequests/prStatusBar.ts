@@ -3,7 +3,7 @@ import { AdoClient } from '../client';
 import { ConnectionManager, gitApi } from '../connection';
 import { currentBranch, isInside, LocalRepo, localAdoRepos } from '../git';
 import { Build, GitRepository, PullRequest } from '../types';
-import { plural, shortRef } from '../util';
+import { mdEscape, plural, shortRef } from '../util';
 import { summarizeChecks } from './checks';
 
 const BUILD_ICON: Record<string, string> = {
@@ -167,7 +167,7 @@ export class PrStatusBar implements vscode.Disposable {
       none: '',
     };
     const lines = [
-      `**!${pr.pullRequestId} ${escapeMd(pr.title)}**${pr.isDraft ? ' (draft)' : ''}`,
+      `**!${pr.pullRequestId} ${mdEscape(pr.title)}**${pr.isDraft ? ' (draft)' : ''}`,
       `\n\n${shortRef(pr.sourceRefName)} → ${shortRef(pr.targetRefName)}`,
       checkText[state],
       pr.autoCompleteSetBy ? '\n\nAuto-complete is set' : '',
@@ -191,8 +191,4 @@ function buildInfo(build: Build | undefined): { text: string; tip: string } {
   const done = build.status === 'completed';
   const icon = done ? BUILD_ICON[build.result ?? ''] ?? '$(circle-outline)' : '$(sync~spin)';
   return { text: ` ${icon}`, tip: `\n\nLatest run: ${build.definition.name} #${build.buildNumber} — ${done ? build.result : build.status}` };
-}
-
-function escapeMd(s: string): string {
-  return s.replace(/[\\`*_{}[\]()#+\-.!|<>]/g, String.raw`\$&`);
 }

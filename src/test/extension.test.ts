@@ -4,6 +4,10 @@ import { fakeDoc, openedDocs, quickPicks, registered, resetExtras, shownDocs } f
 import { lastPanel } from './fakeWebview';
 import * as vscode from './vscodeStub';
 import { activate, deactivate } from '../extension';
+import { BlameUi } from '../blame/blameUi';
+import { ConnectionManager } from '../connection';
+import { MyDayService } from '../myDay/service';
+import { FakeWebview } from './fakeWebview';
 
 const pkg = require('../../package.json') as { contributes: { commands: { command: string }[] } };
 const flush = () => new Promise(r => setImmediate(r));
@@ -16,6 +20,7 @@ function memento() {
 
 const secrets = new Map<string, string>();
 const requests: string[] = [];
+let taskReply: unknown[] | undefined;
 const context = {
   subscriptions: [] as { dispose(): unknown }[],
   secrets: {
@@ -37,6 +42,9 @@ async function fakeFetch(url: string | URL, init?: RequestInit): Promise<Respons
   if (u.includes('/_apis/projects')) {
     return json({ value: [{ name: 'Fabrikam Shop' }, { name: 'Contoso Web' }] });
   }
+  if (u.includes('/_apis/distributedtask/tasks') && taskReply) {
+    return json({ value: taskReply });
+  }
   if (u.includes('/_apis/build/definitions/5?')) {
     return json({ id: 5, name: 'Contoso CI' });
   }
@@ -49,6 +57,11 @@ async function fakeFetch(url: string | URL, init?: RequestInit): Promise<Respons
 const run = (id: string, ...args: unknown[]) => registered.get(id)!(...args);
 let inputs: unknown[] = [];
 let warnings: unknown[] = [];
+let sidebarProvider: { resolveWebviewView(view: unknown): void } | undefined;
+const resetSpy = { calls: 0 };
+const realReset = MyDayService.prototype.reset;
+const blameSpy = { resets: 0 };
+const realBlameReset = BlameUi.prototype.reset;
 let sessionListener: ((e: { provider: { id: string } }) => void) | undefined;
 const realFetch = globalThis.fetch;
 
@@ -63,11 +76,16 @@ describe('activate', () => {
     vscode.settings['azureDevOps.refreshInterval'] = 0;
     secrets.set('azureDevOps.pat', 'fake-pat');
     (vscode.authentication as any).onDidChangeSessions = (l: typeof sessionListener) => { sessionListener = l; return { dispose() { /* stub */ } }; };
+    w.registerWebviewViewProvider = (_id: string, provider: typeof sidebarProvider) => { sidebarProvider = provider; return { dispose() { /* stub */ } }; };
+    MyDayService.prototype.reset = function (this: MyDayService) { resetSpy.calls++; realReset.call(this); };
+    BlameUi.prototype.reset = function (this: BlameUi) { blameSpy.resets++; realBlameReset.call(this); };
     await activate(context as any);
   });
   after(() => {
     context.subscriptions.forEach(d => d.dispose());
     deactivate();
+    MyDayService.prototype.reset = realReset;
+    BlameUi.prototype.reset = realBlameReset;
     globalThis.fetch = realFetch;
   });
   beforeEach(() => {
@@ -93,6 +111,17 @@ describe('activate', () => {
     await run('azureDevOps.setPat');
     assert.equal(secrets.get('azureDevOps.pat'), 'new-pat');
     assert.equal(vscode.settings['azureDevOps.authMethod'], 'pat');
+  });
+
+  it('refreshes the task catalog and reports the outcome', async () => {
+    taskReply = undefined;
+    await run('azureDevOps.yaml.refreshTaskCatalog');
+    assert.match(vscode.messages.at(-1)!, /Could not read the tasks of the organization.*Agent Pools \(Read\)/);
+    taskReply = [{ id: 'g1', name: 'ContosoDeploy', friendlyName: 'Contoso deploy', version: { major: 1, minor: 0, patch: 0 } }];
+    w.showInformationMessage = async (m: string) => { vscode.messages.push(m); return undefined; };
+    await run('azureDevOps.yaml.refreshTaskCatalog');
+    assert.equal(vscode.messages.at(-1), 'Task catalog refreshed: 1 task.');
+    taskReply = undefined;
   });
 
   it('runs the pipeline YAML commands for the active editor', async () => {
@@ -225,5 +254,96 @@ describe('activate', () => {
     second.fire('accept');
     await done;
     assert.equal(vscode.settings['azureDevOps.project'], 'Contoso Web');
+  });
+
+  it('declares and registers the My Day commands', () => {
+    const declared = pkg.contributes.commands.map(c => c.command);
+    for (const id of ['azureDevOps.myDay.defer', 'azureDevOps.myDay.restore', 'azureDevOps.pr.vote']) {
+      assert.ok(declared.includes(id), `${id} is declared`);
+      assert.ok(registered.has(id), `${id} is registered`);
+    }
+  });
+
+  /** Resolves the sidebar with a fake page; returns the messages it received. */
+  function openSidebar(): FakeWebview {
+    const webview = new FakeWebview();
+    const view = { webview, badge: undefined as unknown, visible: true, onDidChangeVisibility: () => ({ dispose() { /* stub */ } }) };
+    sidebarProvider!.resolveWebviewView(view);
+    return webview;
+  }
+
+  it('ignores a vote with invalid arguments without a request or refresh', async () => {
+    const page = openSidebar();
+    let picks = 0;
+    w.showQuickPick = async () => { picks++; return undefined; };
+    const before = requests.length;
+    await run('azureDevOps.pr.vote', '', 7);
+    await run('azureDevOps.pr.vote', 42, 7);
+    await run('azureDevOps.pr.vote', 'web-shop', 'x');
+    await run('azureDevOps.pr.vote', 'web-shop', 1.5);
+    await run('azureDevOps.pr.vote', 'web-shop', 0);
+    assert.equal(picks, 0);
+    assert.equal(requests.slice(before).filter(u => u.includes('/reviewers/')).length, 0);
+    assert.equal(page.ofType('refresh').length, 0);
+  });
+
+  it('does nothing when deferring an unknown My Day key', async () => {
+    let picks = 0;
+    w.showQuickPick = async () => { picks++; return undefined; };
+    await run('azureDevOps.myDay.defer', 'pr:unknown');
+    await run('azureDevOps.myDay.defer', 12);
+    await run('azureDevOps.myDay.defer');
+    assert.equal(picks, 0);
+    await run('azureDevOps.myDay.restore', 'pr:unknown');
+  });
+
+  it('serves My Day through the sidebar and resets it on sign-in and configuration changes', async () => {
+    const page = openSidebar();
+    await page.send({ type: 'rpc', id: 1, method: 'myDay', params: {} });
+    const answer = page.ofType('rpc').find(m => m.id === 1);
+    assert.ok(answer, 'the sidebar answers the myDay call');
+    assert.notEqual(answer.error?.message, 'My Day is not available', 'the service is connected to the sidebar');
+    const base = resetSpy.calls;
+    const blameBase = blameSpy.resets;
+    await run('azureDevOps.signIn');
+    assert.equal(resetSpy.calls, base + 1, 'sign-in resets My Day');
+    assert.equal(blameSpy.resets, blameBase + 1, 'and the blame caches, once');
+    await run('azureDevOps.setPat');
+    await vscode.workspace.getConfiguration('azureDevOps').update('additionalProjects', ['Contoso Web']);
+    await flush();
+    assert.ok(resetSpy.calls >= base + 2, 'a configuration change resets My Day');
+    const afterConfig = resetSpy.calls;
+    sessionListener!({ provider: { id: 'microsoft' } });
+    assert.equal(resetSpy.calls, afterConfig + 1, 'a Microsoft session change resets My Day');
+  });
+});
+
+describe('activate when watching git fails', () => {
+  it('still starts blame and shows the failure instead of an unhandled rejection', async () => {
+    const realWatch = ConnectionManager.prototype.watchGit;
+    const realStart = BlameUi.prototype.start;
+    let started = 0;
+    const seen: unknown[] = [];
+    const onReject = (e: unknown): void => { seen.push(e); };
+    process.on('unhandledRejection', onReject);
+    ConnectionManager.prototype.watchGit = async () => { throw new Error('git is gone'); };
+    BlameUi.prototype.start = function () { started++; };
+    const realWarn = w.showWarningMessage;
+    const shown: string[] = [];
+    w.showWarningMessage = async (m: string) => { shown.push(m); return undefined; };
+    const second = { ...context, subscriptions: [] as { dispose(): unknown }[] };
+    try {
+      await activate(second as any);
+      await flush();
+      assert.equal(started, 1);
+      assert.ok(shown.some(m => m.includes('git is gone')), shown.join('|'));
+      assert.deepEqual(seen, []);
+    } finally {
+      process.off('unhandledRejection', onReject);
+      second.subscriptions.forEach(d => d.dispose());
+      ConnectionManager.prototype.watchGit = realWatch;
+      BlameUi.prototype.start = realStart;
+      w.showWarningMessage = realWarn;
+    }
   });
 });
