@@ -369,7 +369,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await writeWatchers(list);
     }
   });
-  command('azureDevOps.wi.open', async (id: number) => WorkItemPanel.show(client, context.extensionUri, id, () => refresh(true)));
+  command('azureDevOps.wi.open', (id: number) => WorkItemPanel.show(client, context.extensionUri, id, () => refresh(true)));
   command('azureDevOps.wi.openById', async () => {
     const id = await vscode.window.showInputBox({ title: 'Open work item', prompt: 'Work item ID', validateInput: v => /^\d+$/.test(v.trim().replace(/^#/, '')) ? undefined : 'Enter a number' });
     if (id) {
