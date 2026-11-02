@@ -282,6 +282,20 @@ describe('TaskCatalog', () => {
     assert.equal(requests, 3);
   });
 
+  it('clearBackoff lets the editor try again at once, for example after new credentials', async () => {
+    answer = async () => { throw new Error('forbidden'); };
+    const c = newCatalog();
+    await c.ensure();
+    assert.equal(requests, 1);
+    await c.ensure();
+    assert.equal(requests, 1, 'backing off');
+    c.clearBackoff();
+    answer = async () => [def()];
+    await c.ensure();
+    assert.equal(requests, 2);
+    assert.equal(c.snapshot().status, 'ready');
+  });
+
   it('does not loop on old data with a failing refresh, and success clears the backoff', async () => {
     files.set(fileOf(ORG), cacheText({ fetchedAt: Date.now() - MAX_AGE_MS - 1 }));
     answer = async () => { throw new Error('boom'); };

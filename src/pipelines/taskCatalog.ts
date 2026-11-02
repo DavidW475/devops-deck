@@ -356,6 +356,12 @@ export class TaskCatalog implements vscode.Disposable {
     }
   }
 
+  /** The sign-in changed: a failed refresh no longer holds the editor back, the next use asks again. */
+  clearBackoff(): void {
+    this.failures = 0;
+    this.retryAfter = 0;
+  }
+
   dispose(): void {
     this.generation++;
     this.emitter.dispose();

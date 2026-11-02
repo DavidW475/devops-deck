@@ -45,6 +45,7 @@ async function fakeFetch(url: string | URL, init?: RequestInit): Promise<Respons
     return json({ value: [{ name: 'Fabrikam Shop' }, { name: 'Contoso Web' }] });
   }
   if (u.includes('/_apis/distributedtask/tasks') && taskReply) {
+    await taskGate;
     return json({ value: taskReply });
   }
   if (u.includes('/_apis/build/definitions/5?')) {
@@ -58,6 +59,7 @@ async function fakeFetch(url: string | URL, init?: RequestInit): Promise<Respons
 
 const run = (id: string, ...args: unknown[]) => registered.get(id)!(...args);
 let inputs: unknown[] = [];
+let taskGate: Promise<void> | undefined;
 let warnings: unknown[] = [];
 let sidebarProvider: { resolveWebviewView(view: unknown): void } | undefined;
 const resetSpy = { calls: 0, invalidates: 0 };
@@ -70,6 +72,8 @@ const configListeners: ((e: { affectsConfiguration(s: string): boolean }) => unk
 const cleared = { pauses: 0, catalogs: 0 };
 const realClearPause = AdoClient.prototype.clearPause;
 const realCatalogReset = TaskCatalog.prototype.reset;
+const realClearBackoff = TaskCatalog.prototype.clearBackoff;
+let backoffClears = 0;
 const realFetch = globalThis.fetch;
 
 describe('activate', () => {
@@ -86,6 +90,7 @@ describe('activate', () => {
     vscode.workspace.onDidChangeConfiguration = (l => { configListeners.push(l); return realOnConfig(l); }) as typeof realOnConfig;
     AdoClient.prototype.clearPause = function (this: AdoClient) { cleared.pauses++; realClearPause.call(this); };
     TaskCatalog.prototype.reset = function (this: TaskCatalog) { cleared.catalogs++; realCatalogReset.call(this); };
+    TaskCatalog.prototype.clearBackoff = function (this: TaskCatalog) { backoffClears++; realClearBackoff.call(this); };
     (vscode.authentication as any).onDidChangeSessions = (l: typeof sessionListener) => { sessionListener = l; return { dispose() { /* stub */ } }; };
     w.registerWebviewViewProvider = (_id: string, provider: typeof sidebarProvider) => { sidebarProvider = provider; return { dispose() { /* stub */ } }; };
     MyDayService.prototype.reset = function (this: MyDayService) { resetSpy.calls++; realReset.call(this); };
@@ -101,6 +106,7 @@ describe('activate', () => {
     BlameUi.prototype.reset = realBlameReset;
     AdoClient.prototype.clearPause = realClearPause;
     TaskCatalog.prototype.reset = realCatalogReset;
+    TaskCatalog.prototype.clearBackoff = realClearBackoff;
     globalThis.fetch = realFetch;
   });
   beforeEach(() => {
@@ -111,6 +117,10 @@ describe('activate', () => {
     warnings = [];
     w.showInputBox = async () => inputs.shift();
     w.showWarningMessage = async (m: string) => { vscode.messages.push(m); return warnings.shift(); };
+  });
+
+  it('starts without resetting the pause or the task catalog for the first connection', () => {
+    assert.deepEqual(cleared, { pauses: 0, catalogs: 0 });
   });
 
   it('registers every contributed command', () => {
@@ -137,6 +147,22 @@ describe('activate', () => {
     await run('azureDevOps.yaml.refreshTaskCatalog');
     assert.equal(vscode.messages.at(-1), 'Task catalog refreshed: 1 task.');
     taskReply = undefined;
+  });
+
+  it('does not claim a missing organization when a refresh was dropped by a reset', async () => {
+    taskReply = [{ id: 'g1', name: 'ContosoDeploy', friendlyName: 'Contoso deploy', version: { major: 1, minor: 0, patch: 0 } }];
+    let release: () => void = () => undefined;
+    taskGate = new Promise<void>(resolve => { release = resolve; });
+    w.showInformationMessage = async (m: string) => { vscode.messages.push(m); return undefined; };
+    const refreshing = run('azureDevOps.yaml.refreshTaskCatalog');
+    await flush();
+    inputs = ['pat-2'];
+    await run('azureDevOps.setPat'); // resets the catalog while its request runs
+    release();
+    await refreshing;
+    taskGate = undefined;
+    taskReply = undefined;
+    assert.equal(vscode.messages.at(-1), 'The task catalog was reset while it loaded. Run the command again.');
   });
 
   it('runs the pipeline YAML commands for the active editor', async () => {
@@ -323,7 +349,12 @@ describe('activate', () => {
     await run('azureDevOps.signIn');
     assert.equal(resetSpy.calls, base + 1, 'sign-in resets My Day');
     assert.equal(blameSpy.resets, blameBase + 1, 'and the blame caches, once');
+    vscode.settings['azureDevOps.authMethod'] = 'microsoft';
+    inputs = ['pat-1'];
+    const beforeSetPat = { calls: resetSpy.calls, invalidates: resetSpy.invalidates };
     await run('azureDevOps.setPat');
+    await flush();
+    assert.deepEqual([resetSpy.calls, resetSpy.invalidates], [beforeSetPat.calls + 1, beforeSetPat.invalidates + 1], 'switching to a PAT resets and loads once, not twice');
     const afterSetPat = resetSpy.calls;
     const invalidatesBefore = resetSpy.invalidates;
     await vscode.workspace.getConfiguration('azureDevOps').update('additionalProjects', ['Contoso Web', 'Fabrikam Extra']);
@@ -409,9 +440,17 @@ describe('activate', () => {
     const resets = resetSpy.calls;
     await fireSettings('azureDevOps.blame.annotations', 'azureDevOps.yaml.taskSupport');
     assert.equal(resetSpy.invalidates, invalidates, 'blame and YAML alone: no reload');
+    vscode.settings['azureDevOps.authMethod'] = 'microsoft';
+    const clears = backoffClears;
     await fireSettings('azureDevOps.authMethod', 'azureDevOps.blame.annotations');
+    assert.equal(backoffClears, clears + 1, 'new credentials clear the catalog backoff');
     assert.equal(resetSpy.calls, resets + 1, 'the identity changed: state is reset');
     assert.equal(resetSpy.invalidates, invalidates + 1, 'and the sidebar loads again with the new identity');
+    await fireSettings('azureDevOps.authMethod');
+    assert.equal(resetSpy.calls, resets + 1, 'an event for a sign-in that was already applied resets nothing again');
+    assert.equal(resetSpy.invalidates, invalidates + 1);
+    vscode.settings['azureDevOps.authMethod'] = 'pat';
+    await fireSettings('azureDevOps.authMethod');
   });
 
   it('drops the blame cache when the git options of blame change, and for no other blame setting', async () => {
