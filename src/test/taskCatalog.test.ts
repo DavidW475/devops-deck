@@ -296,6 +296,30 @@ describe('TaskCatalog', () => {
     assert.equal(c.snapshot().status, 'ready');
   });
 
+  it('clearBackoff drops a refresh made with the old credentials, notifies, and keeps the data', async () => {
+    const c = newCatalog();
+    await c.ensure();
+    assert.equal(requests, 1);
+    let release: () => void = () => undefined;
+    answer = () => new Promise((_, rej) => { release = () => rej(new Error('old credentials')); });
+    const oldRefresh = c.refresh();
+    await flush();
+    let fired = 0;
+    c.onDidChange(() => fired++);
+    c.clearBackoff();
+    assert.equal(fired, 1, 'open documents are checked again');
+    answer = async () => [def({ name: 'ContosoNew' })];
+    const fresh = await c.refresh();
+    assert.equal(requests, 3, 'a new caller does not join the old request');
+    assert.ok(fresh.index!.knowsName('ContosoNew'));
+    release();
+    await oldRefresh;
+    await flush();
+    assert.equal(c.snapshot().status, 'ready', 'the old failure does not arm the backoff or change the status');
+    await c.ensure();
+    assert.equal(c.snapshot().error, undefined);
+  });
+
   it('does not loop on old data with a failing refresh, and success clears the backoff', async () => {
     files.set(fileOf(ORG), cacheText({ fetchedAt: Date.now() - MAX_AGE_MS - 1 }));
     answer = async () => { throw new Error('boom'); };
