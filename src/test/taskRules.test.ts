@@ -135,6 +135,21 @@ describe('inputVisibility', () => {
     assert.equal(vis('loopA'), undefined);
   });
 
+  it('evaluates densely cross-referenced rules without going through every path', { timeout: 10_000 }, () => {
+    // Every rule reads all the inputs after it: 2^24 paths without a memory.
+    const count = 24;
+    const inputs = Array.from({ length: count }, (_, n) => input(`i${n}`, {
+      default: 'on',
+      visibleRule: n === count - 1 ? 'flag = on' : Array.from({ length: count - 1 - n }, (_, k) => `i${n + 1 + k} = off`).join(' || '),
+    }));
+    inputs.push(input('flag', { default: 'on' }));
+    const t = task(inputs);
+    const started = Date.now();
+    inputVisibility(t, inputs[0], new Map(), new Set());
+    assert.equal(inputVisibility(t, inputs[count - 1], new Map(), new Set()), true);
+    assert.ok(Date.now() - started < 2000, 'done at once');
+  });
+
   it('a hidden group rule wins over a visible input rule', () => {
     assert.equal(vis('args', { scriptLocation: 'inlineScript' }), false);
   });

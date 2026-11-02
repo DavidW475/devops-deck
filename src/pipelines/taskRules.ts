@@ -195,6 +195,8 @@ interface Context {
   conditional: ReadonlySet<string>;
   /** inputs whose visibility is being computed (a rule cycle gives unknown) */
   open: Set<TaskInput>;
+  /** answers found in this evaluation: rules that read each other would otherwise be evaluated once per path */
+  known: Map<TaskInput, boolean | undefined>;
 }
 
 function passedValue(ctx: Context, input: TaskInput): { set: boolean; value?: string; conditional: boolean } {
@@ -234,10 +236,14 @@ function visibilityOf(ctx: Context, input: TaskInput): boolean | undefined {
   if (!input.visibleRule?.trim() && !input.group) {
     return true;
   }
+  if (ctx.known.has(input)) {
+    return ctx.known.get(input);
+  }
   ctx.open.add(input);
   const group = input.group ? ctx.task.groups.find(g => g.name === input.group) : undefined;
   const result = and3(evalText(ctx, input.visibleRule), evalText(ctx, group?.visibleRule));
   ctx.open.delete(input);
+  ctx.known.set(input, result);
   return result;
 }
 
@@ -249,7 +255,7 @@ function visibilityOf(ctx: Context, input: TaskInput): boolean | undefined {
 export function inputVisibility(
   task: TaskInfo, input: TaskInput, passed: Map<string, string>, conditional: ReadonlySet<string>,
 ): boolean | undefined {
-  return visibilityOf({ task, passed, conditional, open: new Set() }, input);
+  return visibilityOf({ task, passed, conditional, open: new Set(), known: new Map() }, input);
 }
 
 /** The rules that make an input visible (its own and its group's), joined with `and`; empty when it always shows. */
