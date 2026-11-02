@@ -311,7 +311,8 @@ describe('BlameUi', () => {
       assert.equal(historyProviders.length, 1);
       const p = historyProviders[0];
       assert.deepEqual(p.provideHoverCommands(repo), [{
-        title: '$(git-pull-request) Pull Request & Work Items', command: 'azureDevOps.blame.openForCommit', arguments: ['/src/web-shop'],
+        title: '$(git-pull-request) Pull Request & Work Items', tooltip: 'Show the pull request and work items of this commit',
+        command: 'azureDevOps.blame.openForCommit', arguments: ['/src/web-shop'],
       }]);
       const gh = fakeRepo('/src/gh', 'https://github.com/contoso/shop.git');
       assert.equal(p.provideHoverCommands(gh), undefined);
@@ -546,6 +547,53 @@ describe('BlameUi', () => {
       assert.match(status().text, /!1234/);
     });
 
+    it('forgets a cached pull request that may have changed after 15 minutes, but not a completed one', async () => {
+      mock.timers.reset();
+      mock.timers.enable({ apis: ['setTimeout', 'Date'], now: NOW });
+      setMode('statusBar');
+      const e = editorAt(0);
+      const open = prLookup();
+      open.match!.pr.status = 'active';
+      h.pullRequest = async () => open;
+      await run();
+      const next = async (lineNo: number) => {
+        e.selection = Object.assign(new (w.Range)(lineNo, 0, lineNo, 0), { active: new (w.Position)(lineNo, 0) });
+        await fire('selection', {});
+        await tick(400);
+      };
+      await next(1);
+      assert.equal(count('pullRequest'), 1, 'cached');
+      mock.timers.setTime(NOW + 16 * 60_000);
+      await next(2);
+      assert.equal(count('pullRequest'), 2, 'an open pull request is asked again after 15 minutes');
+      h.pullRequest = async () => prLookup();
+      mock.timers.setTime(NOW + 32 * 60_000);
+      await next(0);
+      assert.equal(count('pullRequest'), 3);
+      mock.timers.setTime(NOW + 3 * 3600_000);
+      await next(1);
+      assert.equal(count('pullRequest'), 3, 'a completed pull request is kept');
+    });
+
+    it('does not show or keep the pull request of the connection that was reset while it was being searched', async () => {
+      setMode('statusBar');
+      const e = editorAt(0);
+      const late = new Deferred<PrLookup | undefined>();
+      h.pullRequest = () => late.promise;
+      await run();
+      ui.reset();
+      h.pullRequest = async () => undefined;
+      await tick(1);
+      late.resolve(prLookup());
+      await tick(1);
+      assert.doesNotMatch(status().text, /!1234/, 'the old connection\'s pull request is not shown');
+      e.selection = Object.assign(new (w.Range)(1, 0, 1, 0), { active: new (w.Position)(1, 0) });
+      await fire('selection', {});
+      await tick(400);
+      assert.equal(count('pullRequest'), 3, 'and it was not kept: the next line asks again');
+      assert.doesNotMatch(status().text, /!1234/);
+    });
+
     it('keeps the author after a REST error and tries again later', async () => {
       setMode('statusBar');
       const e = editorAt(0);
@@ -683,6 +731,22 @@ describe('BlameUi', () => {
       assert.equal(count('lookupLine'), 1);
       await tick(1);
       assert.equal(count('lookupLine'), 2);
+    });
+
+    it('hooks each repository once even when the git extension returns new wrapper objects', async () => {
+      setMode('statusBar');
+      editorAt(0);
+      repo.state.HEAD = { commit: 'c1' } as any;
+      await run();
+      for (let i = 0; i < 4; i++) {
+        await fire('activeEditor');
+        await tick(400);
+      }
+      assert.ok(count('lookupLine') >= 4, 'the annotation was updated several times');
+      assert.equal(listeners['repo:/src/web-shop']?.length, 1, 'one listener per repository, not one per update');
+      await vscode.workspace.getConfiguration('azureDevOps').update('blame.annotations', 'off');
+      await tick(1);
+      assert.equal(listeners['repo:/src/web-shop']?.length ?? 0, 0, 'and it is released with the annotation');
     });
 
     describe('hover', () => {

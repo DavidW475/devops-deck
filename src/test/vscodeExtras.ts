@@ -159,13 +159,16 @@ function repositoryAt(repos: any[], uri: { fsPath: string }): unknown {
     .sort((a, b) => b.rootUri.fsPath.length - a.rootUri.fsPath.length)[0] ?? null;
 }
 
-/** Pretends the built-in git extension is active with these repositories. */
+/** The git extension hands out a new wrapper object on every access (`ApiRepository`); this one shares everything else. */
+const wrapRepo = <T extends object | null>(r: T): T => (r ? Object.create(r) : r);
+
+/** Pretends the built-in git extension is active with these repositories (new wrapper objects on every access, like the real one). */
 export function setGitRepositories(repos: any[] | undefined): void {
   const api = () => ({
-    repositories: repos,
+    get repositories() { return repos?.map(wrapRepo); },
     git: { path: 'git' },
     onDidOpenRepository: () => noop,
-    getRepository: (uri: { fsPath: string }) => repositoryAt(repos ?? [], uri),
+    getRepository: (uri: { fsPath: string }) => wrapRepo(repositoryAt(repos ?? [], uri) as object | null),
     registerSourceControlHistoryItemDetailsProvider: (p: unknown) => {
       historyProviders.push(p);
       return { dispose: () => { historyProviders.splice(historyProviders.indexOf(p), 1); } };

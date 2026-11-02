@@ -84,8 +84,9 @@ async function pickGitRepo(connections: ConnectionManager): Promise<any> {
   if (active) {
     return active;
   }
-  const ado = new Set(localAdoRepos(connections.current).map(r => r.repo));
-  const sorted = [...all].sort((a, b) => Number(ado.has(b)) - Number(ado.has(a)));
+  // The git extension returns a new wrapper object on every access: compare the repositories by their root.
+  const ado = new Set(localAdoRepos(connections.current).map(r => r.repo.rootUri.fsPath));
+  const sorted = [...all].sort((a, b) => Number(ado.has(b.rootUri.fsPath)) - Number(ado.has(a.rootUri.fsPath)));
   const pick = await vscode.window.showQuickPick(sorted.map(r => ({
     label: path.basename(r.rootUri.fsPath), description: r.state.HEAD?.name, detail: r.rootUri.fsPath, r,
   })), { title: 'Create branch in…' });

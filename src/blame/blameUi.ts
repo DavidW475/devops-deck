@@ -159,7 +159,7 @@ export class BlameUi implements vscode.Disposable {
         if (!adoRemoteOf(repository, this.connections.current)) {
           return undefined;
         }
-        return [{ title: '$(git-pull-request) Pull Request & Work Items', command: 'azureDevOps.blame.openForCommit', arguments: [repository.rootUri.fsPath] }];
+        return [{ title: '$(git-pull-request) Pull Request & Work Items', tooltip: 'Show the pull request and work items of this commit', command: 'azureDevOps.blame.openForCommit', arguments: [repository.rootUri.fsPath] }];
       },
     };
     try {
@@ -223,6 +223,13 @@ function relativePath(uri: vscode.Uri): string {
   return rel || path.basename(uri.fsPath);
 }
 
+/** How long the answer "no pull request yet" or "still open" is trusted (the same time as the service's cache). */
+const PR_PENDING_TTL_MS = 15 * 60 * 1000;
+
+/** A completed pull request never changes; any other answer may, so it expires. */
+const usable = (cached: { pr: PrLookup; at: number }): boolean =>
+  cached.pr.match?.pr.status === 'completed' || Date.now() - cached.at < PR_PENDING_TTL_MS;
+
 /** What the annotation currently shows. */
 interface Shown {
   file: string;
@@ -240,11 +247,14 @@ class Annotations {
   private decorated?: vscode.TextEditor;
   private hoverReg?: vscode.Disposable;
   private shown?: Shown;
-  private prCache?: { root: string; sha: string; pr: PrLookup };
+  private prCache?: { root: string; sha: string; pr: PrLookup; at: number };
+  /** bumped by `reset`: a pull request found for an earlier connection is dropped */
+  private generation = 0;
   private readonly always: vscode.Disposable[] = [];
   private working: vscode.Disposable[] = [];
-  private readonly hooked = new Set<unknown>();
-  private readonly heads = new Map<unknown, string | undefined>();
+  /** repositories being watched, by root: the git extension returns a new wrapper object on every access */
+  private readonly hooked = new Set<string>();
+  private readonly heads = new Map<string, string | undefined>();
   private timer?: ReturnType<typeof setTimeout>;
   private abort?: AbortController;
   private seq = 0;
@@ -269,6 +279,9 @@ class Annotations {
     this.silenced = false;
     this.slowFiles.clear();
     this.prCache = undefined;
+    this.generation++;
+    this.seq++;
+    this.abort?.abort();
     if (this.always.length) {
       this.apply();
     }
@@ -378,16 +391,17 @@ class Annotations {
     this.timer = setTimeout(() => void this.update(), ms);
   }
 
-  /** Watches HEAD changes of every repository once. */
+  /** Watches HEAD changes of every repository once (by root path). */
   private hookRepos(): void {
     for (const repo of gitApi()?.repositories ?? []) {
-      if (!this.hooked.has(repo)) {
-        this.hooked.add(repo);
-        this.heads.set(repo, repo.state.HEAD?.commit);
+      const root: string = repo.rootUri.fsPath;
+      if (!this.hooked.has(root)) {
+        this.hooked.add(root);
+        this.heads.set(root, repo.state.HEAD?.commit);
         this.working.push(repo.state.onDidChange(() => {
           const head = repo.state.HEAD?.commit;
-          if (head !== this.heads.get(repo)) {
-            this.heads.set(repo, head);
+          if (head !== this.heads.get(root)) {
+            this.heads.set(root, head);
             this.schedule(DEBOUNCE_MS);
           }
         }));
@@ -455,16 +469,17 @@ class Annotations {
       return;
     }
     const cached = this.prCache;
-    if (cached?.sha === lookup.line.sha && cached.root === lookup.repo.repo.rootUri.fsPath) {
+    if (cached?.sha === lookup.line.sha && cached.root === lookup.repo.repo.rootUri.fsPath && usable(cached)) {
       shown.pr = cached.pr;
       this.paint(editor, shown, false);
       return;
     }
     this.paint(editor, shown, true);
+    const generation = this.generation;
     try {
       shown.pr = await this.lookups.pullRequest(lookup.repo, lookup.line.sha, { background: true });
-      if (shown.pr) {
-        this.prCache = { root: lookup.repo.repo.rootUri.fsPath, sha: lookup.line.sha, pr: shown.pr };
+      if (shown.pr && generation === this.generation) {
+        this.prCache = { root: lookup.repo.repo.rootUri.fsPath, sha: lookup.line.sha, pr: shown.pr, at: Date.now() };
       }
     } catch (e) {
       this.silenced = this.silenced || isAuth(e);
