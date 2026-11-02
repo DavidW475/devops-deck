@@ -611,6 +611,17 @@ describe('MyDayService failures', () => {
     assert.deepEqual(retried.failures, []);
   });
 
+  it('stop ends the polling until start is called again', async () => {
+    const h = make();
+    h.service.start();
+    h.service.stop();
+    await h.advance(60 * SECOND);
+    assert.equal(total(h), 0);
+    h.service.start();
+    await h.advance(15 * SECOND);
+    assert.ok(total(h) > 0);
+  });
+
   it('a pause that ends clears the notice on the next tick', async () => {
     const h = make();
     h.state.throttledUntil = START + MINUTE;

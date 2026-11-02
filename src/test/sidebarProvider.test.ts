@@ -138,11 +138,20 @@ function fakeReviewed() {
 /** A sidebar view: the webview plus the badge and visibility the provider drives. */
 function fakeView(webview: FakeWebview) {
   const listeners: (() => void)[] = [];
+  const disposals: (() => void)[] = [];
   const view = {
     webview, badge: undefined as unknown, visible: true,
     onDidChangeVisibility: (l: () => void) => { listeners.push(l); return { dispose() { /* nothing */ } }; },
+    onDidDispose: (l: () => void) => { disposals.push(l); return { dispose() { /* nothing */ } }; },
   };
-  return { view, setVisible: (on: boolean) => { view.visible = on; listeners.forEach(l => l()); } };
+  return {
+    view, setVisible: (on: boolean) => { view.visible = on; listeners.forEach(l => l()); },
+    /** Like VS Code: a disposed view throws when it is written to. */
+    dispose: () => {
+      Object.defineProperty(view, 'badge', { set: () => { throw new Error('Webview is disposed'); }, get: () => undefined });
+      disposals.forEach(l => l());
+    },
+  };
 }
 
 function myDayResult(count: number): MyDayResult {
@@ -157,6 +166,7 @@ function fakeService() {
   const approvals: Approval[] = [{ id: 'a9', status: 'pending', createdOn: '2026-10-01T08:00:00Z', steps: [{ assignedApprover: ME, status: 'pending' }] } as Approval];
   const service = {
     start: () => { log.push(['start']); },
+    stop: () => { log.push(['stop']); },
     setVisible: (on: boolean) => { log.push(['visible', on]); },
     get: async (o?: { force?: boolean; user?: boolean }) => { log.push(['get', o]); return myDayResult(3); },
     onDidChange: (l: (r: MyDayResult) => void) => { listeners.push(l); return { dispose() { /* nothing */ } }; },
@@ -506,6 +516,20 @@ describe('SidebarProvider', () => {
       const second = fakeView(new FakeWebview());
       provider.resolveWebviewView(second.view as unknown as WebviewView);
       assert.deepEqual(second.view.badge, { value: 1, tooltip: '1 item needs you in My Day' });
+    });
+
+    it('stops polling and writes nothing to a disposed view', () => {
+      const f = fakeService();
+      const r = fakeReviewed();
+      const provider = new SidebarProvider(fakeClient(calls), conn as unknown as ConnectionManager, r.reviewed, EXT);
+      provider.useMyDay(f.service);
+      const webview = new FakeWebview();
+      const view = fakeView(webview);
+      provider.resolveWebviewView(view.view as unknown as WebviewView);
+      view.dispose();
+      assert.deepEqual(f.log, [['start'], ['stop']]);
+      assert.doesNotThrow(() => f.fire(myDayResult(2)), 'the badge of the disposed view is not written');
+      assert.equal(webview.ofType('myDay').length, 0);
     });
 
     it('pushes changes to the page and clears the badge at 0', () => {

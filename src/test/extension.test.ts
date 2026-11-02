@@ -282,7 +282,7 @@ describe('activate', () => {
   /** Resolves the sidebar with a fake page; returns the messages it received. */
   function openSidebar(): FakeWebview {
     const webview = new FakeWebview();
-    const view = { webview, badge: undefined as unknown, visible: true, onDidChangeVisibility: () => ({ dispose() { /* stub */ } }) };
+    const view = { webview, badge: undefined as unknown, visible: true, onDidChangeVisibility: () => ({ dispose() { /* stub */ } }), onDidDispose: () => ({ dispose() { /* stub */ } }) };
     sidebarProvider!.resolveWebviewView(view);
     return webview;
   }

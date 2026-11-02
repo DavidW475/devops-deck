@@ -69,6 +69,13 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 <body><div id="app"></div><script nonce="${n}" src="${js}"></script></body></html>`;
     view.webview.onDidReceiveMessage(m => this.onMessage(m));
     view.onDidChangeVisibility(() => this.syncVisible());
+    view.onDidDispose(() => {
+      if (this.view === view) {
+        // A disposed view must not be written to; without a view nothing needs the polling.
+        this.view = undefined;
+        this.myDay?.stop();
+      }
+    });
     this.setBadge(this.lastCount);
     this.myDay?.start();
   }

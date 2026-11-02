@@ -140,6 +140,15 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
     this.timer = setInterval(() => void this.tick(), TICK);
   }
 
+  /** Stops the timer (the view is gone); `start` runs it again. */
+  stop(): void {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = undefined;
+    }
+    this.visible = false;
+  }
+
   setVisible(visible: boolean): void {
     const becameVisible = visible && !this.visible;
     this.visible = visible;
@@ -200,10 +209,7 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
 
   dispose(): void {
     this.disposed = true;
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = undefined;
-    }
+    this.stop();
     this.emitter.dispose();
   }
 
