@@ -366,10 +366,15 @@ export class TaskCatalog implements vscode.Disposable {
    * The credentials changed: a failed refresh no longer holds the editor back and a refresh started with the old ones is
    * dropped. The data stays; listeners check their documents again and the next use asks again.
    * The status leaves `loading` and the old error: `empty` without data (consumers ask again), `ready` with data.
+   * `stale` stays: no fetch has succeeded, so the data must not count as fresh.
    */
   clearBackoff(): void {
     this.generation++;
-    this.status = this.data ? 'ready' : 'empty';
+    if (!this.data) {
+      this.status = 'empty';
+    } else if (this.status !== 'stale') {
+      this.status = 'ready';
+    }
     this.error = undefined;
     this.lastUnknown = undefined;
     this.loading = undefined;

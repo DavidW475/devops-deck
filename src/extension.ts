@@ -235,6 +235,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (signedIn) {
         if (!settingChanged && account !== before) {
           resetState();
+        } else {
+          taskCatalog.clearBackoff(); // the catalog may have failed with the session this sign-in replaced
         }
         refresh();
       }
@@ -456,14 +458,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   command('azureDevOps.yaml.refreshTaskCatalog', async () => {
     const epoch = taskCatalog.epoch;
     const snap = await taskCatalog.refresh();
-    if (taskCatalog.epoch !== epoch) {
+    if (!connections.current) {
+      void vscode.window.showInformationMessage('Configure an Azure DevOps organization first.');
+    } else if (taskCatalog.epoch !== epoch) {
       void vscode.window.showInformationMessage('The task catalog was reset while it loaded. Run the command again.');
     } else if (snap.status === 'ready' && snap.index) {
       void vscode.window.showInformationMessage(`Task catalog refreshed: ${plural(snap.index.all().length, 'task')}.`);
-    } else if (snap.status === 'empty') {
-      // Without a connection there is no organization; with one, the catalog was reset while it loaded.
-      void vscode.window.showInformationMessage(connections.current
-        ? 'The task catalog was reset while it loaded. Run the command again.' : 'Configure an Azure DevOps organization first.');
     } else {
       const why = snap.error ? ` (${snap.error})` : '';
       void vscode.window.showWarningMessage(`Could not read the tasks of the organization${why}. Sign in again, or give the PAT the scope Agent Pools (Read).`);

@@ -184,6 +184,29 @@ describe('activate', () => {
     assert.equal(vscode.messages.at(-1), 'The task catalog was reset while it loaded. Run the command again.');
   });
 
+  it('says an organization is missing when the connection went away during a refresh', async () => {
+    taskReply = [{ id: 'g1', name: 'ContosoDeploy', friendlyName: 'Contoso deploy', version: { major: 1, minor: 0, patch: 0 } }];
+    let release: () => void = () => undefined;
+    w.showInformationMessage = async (m: string) => { vscode.messages.push(m); return undefined; };
+    const config = vscode.workspace.getConfiguration('azureDevOps');
+    const organization = config.get('organization');
+    taskGate = new Promise<void>(resolve => { release = resolve; });
+    try {
+      const refreshing = run('azureDevOps.yaml.refreshTaskCatalog');
+      await flush();
+      await config.update('organization', '');
+      await flush();
+      release();
+      await refreshing;
+      assert.equal(vscode.messages.at(-1), 'Configure an Azure DevOps organization first.');
+    } finally {
+      taskGate = undefined;
+      taskReply = undefined;
+      await config.update('organization', organization);
+      await flush();
+    }
+  });
+
   it('reports a refresh dropped by new credentials as reset, not as a failure or success', async () => {
     taskReply = [{ id: 'g1', name: 'ContosoDeploy', friendlyName: 'Contoso deploy', version: { major: 1, minor: 0, patch: 0 } }];
     let release: () => void = () => undefined;
@@ -568,8 +591,10 @@ describe('activate', () => {
       await run('azureDevOps.signIn');
       const resets = resetSpy.calls;
       const sameInvalidates = resetSpy.invalidates;
+      const sameClears = backoffClears;
       await run('azureDevOps.signIn');
       assert.equal(resetSpy.calls, resets, 'the same account');
+      assert.equal(backoffClears, sameClears + 1, 'the catalog may have failed with the session this sign-in replaced');
       assert.equal(resetSpy.invalidates, sameInvalidates + 1, 'but the sidebar loads again after a successful sign-in');
       id = 'acc-2';
       const invalidates = resetSpy.invalidates;

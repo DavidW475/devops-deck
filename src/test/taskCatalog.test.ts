@@ -313,7 +313,7 @@ describe('TaskCatalog', () => {
     void stuck;
   });
 
-  it('clearBackoff turns a stale status with its old error into ready when there is data', async () => {
+  it('clearBackoff forgets the old error but keeps a stale status: no fetch has succeeded', async () => {
     const c = newCatalog();
     await c.ensure();
     answer = async () => { throw new Error('old credentials'); };
@@ -321,7 +321,7 @@ describe('TaskCatalog', () => {
     assert.deepEqual([c.snapshot().status, c.snapshot().error], ['stale', 'old credentials']);
     const epoch = c.epoch;
     c.clearBackoff();
-    assert.deepEqual([c.snapshot().status, c.snapshot().error], ['ready', undefined]);
+    assert.deepEqual([c.snapshot().status, c.snapshot().error], ['stale', undefined]);
     assert.notEqual(c.epoch, epoch);
   });
 
