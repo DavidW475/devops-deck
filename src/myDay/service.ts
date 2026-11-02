@@ -15,6 +15,8 @@ const SLOW_TTL = 5 * MINUTE;
 const FAST_TTL = MINUTE;
 const RAW_TTL = 30 * SECOND;
 const FORBIDDEN_RETRY = 30 * MINUTE;
+/** After the user's own change, a forced reload counts as a direct action for this long. */
+const DIRECT_WINDOW = 10 * SECOND;
 const ITERATIONS_TTL = 60 * MINUTE;
 const RUN_WINDOW = 7 * 24 * 60 * MINUTE;
 const PROJECT_PARALLEL = 4;
@@ -98,6 +100,8 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
   private generation = 0;
   /** Counts `invalidate` calls: a flight that started before one must not mark its slot as fresh. */
   private invalidations = 0;
+  /** Until this time (ms) a forced request follows a change the user made themselves: it is not held back by a pause. */
+  private directUntil = 0;
   private disposed = false;
   private me: IdentityRef | undefined;
   private lastItems: MyDayItem[] = [];
@@ -112,9 +116,9 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
   // ---------- public API ----------
 
   async get(options: RequestOptions = {}): Promise<MyDayResult> {
-    const load: LoadOptions = { force: options.force || options.user, user: options.user };
+    const load: LoadOptions = { force: options.force || options.user, user: this.isDirect(options) };
     await this.ensureLoaded(load);
-    if (load.force && this.anyStale()) {
+    if (load.force && this.anyStale(load)) {
       await this.ensureLoaded(load); // a change came in while the first request ran: its answer may be outdated
     }
     const { result } = this.compute();
@@ -141,8 +145,12 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
     }
   }
 
-  invalidate(): void {
+  /** Marks everything due. `direct`: the user's own change caused it, so the reload that follows is not held back by a pause. */
+  invalidate(direct = false): void {
     this.invalidations++;
+    if (direct) {
+      this.directUntil = this.now() + DIRECT_WINDOW;
+    }
     for (const slot of this.slots.values()) {
       slot.stale = true;
     }
@@ -267,8 +275,18 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
     return this.deps.projects().filter(p => this.isDue(source, p, now, opts));
   }
 
-  private anyStale(): boolean {
-    return this.deps.projects().some(p => SOURCES.some(s => this.slots.get(slotKey(s, p))?.stale));
+  /** A click, or a forced request right after the user's own change. */
+  private isDirect(request: RequestOptions): boolean {
+    return !!request.user || (!!request.force && this.now() < this.directUntil);
+  }
+
+  /** True when a slot was invalidated and a load with these options would reload it (a slot in a 403 backoff or a pause would not). */
+  private anyStale(opts: LoadOptions): boolean {
+    if (this.throttled() && !opts.user) {
+      return false;
+    }
+    const now = this.now();
+    return this.deps.projects().some(p => SOURCES.some(s => this.slots.get(slotKey(s, p))?.stale && this.isDue(s, p, now, opts)));
   }
 
   private anyDue(): boolean {
@@ -497,7 +515,7 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
       return cached;
     }
     // Only a click on Refresh or Retry loads although Azure DevOps asked for a pause; a tab that is merely open or a timer does not.
-    const options: LoadOptions = { only: source, ignoreTtl: true, force: request.force || request.user, user: request.user };
+    const options: LoadOptions = { only: source, ignoreTtl: true, force: request.force || request.user, user: this.isDirect(request) };
     await this.ensureLoaded(options);
     if (this.slots.get(key)?.stale) {
       await this.ensureLoaded(options); // invalidated while the first request ran

@@ -569,6 +569,32 @@ describe('MyDayService failures', () => {
     assert.equal(h.count('listPullRequests'), 3);
   });
 
+  it('a reload after the user\'s own change loads during a pause and drops the answered approval', async () => {
+    const h = make();
+    await h.service.get();
+    h.state.throttledUntil = START + 5 * MINUTE;
+    h.state.now += 2 * MINUTE;
+    h.overrides[SHOP] = { listPendingApprovals: async () => [] };
+    h.service.invalidate(true);
+    const r = await h.service.get({ force: true });
+    assert.equal(h.count('listPendingApprovals'), 2);
+    assert.ok(!r.items.some(i => i.source === 'approvals'));
+  });
+
+  it('a forced reload does not load a source twice when another source is blocked after a 403', async () => {
+    const h = make();
+    h.overrides[SHOP] = { listBuildsSince: async () => { throw new AdoError('No access', 403); } };
+    await h.service.get();
+    h.service.invalidate();
+    const before = h.calls.length;
+    await h.service.get({ force: true });
+    const added = h.calls.slice(before);
+    for (const name of ['listPullRequests', 'listPendingApprovals', 'queryWiql']) {
+      assert.equal(added.filter(c => c.startsWith(name)).length, 1, name);
+    }
+    assert.equal(added.filter(c => c.startsWith('listBuildsSince')).length, 0);
+  });
+
   it('get while throttled before any load says the sources are not loaded, and Retry loads them', async () => {
     const h = make();
     h.state.throttledUntil = START + MINUTE;

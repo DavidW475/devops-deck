@@ -70,8 +70,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     throttledUntil: () => client.throttledUntil,
   }, new MyDayDefers(context.globalState, () => connections.current?.orgUrl ?? ''));
   sidebar.useMyDay(myDay);
-  const refresh = () => {
-    myDay.invalidate();
+  /** `direct`: the user changed something themselves (a mutation, Refresh), so My Day reloads even during a pause. */
+  const refresh = (direct = false) => {
+    myDay.invalidate(direct);
     sidebar.refresh();
     prStatus.refresh();
   };
@@ -100,7 +101,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const mutation = (id: string, fn: (...args: any[]) => Promise<unknown>) =>
     command(id, async (...args) => {
       if ((await fn(...args)) !== false) {
-        refresh();
+        refresh(true);
       }
     });
 
@@ -205,7 +206,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // ----- general -----
   command('azureDevOps.refresh', async () => {
     comments.reload();
-    refresh();
+    refresh(true);
   });
   command('azureDevOps.signIn', async () => {
     await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'microsoft', vscode.ConfigurationTarget.Global);
