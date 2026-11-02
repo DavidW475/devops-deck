@@ -173,7 +173,7 @@ describe('task form', () => {
     const target = f.rows.find(r => r.name === 'target')!;
     assert.equal(target.error, undefined, 'no "A value is required." for an undecidable rule');
     assert.ok(f.rows.every(r => r.error === undefined));
-    const lines = planNewTask(t, f, {}, { at: 2, indent: 0, unit: 2 }, { writeDefaults: false }, undefined).insert;
+    const lines = planNewTask(t, f, {}, { at: 2, indent: 0, unit: 2 }, { writeDefaults: false }).insert;
     assert.deepEqual(lines, ['- task: ContosoRule@1']);
     // A decidable rule that shows the input still requires it.
     const decided = task('ContosoRule', 1, { inputs: [tin('target', { required: true, visibleRule: 'mode = a' }), tin('mode', { default: 'a' })] });

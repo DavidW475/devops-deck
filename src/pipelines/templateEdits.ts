@@ -438,17 +438,21 @@ function planMultiline(s: CallScope, p: PipelineParameter, entry: ParamEntry | u
     s.edits.push({ line: entry.line, deleteCount, insert: [] });
     s.removed += s.scanned.slice(entry.line, current.end + 1).filter(l => !l.blank).length;
   } else if (text !== current.text) {
-    const line = s.lines[entry.line];
-    if (!current.header && !text.includes('\n')) {
-      s.edits.push({ line: entry.line, deleteCount, insert: [withValue(line, entry.start, formatValue(p, text))] });
-      return;
-    }
-    // An indicator needs a column 1 to 9 right of the key; else the body moves to the file's indentation.
-    const near = current.childCol !== undefined && current.childCol > entry.start && current.childCol - entry.start <= 9;
-    const bodyCol = near ? current.childCol! : entry.start + s.unit;
-    const header = blockHeader(current.header ?? '|', text, entry.start, bodyCol);
-    s.edits.push({ line: entry.line, deleteCount, insert: [withValue(line, entry.start, header), ...blockBody(text, bodyCol)] });
+    s.edits.push({ line: entry.line, deleteCount, insert: replacedMultiline(s, p, entry, current, text) });
   }
+}
+
+/** The lines that replace an existing multi-line input: one line for single-line text without a block header, else header and body. */
+function replacedMultiline(s: CallScope, p: PipelineParameter, entry: ParamEntry, current: ScalarText, text: string): string[] {
+  const line = s.lines[entry.line];
+  if (!current.header && !text.includes('\n')) {
+    return [withValue(line, entry.start, formatValue(p, text))];
+  }
+  // An indicator needs a column 1 to 9 right of the key; else the body moves to the file's indentation.
+  const near = current.childCol !== undefined && current.childCol > entry.start && current.childCol - entry.start <= 9;
+  const bodyCol = near ? current.childCol! : entry.start + s.unit;
+  const header = blockHeader(current.header ?? '|', text, entry.start, bodyCol);
+  return [withValue(line, entry.start, header), ...blockBody(text, bodyCol)];
 }
 
 /** One declared parameter: replace, remove or add its line as the pending value asks. */
@@ -474,7 +478,11 @@ function planParam(s: CallScope, p: PipelineParameter, pending: Record<string, s
     }
     return;
   }
-  const value = pending[p.name];
+  planScalar(s, p, entry, pending[p.name], opts);
+}
+
+/** A scalar parameter with a pending value: replace, remove or add its line. */
+function planScalar(s: CallScope, p: PipelineParameter, entry: ParamEntry | undefined, value: string, opts: EditOptions): void {
   const write = (opts.writeDefaults || p.default === undefined || !sameValue(p, value, p.default)) && !isUnset(p, value);
   if (entry && write && !sameValue(p, entry.value, value)) {
     s.edits.push({ line: entry.line, deleteCount: 1, insert: [withValue(s.lines[entry.line], entry.start, formatValue(p, value))] });

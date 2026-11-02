@@ -268,31 +268,30 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
       return;
     }
     const generation = this.generation;
-    const waiting: Promise<void>[] = [];
     const fresh = sources.filter(s => !this.flights.has(s));
-    if (fresh.length > 0) {
-      const me = await this.deps.getMe();
-      if (generation !== this.generation) {
-        // `reset` ran while we waited for the user: start over in the new generation, never a flight that drops its records.
-        return this.ensureLoaded(opts);
-      }
-      this.me = me;
-      for (const s of fresh) {
-        if (!this.flights.has(s)) {
-          this.startFlight(s, this.dueProjects(s, now, opts), me, now, generation);
-        }
-      }
+    if (fresh.length > 0 && !(await this.startFlights(fresh, opts, now, generation))) {
+      // `reset` ran while we waited for the user: start over in the new generation, never a flight that drops its records.
+      return this.ensureLoaded(opts);
     }
-    for (const s of sources) {
-      const flight = this.flights.get(s);
-      if (flight) {
-        waiting.push(flight);
-      }
-    }
-    await Promise.all(waiting);
+    await Promise.all(sources.flatMap(s => this.flights.get(s) ?? []));
     if (fresh.length > 0 && generation === this.generation) {
       this.afterLoad(now);
     }
+  }
+
+  /** Starts a flight for each source; false when a `reset` happened while `getMe` was pending (nothing was started). */
+  private async startFlights(sources: MyDaySource[], opts: LoadOptions, now: number, generation: number): Promise<boolean> {
+    const me = await this.deps.getMe();
+    if (generation !== this.generation) {
+      return false;
+    }
+    this.me = me;
+    for (const s of sources) {
+      if (!this.flights.has(s)) {
+        this.startFlight(s, this.dueProjects(s, now, opts), me, now, generation);
+      }
+    }
+    return true;
   }
 
   private startFlight(source: MyDaySource, projects: string[], me: IdentityRef, now: number, generation: number): void {

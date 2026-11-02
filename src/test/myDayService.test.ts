@@ -744,7 +744,7 @@ describe('MyDayService reset and raw lists', () => {
 
   it('reset while getMe is pending starts over in the new generation', async () => {
     const h = make();
-    let release: (v: IdentityRef) => void = () => undefined;
+    let release: (v: IdentityRef) => void = (_v: IdentityRef) => undefined;
     h.state.me = () => new Promise<IdentityRef>(r => { release = r; });
     const first = h.service.get();
     await flush();
@@ -760,7 +760,7 @@ describe('MyDayService reset and raw lists', () => {
 
   it('an invalidate during a flight keeps the slot due', async () => {
     const h = make();
-    let release: (v: PullRequest[]) => void = () => undefined;
+    let release: (v: PullRequest[]) => void = (_v: PullRequest[]) => undefined;
     h.overrides[SHOP] = { listPullRequests: () => new Promise<PullRequest[]>(r => { release = r; }) };
     const pending = h.service.get();
     await flush();
