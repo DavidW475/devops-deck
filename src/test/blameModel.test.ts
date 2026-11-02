@@ -25,7 +25,7 @@ const wi = (id: number, type: string, title: string, state: string): WorkItem =>
   ({ id, rev: 1, fields: { 'System.WorkItemType': type, 'System.Title': title, 'System.State': state } });
 
 const line = (over: Partial<CommitLine> = {}): CommitLine => ({
-  kind: 'commit', sha: SHA, author: 'Erika Muster', authorTime: NOW / 1000 - 3 * 86400, summary: 'Round VAT per line, not per invoice', origLine: 42, boundary: false, ...over,
+  kind: 'commit', sha: SHA, author: 'Erika Muster', authorTime: NOW / 1000 - 3 * 86400, summary: 'Round VAT per line, not per invoice', boundary: false, ...over,
 });
 
 const repo = { repo: {}, remoteName: 'origin', repoName: 'Billing', project: 'Contoso' };
@@ -164,7 +164,7 @@ describe('annotationText', () => {
   });
 
   it('shows only author and age while loading or without pull request', () => {
-    assert.equal(annotationText(commit({ loading: true }), NOW), 'Erika Muster, 3 days ago');
+    assert.equal(annotationText(commit(), NOW), 'Erika Muster, 3 days ago');
     assert.equal(annotationText(commit({ pr: { repoId: REPO_ID } }), NOW), 'Erika Muster, 3 days ago');
   });
 
@@ -179,7 +179,7 @@ describe('annotationText', () => {
     for (const state of ['notAdo', 'untrusted', 'untracked', 'noLine', 'tooBig', 'saveToBlame'] as const) {
       assert.equal(annotationText({ lookup: { state } }, NOW), undefined);
     }
-    assert.equal(annotationText({ lookup: { state: 'error', message: 'x', auth: false } }, NOW), undefined);
+    assert.equal(annotationText({ lookup: { state: 'error', message: 'x' } }, NOW), undefined);
   });
 
   it('limits the length and cleans the texts', () => {
@@ -341,6 +341,13 @@ describe('traceRows', () => {
     assert.equal(e[2].label, '$(error) Boom $ (x)');
   });
 
+  it('keeps the pull request visible when a later step failed', () => {
+    const rows = traceRows(base({ pr: { repoId: REPO_ID, match: { ...match, others: [] } }, error: 'Work items failed' }), NOW);
+    assert.ok(rows.some(r => r.label.includes('!')), 'the pull request row stays');
+    assert.equal(rows.at(-1)?.label, '$(error) Work items failed');
+    assert.ok(rows.some(r => r.action?.command === 'azureDevOps.pr.openOverview'));
+  });
+
   it('cleans plain texts so a title cannot produce an icon', () => {
     const rows = traceRows(base({
       line: line({ summary: '$(alert) \u202e' + 'x'.repeat(200), sha: 'abc' }),
@@ -368,7 +375,7 @@ describe('stateMessage', () => {
   });
 
   it('cleans the error message and ignores traceable states', () => {
-    assert.equal(stateMessage({ state: 'error', message: 'Bad\n\u202ething $(x)', auth: false }, 'a', undefined), 'Bad thing $ (x)');
+    assert.equal(stateMessage({ state: 'error', message: 'Bad\n\u202ething $(x)' }, 'a', undefined), 'Bad thing $ (x)');
     assert.equal(stateMessage({ state: 'commit', line: line(), repo }, 'a', undefined), undefined);
     assert.equal(stateMessage({ state: 'shallow', line: line(), repo }, 'a', undefined), undefined);
     assert.equal(stateMessage({ state: 'unpublished', line: line(), repo }, 'a', undefined), undefined);

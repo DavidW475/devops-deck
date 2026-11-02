@@ -30,6 +30,12 @@ const HYDRATE_PARALLEL = 3;
 const UNPUBLISHED_LOG_MAX = 1000;
 const UNPUBLISHED_LIMIT = 50;
 
+interface BlameFlight {
+  promise: Promise<Map<number, BlameLine>>;
+  signal: AbortSignal | undefined;
+  explicit: boolean;
+}
+
 interface RepoInfo {
   id: string;
   projectId?: string;
@@ -91,6 +97,9 @@ function gitMessage(err: GitError): string {
   if (err.timedOut) {
     return 'git blame timed out.';
   }
+  if (err.tooLarge) {
+    return 'git blame output is too large.';
+  }
   const first = err.message.split('\n', 1)[0].trim();
   // execFile's own text starts with "Command failed: <git> <args>", which must not reach the user
   return first && !first.startsWith('Command failed') ? first : 'git blame failed.';
@@ -104,9 +113,9 @@ function toError(err: unknown): LineLookup {
     if (isPastEndError(err.message)) {
       return { state: 'noLine' };
     }
-    return { state: 'error', message: gitMessage(err), auth: false, timedOut: err.timedOut };
+    return { state: 'error', message: gitMessage(err), timedOut: err.timedOut, ...(err.tooLarge ? { tooLarge: true } : {}) };
   }
-  return { state: 'error', message: 'Blame failed.', auth: false };
+  return { state: 'error', message: 'Blame failed.' };
 }
 
 function toSeconds(date: unknown): number {
@@ -127,6 +136,9 @@ export class BlameService implements BlameLookups {
   private readonly shallowRoots = new Map<string, boolean>();
   private readonly repoInfos = new Map<string, Promise<RepoInfo>>();
   private readonly inflight = new Map<string, Promise<unknown>>();
+  /** Running blame processes by line: callers join one only when its signal and timeout fit them. */
+  private readonly blameFlights = new Map<string, BlameFlight>();
+  private readonly remotePublished: Cache<boolean>;
   private searchTimes: number[] = [];
 
   constructor(private readonly deps: BlameDeps) {
@@ -137,6 +149,7 @@ export class BlameService implements BlameLookups {
     this.pending = new Cache(PR_LIMIT, PR_PENDING_TTL_MS, now);
     this.items = new Cache(WI_LIMIT, WI_TTL_MS, now);
     this.unpublishedSets = new Cache(UNPUBLISHED_LIMIT, undefined, now);
+    this.remotePublished = new Cache(BLAME_LINE_LIMIT, undefined, now);
   }
 
   private now(): number {
@@ -169,6 +182,8 @@ export class BlameService implements BlameLookups {
     this.shallowRoots.clear();
     this.repoInfos.clear();
     this.inflight.clear();
+    this.blameFlights.clear();
+    this.remotePublished.clear();
     this.searchTimes = [];
   }
 
@@ -195,7 +210,7 @@ export class BlameService implements BlameLookups {
     }
     const run = this.deps.runner();
     if (!run) {
-      return { state: 'error', message: 'The git extension is not available.', auth: false };
+      return { state: 'error', message: 'The git extension is not available.' };
     }
     if (!Number.isInteger(line) || line < 0 || line >= doc.lineCount) {
       return { state: 'noLine' };
@@ -245,14 +260,43 @@ export class BlameService implements BlameLookups {
     if (hit !== undefined) {
       return hit ?? undefined;
     }
-    await this.share(`blame|${key}`, () => this.runBlame({ run, root, rel, base, line, doc, stdin, settings, options }));
-    return this.blame.get(key) ?? undefined;
+    const parsed = await this.blameFlight(key, options, () => this.runBlame({ run, root, rel, base, line, doc, stdin, settings, options }));
+    // The answer comes from the run itself: after a `reset` nothing was cached, but the caller still gets its line.
+    return parsed.get(line + 1);
+  }
+
+  /**
+   * One git process per line, shared between callers. A caller joins a running one only when that run has not been aborted
+   * and does not have a shorter timeout; when the owner aborts a run that was joined, the joiner starts its own.
+   */
+  private async blameFlight(key: string, options: LookupOptions, start: () => Promise<Map<number, BlameLine>>): Promise<Map<number, BlameLine>> {
+    for (let attempt = 0; ; attempt++) {
+      const flight = this.blameFlights.get(key);
+      if (flight && !flight.signal?.aborted && (flight.explicit || !options.explicit)) {
+        try {
+          return await flight.promise;
+        } catch (err) {
+          // The run was cancelled by its owner, not by us: try again with our own.
+          if (!flight.signal?.aborted || options.signal?.aborted || attempt > 0) {
+            throw err;
+          }
+          continue;
+        }
+      }
+      const promise: Promise<Map<number, BlameLine>> = start().finally(() => {
+        if (this.blameFlights.get(key)?.promise === promise) {
+          this.blameFlights.delete(key);
+        }
+      });
+      this.blameFlights.set(key, { promise, signal: options.signal, explicit: options.explicit === true });
+      return promise;
+    }
   }
 
   private async runBlame(a: {
     run: GitRunner; root: string; rel: string; base: string; line: number; doc: BlameDocument;
     stdin: string | undefined; settings: BlameSettings; options: LookupOptions;
-  }): Promise<void> {
+  }): Promise<Map<number, BlameLine>> {
     const gen = this.gen;
     const args = blameArgs({
       path: a.rel, line: a.line, lineCount: a.doc.lineCount, ignoreWhitespace: a.settings.ignoreWhitespace,
@@ -262,13 +306,13 @@ export class BlameService implements BlameLookups {
       stdin: a.stdin, signal: a.options.signal, timeoutMs: a.options.explicit ? EXPLICIT_TIMEOUT_MS : undefined,
     });
     const parsed = parsePorcelain(out);
-    if (gen !== this.gen) {
-      return;
+    if (gen === this.gen) {
+      const { from, to } = blameWindow(a.line, a.doc.lineCount);
+      for (let n = from; n <= to; n++) {
+        this.blame.set(`${a.base}|${n - 1}`, parsed.get(n) ?? null);
+      }
     }
-    const { from, to } = blameWindow(a.line, a.doc.lineCount);
-    for (let n = from; n <= to; n++) {
-      this.blame.set(`${a.base}|${n - 1}`, parsed.get(n) ?? null);
-    }
+    return parsed;
   }
 
   /** Turns a committed line into shallow / unpublished / commit. */
@@ -306,7 +350,11 @@ export class BlameService implements BlameLookups {
   private async isUnpublished(repo: LocalRepo, sha: string): Promise<boolean> {
     const head = repo.repo.state?.HEAD;
     const upstream = head?.upstream;
-    if ((head?.ahead ?? 0) <= 0 || !upstream) {
+    if (!upstream) {
+      // No upstream to compare with: the commit is unpublished when no remote branch contains it.
+      return !(await this.isOnRemote(repo, sha));
+    }
+    if ((head?.ahead ?? 0) <= 0) {
       return false;
     }
     const key = `${this.rootOf(repo)}|${head.commit ?? ''}|${upstream.remote}/${upstream.name}`;
@@ -333,6 +381,32 @@ export class BlameService implements BlameLookups {
     return set.has(sha);
   }
 
+  /** True when a remote branch contains the commit, and also when that cannot be found out (no claim without evidence). */
+  private async isOnRemote(repo: LocalRepo, sha: string): Promise<boolean> {
+    const key = `${this.rootOf(repo)}|${sha}`;
+    const known = this.remotePublished.get(key);
+    if (known !== undefined) {
+      return known;
+    }
+    const getBranches = repo.repo.getBranches;
+    if (typeof getBranches !== 'function') {
+      return true;
+    }
+    const gen = this.gen;
+    let published = true;
+    try {
+      const branches: unknown[] = await getBranches.call(repo.repo, { remote: true, contains: sha, count: 1 });
+      published = branches.length > 0;
+    } catch {
+      return true; // not cached: the next lookup may succeed
+    }
+    if (gen === this.gen && published) {
+      // Only "published" is stable; an unpublished commit may be pushed any time.
+      this.remotePublished.set(key, published);
+    }
+    return published;
+  }
+
   // ---- commits ----
 
   async lookupCommit(root: unknown, sha: unknown): Promise<LineLookup> {
@@ -346,7 +420,7 @@ export class BlameService implements BlameLookups {
   private async doLookupCommit(root: unknown, sha: unknown): Promise<LineLookup> {
     const repo = typeof root === 'string' && isFullSha(sha) ? this.deps.repoForRoot(root) : undefined;
     if (!repo || !isFullSha(sha)) {
-      return { state: 'error', message: 'Unknown repository or invalid commit.', auth: false };
+      return { state: 'error', message: 'Unknown repository or invalid commit.' };
     }
     if (!this.deps.isTrusted()) {
       return { state: 'untrusted' };
@@ -355,13 +429,13 @@ export class BlameService implements BlameLookups {
     try {
       commit = await repo.repo.getCommit(sha);
     } catch {
-      return { state: 'error', message: 'The commit could not be read.', auth: false };
+      return { state: 'error', message: 'The commit could not be read.' };
     }
     const message = String(commit?.message ?? '');
     this.messages.set(`${this.rootOf(repo)}|${sha}`, message);
     const line: CommitLine = {
       kind: 'commit', sha, author: String(commit?.authorName ?? ''), authorTime: toSeconds(commit?.authorDate),
-      summary: firstLine(message), origLine: 0, boundary: false,
+      summary: firstLine(message), boundary: false,
     };
     return this.classify(repo, undefined, line);
   }
@@ -418,7 +492,8 @@ export class BlameService implements BlameLookups {
       throw new Error('Invalid commit SHA.');
     }
     const key = `${this.rootOf(repo)}|${repo.project}|${sha}`;
-    const cached = this.completed.get(key) ?? this.pending.get(key);
+    // A trace the user asked for does not trust the 15 minute cache of "no pull request": it may have been created since.
+    const cached = this.completed.get(key) ?? (options?.background ? this.pending.get(key) : undefined);
     if (cached) {
       return cached;
     }
@@ -528,7 +603,14 @@ export class BlameService implements BlameLookups {
       this.mentions(repo, sha),
     ]);
     const ids = [...new Set([...pr, ...commit, ...mention])];
-    const loaded: WorkItem[] = ids.length > 0 ? await client.getWorkItems(ids) : [];
+    let loaded: WorkItem[] = [];
+    if (ids.length > 0) {
+      try {
+        loaded = await client.getWorkItems(ids);
+      } catch (err) {
+        rethrowAuth(err); // like the other sources: a failing one counts as empty
+      }
+    }
     return mergeWorkItems(loaded, { pr, commit, mention });
   }
 

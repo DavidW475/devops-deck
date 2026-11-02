@@ -10,7 +10,7 @@ import type {
   AnnotationData, BlameDocument, BlameLookups, CommitLine, HoverData, LineLookup, PrLookup, TraceData, TraceRow, TraceWorkItem,
 } from './blameTypes';
 
-type Connections = Pick<ConnectionManager, 'current' | 'onDidChange'>;
+type Connections = Pick<ConnectionManager, 'current'>;
 /** A lookup result that has a commit to show. */
 type Traceable = Extract<LineLookup, { line: CommitLine }>;
 type TraceItem = vscode.QuickPickItem & Pick<TraceRow, 'action'>;
@@ -18,6 +18,8 @@ type Mode = 'off' | 'statusBar' | 'inline' | 'both';
 
 const SETTING = 'azureDevOps.blame.annotations';
 const DEBOUNCE_MS = 400;
+/** A document with unsaved changes is sent to git whole: wait longer after typing. */
+const DIRTY_DEBOUNCE_MS = 2000;
 const MODES: ReadonlySet<string> = new Set(['off', 'statusBar', 'inline', 'both']);
 const HINT_TEXT = 'Another extension or VS Code already shows blame at the end of the line.';
 const HINT_BUTTON = 'Use status bar instead';
@@ -31,7 +33,7 @@ function toItem(row: TraceRow): TraceItem {
   if (row.kind === 'separator') {
     return { label: row.label, kind: vscode.QuickPickItemKind.Separator };
   }
-  return { label: row.label, description: row.description, detail: row.detail, action: row.action };
+  return { label: row.label, description: row.description, action: row.action };
 }
 
 /** The Markdown hover of a commit. Only the commands of the own links are trusted, never everything. */
@@ -135,11 +137,10 @@ export class BlameUi implements vscode.Disposable {
     }
     this.started = true;
     this.registerDetailsProvider();
-    this.disposables.push(this.connections.onDidChange(() => this.reset()));
     this.annotations.start();
   }
 
-  /** Drops the caches and the silence after a failure. */
+  /** Drops the caches and the silence after a failure. The extension calls it where the connection changes. */
   reset(): void {
     this.annotations.reset();
   }
@@ -211,8 +212,6 @@ export class BlameUi implements vscode.Disposable {
   private async notify(lookup: LineLookup, text: string): Promise<void> {
     if (lookup.state !== 'error') {
       await vscode.window.showInformationMessage(text);
-    } else if (lookup.auth) {
-      await showError(new AdoError(text, 401, true));
     } else {
       await vscode.window.showWarningMessage(text);
     }
@@ -250,7 +249,8 @@ class Annotations {
   private abort?: AbortController;
   private seq = 0;
   private silenced = false;
-  private timedOut = false;
+  /** Files whose blame timed out or was too big: left alone until a reset, the others keep their annotations. */
+  private readonly slowFiles = new Set<string>();
   private hintShown = false;
 
   constructor(private readonly lookups: BlameLookups) {}
@@ -267,7 +267,7 @@ class Annotations {
   reset(): void {
     this.lookups.reset();
     this.silenced = false;
-    this.timedOut = false;
+    this.slowFiles.clear();
     this.prCache = undefined;
     if (this.always.length) {
       this.apply();
@@ -286,11 +286,11 @@ class Annotations {
   }
 
   private get statusOn(): boolean {
-    return !this.timedOut && (this.mode === 'statusBar' || this.mode === 'both');
+    return this.mode === 'statusBar' || this.mode === 'both';
   }
 
   private get inlineOn(): boolean {
-    return !this.timedOut && (this.mode === 'inline' || this.mode === 'both');
+    return this.mode === 'inline' || this.mode === 'both';
   }
 
   /** Sets up or tears down what the current setting needs. */
@@ -341,7 +341,8 @@ class Annotations {
       vscode.window.onDidChangeActiveTextEditor(() => this.moved()),
       vscode.window.onDidChangeWindowState(e => e.focused && this.schedule(0)),
       vscode.workspace.onDidChangeTextDocument(e => {
-        if (e.document === vscode.window.activeTextEditor?.document) {
+        // Saving fires this without changes (the dirty flag only): nothing moved, so nothing flickers.
+        if (e.contentChanges.length > 0 && e.document === vscode.window.activeTextEditor?.document) {
           this.moved();
         }
       }),
@@ -361,7 +362,7 @@ class Annotations {
   /** The cursor or the text moved: whatever is shown is stale until the cursor rests again. */
   private moved(): void {
     this.invalidate();
-    this.schedule(DEBOUNCE_MS);
+    this.schedule(vscode.window.activeTextEditor?.document.isDirty ? DIRTY_DEBOUNCE_MS : DEBOUNCE_MS);
   }
 
   private invalidate(): void {
@@ -418,6 +419,10 @@ class Annotations {
     if (!vscode.window.state.focused) {
       return;
     }
+    if (this.slowFiles.has(editor.document.uri.fsPath)) {
+      this.clearAll();
+      return;
+    }
     const ac = new AbortController();
     this.abort = ac;
     const doc = editor.document;
@@ -427,21 +432,17 @@ class Annotations {
       return;
     }
     if (lookup.state === 'error') {
-      this.onLookupError(lookup);
+      this.onLookupError(lookup, doc.uri.fsPath);
       return;
     }
     const shown: Shown = { file: doc.uri.fsPath, line, lookup };
     await this.resolve(seq, editor, shown);
   }
 
-  private onLookupError(lookup: Extract<LineLookup, { state: 'error' }>): void {
-    if (lookup.timedOut) {
-      this.timedOut = true;
-      this.apply();
-      return;
-    }
-    if (lookup.auth) {
-      this.silenced = true;
+  /** A timeout or a file too big for git's output buffer only costs that file its annotation, not every file. */
+  private onLookupError(lookup: Extract<LineLookup, { state: 'error' }>, file: string): void {
+    if (lookup.timedOut || lookup.tooLarge) {
+      this.slowFiles.add(file);
     }
     this.clearAll();
   }
@@ -474,7 +475,7 @@ class Annotations {
   }
 
   private paint(editor: vscode.TextEditor, shown: Shown, loading: boolean): void {
-    const data: AnnotationData = { lookup: shown.lookup, loading, pr: shown.pr };
+    const data: AnnotationData = { lookup: shown.lookup, pr: shown.pr };
     const text = annotationText(data, Date.now());
     if (text === undefined) {
       this.clearAll();

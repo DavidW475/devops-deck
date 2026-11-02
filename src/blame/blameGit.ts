@@ -99,7 +99,6 @@ function buildLine(header: Header, info: CommitInfo | undefined): BlameLine {
     author: info?.author ?? '',
     authorTime: info?.authorTime ?? 0,
     summary: info?.summary ?? '',
-    origLine: header.orig,
     boundary: info?.boundary ?? false,
   };
 }
@@ -159,11 +158,14 @@ export function parsePorcelain(output: string): Map<number, BlameLine> {
 export class GitError extends Error {
   readonly code: number | string | undefined;
   readonly timedOut: boolean;
-  constructor(message: string, code?: number | string, timedOut = false) {
+  /** git's output did not fit into the buffer (a huge file): not a timeout, and no reason to stop blaming other files */
+  readonly tooLarge: boolean;
+  constructor(message: string, code?: number | string, timedOut = false, tooLarge = false) {
     super(message);
     this.name = 'GitError';
     this.code = code;
     this.timedOut = timedOut;
+    this.tooLarge = tooLarge;
   }
 }
 
@@ -184,6 +186,10 @@ interface ExecFailure {
 }
 
 function toGitError(err: ExecFailure, stderr: string, signal: AbortSignal | undefined): GitError {
+  if (err.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
+    // execFile kills the process when the output exceeds maxBuffer; that is not a timeout.
+    return new GitError('git blame output is too large.', err.code, false, true);
+  }
   const text = stderr.trim() || (err.message ?? 'git failed');
   const timedOut = err.killed === true && signal?.aborted !== true;
   return new GitError(text, err.code, timedOut);

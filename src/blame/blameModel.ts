@@ -341,8 +341,8 @@ export function traceRows(d: TraceData, nowMs: number): TraceRow[] {
     return rows;
   }
   if (d.error) {
-    rows.push(info(`$(error) ${cleanText(d.error, 200)}`));
-    return rows;
+    // What was found before the failing step stays visible (a pull request is still useful without its work items).
+    return [...rows, ...prRows(d), ...workItemRows(d), ...otherRows(d), info(`$(error) ${cleanText(d.error, 200)}`)];
   }
   return [...rows, ...prRows(d), ...workItemRows(d), ...otherRows(d)];
 }

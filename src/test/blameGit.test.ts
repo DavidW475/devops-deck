@@ -71,11 +71,9 @@ describe('parsePorcelain', () => {
     assert.equal(l1.author, 'Erika Muster');
     assert.equal(l1.authorTime, 1700000000);
     assert.equal(l1.summary, 'Fix thing');
-    assert.equal(l1.origLine, 3);
     assert.equal(l1.boundary, false);
     const l2 = m.get(2) as CommitLine;
     assert.equal(l2.author, 'Erika Muster');
-    assert.equal(l2.origLine, 4);
     const l3 = m.get(3) as CommitLine;
     assert.equal(l3.boundary, true);
     assert.equal(l3.author, 'Max Mustermann');
@@ -150,7 +148,6 @@ describe('makeGitRunner with real git', () => {
     const out = await run(dir, blameArgs({ path: 'a.txt', line: 0, lineCount: 4, ignoreWhitespace: false, detectCopies: false, dirty: true }), { stdin: buf });
     const m = parsePorcelain(out);
     assert.deepEqual(m.get(2), { kind: 'uncommitted' });
-    assert.equal((m.get(3) as CommitLine).origLine, 2);
     assert.equal((m.get(1) as CommitLine).kind, 'commit');
   });
   it('a short line moved in an unsaved buffer counts as uncommitted', async () => {
@@ -212,6 +209,13 @@ describe('makeGitRunner with real git', () => {
     await assert.rejects(
       slow(dir, ['-e', 'setTimeout(()=>{}, 10000)'], { timeoutMs: 100 }),
       (e: unknown) => e instanceof GitError && e.timedOut,
+    );
+  });
+  it('does not call output that does not fit the buffer a timeout', async () => {
+    const big = makeGitRunner(process.execPath);
+    await assert.rejects(
+      big(dir, ['-e', "process.stdout.write('x'.repeat(17 * 1024 * 1024))"], { timeoutMs: 20000 }),
+      (e: unknown) => e instanceof GitError && !e.timedOut && e.tooLarge && /too large/.test(e.message),
     );
   });
   it('does not mark an abort as a timeout and survives EPIPE', async () => {

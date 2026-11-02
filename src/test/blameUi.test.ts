@@ -24,7 +24,7 @@ class Deferred<T> {
 }
 
 const line = (over: Partial<CommitLine> = {}): CommitLine => ({
-  kind: 'commit', sha: SHA, author: 'Erika Muster', authorTime: Math.floor(NOW / 1000) - 3 * 86400 - 3600, summary: 'Round VAT per line', origLine: 42, boundary: false, ...over,
+  kind: 'commit', sha: SHA, author: 'Erika Muster', authorTime: Math.floor(NOW / 1000) - 3 * 86400 - 3600, summary: 'Round VAT per line', boundary: false, ...over,
 });
 const pullRequest = (): PullRequest => ({
   pullRequestId: 1234, title: 'Fix VAT rounding', status: 'completed', sourceRefName: 'refs/heads/feature/vat', targetRefName: 'refs/heads/main',
@@ -176,6 +176,14 @@ describe('BlameUi', () => {
       assert.deepEqual(vscode.messages, []);
     });
 
+    it('keeps the pull request in the list when the work item step fails', async () => {
+      editorAt(0);
+      h.workItems = async () => { throw new Error('Work items unavailable'); };
+      await ui.traceLine();
+      assert.ok(labels().some(l => l.includes('!1234')), 'the pull request stays');
+      assert.ok(labels().some(l => l.includes('Work items unavailable')));
+    });
+
     it('offers to sign in after an auth error', async () => {
       editorAt(0);
       vscode.answers.message.push('Sign In');
@@ -248,17 +256,12 @@ describe('BlameUi', () => {
       assert.equal(quickPicks.length, 0);
     });
 
-    it('shows git errors plainly and offers sign-in for auth errors', async () => {
+    it('shows git errors plainly', async () => {
       editorAt(0);
-      h.lookupLine = async () => ({ state: 'error', message: 'git failed', auth: false });
+      h.lookupLine = async () => ({ state: 'error', message: 'git failed' });
       await ui.traceLine();
       assert.deepEqual(vscode.messages, ['git failed']);
       assert.equal(vscode.executed.length, 0);
-      h.lookupLine = async () => ({ state: 'error', message: 'Not signed in', auth: true });
-      vscode.answers.message.push('Use PAT');
-      await ui.traceLine();
-      assert.equal(vscode.messages[1], 'DevOps Deck: Not signed in');
-      assert.ok(vscode.executed.some(e => e[0] === 'azureDevOps.setPat'));
     });
   });
 
@@ -271,7 +274,7 @@ describe('BlameUi', () => {
     });
 
     it('shows a message for a rejected root or sha', async () => {
-      h.lookupCommit = async () => ({ state: 'error', message: 'Not a repository of this organization.', auth: false });
+      h.lookupCommit = async () => ({ state: 'error', message: 'Not a repository of this organization.' });
       await ui.openForCommit('/etc', SHA);
       assert.deepEqual(vscode.messages, ['Not a repository of this organization.']);
       assert.equal(quickPicks.length, 0);
@@ -473,7 +476,7 @@ describe('BlameUi', () => {
       const e = editorAt(1);
       await run();
       assert.ok(status().visible);
-      await fire('changeDoc', { document: e.document });
+      await fire('changeDoc', { document: e.document, contentChanges: [{ text: 'x' }] });
       assert.equal(status().visible, false);
       assert.deepEqual(lastRanges(e), []);
       await tick(399);
@@ -487,7 +490,7 @@ describe('BlameUi', () => {
       setMode('statusBar');
       editorAt(1);
       await run();
-      await fire('changeDoc', { document: fakeDoc(vscode.Uri.file('/other.ts'), ['x']) });
+      await fire('changeDoc', { document: fakeDoc(vscode.Uri.file('/other.ts'), ['x']), contentChanges: [{ text: 'x' }] });
       assert.ok(status().visible);
     });
 
@@ -575,46 +578,69 @@ describe('BlameUi', () => {
       assert.match(status().text, /!1234/);
     });
 
-    it('treats an auth error of the lookup like one of the search', async () => {
-      setMode('statusBar');
-      const e = editorAt(0);
-      h.lookupLine = async () => ({ state: 'error', message: 'expired', auth: true });
-      await run();
-      h.lookupLine = async () => commit();
-      e.selection = Object.assign(new (w.Range)(1, 0, 1, 0), { active: new (w.Position)(1, 0) });
-      await fire('selection', {});
-      await tick(400);
-      assert.equal(count('pullRequest'), 0);
-      assert.ok(status().visible);
-    });
-
-    it('turns off for the session after a timeout until reset', async () => {
+    it('a timeout or a huge file only stops that file, not the annotations of other files, until reset', async () => {
       setMode('both');
-      const e = editorAt(0);
-      h.lookupLine = async () => ({ state: 'error', message: 'slow', auth: false, timedOut: true });
+      const slow = editorAt(0);
+      h.lookupLine = async () => ({ state: 'error', message: 'slow', timedOut: true });
       await run();
       assert.deepEqual(vscode.messages, []);
-      assert.equal(hoverRegs[0].disposed, true);
-      assert.equal(listeners.selection?.length ?? 0, 0);
+      assert.equal(hoverRegs[0].disposed, false, 'annotations stay on');
+      assert.equal((listeners.selection?.length ?? 0) > 0, true);
+      // The same file is left alone from now on.
+      slow.selection = Object.assign(new (w.Range)(1, 0, 1, 0), { active: new (w.Position)(1, 0) });
       await fire('selection', {});
       await tick(2000);
       assert.equal(count('lookupLine'), 1);
+      // Another file still gets its annotation.
       h.lookupLine = async () => commit();
-      emitter.fire();
-      await tick(1);
+      const other = fakeEditor(fakeDoc(vscode.Uri.file('/src/web-shop/src/other.ts'), ['a', 'b']), new (w.Range)(0, 0, 0, 0));
+      w.window.activeTextEditor = other;
+      await fire('activeEditor', {});
+      await tick(400);
       assert.equal(count('lookupLine'), 2);
-      assert.equal(count('reset'), 1);
       assert.ok(statusItems.at(-1).visible);
-      assert.equal(lastRanges(e).length, 1);
+      // A reset gives the slow file another chance.
+      w.window.activeTextEditor = slow;
+      ui.reset();
+      await tick(1);
+      assert.equal(count('lookupLine'), 3);
+      assert.equal(count('reset'), 1);
+      assert.equal(lastRanges(slow).length, 1);
+      // A file whose output is too large is treated the same way.
+      h.lookupLine = async () => ({ state: 'error', message: 'git blame output is too large.', tooLarge: true });
+      ui.reset();
+      await tick(1);
+      const before = count('lookupLine');
+      await fire('selection', {});
+      await tick(2000);
+      assert.equal(count('lookupLine'), before);
     });
 
-    it('resets on connection changes', async () => {
+    it('does not follow the connection itself: the extension resets it where the connection changes', async () => {
       setMode('statusBar');
       editorAt(0);
       await run();
       emitter.fire();
       await tick(1);
-      assert.ok(count('reset') >= 1);
+      assert.equal(count('reset'), 0);
+      assert.equal(count('lookupLine'), 1);
+    });
+
+    it('ignores a change event without changes (saving), and waits longer after typing in a document with unsaved changes', async () => {
+      setMode('statusBar');
+      const e = editorAt(1);
+      await run();
+      assert.equal(count('lookupLine'), 1);
+      await fire('changeDoc', { document: e.document, contentChanges: [] });
+      await tick(400);
+      assert.equal(count('lookupLine'), 1, 'saving does not blame again');
+      assert.ok(status().visible, 'and the annotation does not flicker away');
+      (e.document as any).isDirty = true;
+      await fire('changeDoc', { document: e.document, contentChanges: [{ text: 'x' }] });
+      assert.equal(status().visible, false, 'typing hides the stale annotation');
+      await tick(1999);
+      assert.equal(count('lookupLine'), 1);
+      await tick(1);
       assert.equal(count('lookupLine'), 2);
     });
 

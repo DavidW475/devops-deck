@@ -12,8 +12,6 @@ export interface CommitLine {
   /** author time in Unix seconds */
   authorTime: number;
   summary: string;
-  /** 1-based line in the commit */
-  origLine: number;
   /** the commit is a history boundary (shallow clone or root) */
   boundary: boolean;
 }
@@ -52,7 +50,7 @@ export interface TraceWorkItem {
 export type LineLookup =
   | { state: 'notAdo' | 'untrusted' | 'untracked' | 'uncommitted' | 'noLine' | 'tooBig' | 'saveToBlame' }
   | { state: 'shallow' | 'unpublished' | 'commit'; line: CommitLine; repo: LocalRepo }
-  | { state: 'error'; message: string; auth: boolean; timedOut?: boolean };
+  | { state: 'error'; message: string; timedOut?: boolean; tooLarge?: boolean };
 
 /** The result of the pull request search. `match` is undefined when no pull request was found. */
 export interface PrLookup {
@@ -133,7 +131,6 @@ export interface TraceRow {
   kind: 'separator' | 'item';
   label: string;
   description?: string;
-  detail?: string;
   /** the command a selection runs; rows without one only inform */
   action?: { command: string; args: unknown[] };
 }
@@ -156,7 +153,5 @@ export interface TraceData {
 /** Which part of the annotation is known yet. */
 export interface AnnotationData {
   lookup: LineLookup;
-  /** the search is still running */
-  loading?: boolean;
   pr?: PrLookup;
 }

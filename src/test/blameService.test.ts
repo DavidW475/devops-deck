@@ -147,7 +147,7 @@ describe('BlameService.lookupLine', () => {
     e.state.trusted = true;
     assert.deepEqual(await e.svc.lookupLine(doc({ uri: { scheme: 'file', fsPath: '/other/a.ts' } }), 1), { state: 'notAdo' });
     e.state.runner = false;
-    assert.deepEqual(await e.svc.lookupLine(doc(), 1), { state: 'error', message: 'The git extension is not available.', auth: false });
+    assert.deepEqual(await e.svc.lookupLine(doc(), 1), { state: 'error', message: 'The git extension is not available.' });
     assert.equal(e.gitCalls.length, 0);
   });
 
@@ -194,14 +194,16 @@ describe('BlameService.lookupLine', () => {
     e.state.gitError = new GitError('fatal: file src/cart.ts has only 3 lines', 128);
     assert.deepEqual(await e.svc.lookupLine(doc(), 1), { state: 'noLine' });
     e.state.gitError = new GitError('fatal: something odd\nmore', 1);
-    assert.deepEqual(await e.svc.lookupLine(doc(), 1), { state: 'error', message: 'fatal: something odd', auth: false, timedOut: false });
+    assert.deepEqual(await e.svc.lookupLine(doc(), 1), { state: 'error', message: 'fatal: something odd', timedOut: false });
     e.state.gitError = new GitError('Command failed: git blame --porcelain secret', 1, true);
-    assert.deepEqual(await e.svc.lookupLine(doc(), 1), { state: 'error', message: 'git blame timed out.', auth: false, timedOut: true });
+    assert.deepEqual(await e.svc.lookupLine(doc(), 1), { state: 'error', message: 'git blame timed out.', timedOut: true });
+    e.state.gitError = new GitError('Command failed: git blame -- x', 1, false, true);
+    assert.deepEqual(await e.svc.lookupLine(doc(), 1), { state: 'error', message: 'git blame output is too large.', timedOut: false, tooLarge: true });
     e.state.gitError = new GitError('Command failed: git blame -- x', 1);
     const r = await e.svc.lookupLine(doc(), 1);
     assert.equal(r.state === 'error' && r.message, 'git blame failed.');
     e.state.gitError = new TypeError('boom');
-    assert.deepEqual(await e.svc.lookupLine(doc(), 1), { state: 'error', message: 'Blame failed.', auth: false });
+    assert.deepEqual(await e.svc.lookupLine(doc(), 1), { state: 'error', message: 'Blame failed.' });
   });
 
   it('does not cache failures', async () => {
@@ -285,6 +287,56 @@ describe('BlameService.lookupLine', () => {
     assert.equal((await new BlameService(d).lookupLine(doc(), 10)).state, 'commit');
   });
 
+  it('does not join a run that was aborted or has a shorter timeout, and a joiner survives the owner aborting', async () => {
+    let open!: () => void;
+    e.state.gate = new Promise<void>(r => { open = r; });
+    const owner = new AbortController();
+    const first = e.svc.lookupLine(doc(), 10, { signal: owner.signal });
+    await new Promise(r => setImmediate(r));
+    // 1. A background run is running: an explicit trace (15 s) must not inherit its 5 s timeout.
+    const explicit = e.svc.lookupLine(doc(), 10, { explicit: true });
+    await new Promise(r => setImmediate(r));
+    assert.equal(blameCalls(e).length, 2, 'the explicit trace starts its own run');
+    assert.equal(blameCalls(e)[1].options?.timeoutMs, 15000);
+    // 2. The same background lookup again joins the running one.
+    const joiner = e.svc.lookupLine(doc(), 10, { signal: new AbortController().signal });
+    await new Promise(r => setImmediate(r));
+    assert.equal(blameCalls(e).length, 2);
+    owner.abort();
+    e.state.gate = undefined;
+    open();
+    const results = await Promise.all([first, explicit, joiner]);
+    assert.equal(results[1].state, 'commit');
+    assert.equal(results[2].state, 'commit');
+  });
+
+  it('a new lookup after an aborted one starts a new run', async () => {
+    let open!: () => void;
+    e.state.gate = new Promise<void>(r => { open = r; });
+    const owner = new AbortController();
+    const aborted = e.svc.lookupLine(doc(), 10, { signal: owner.signal });
+    await new Promise(r => setImmediate(r));
+    owner.abort();
+    const next = e.svc.lookupLine(doc(), 10);
+    await new Promise(r => setImmediate(r));
+    assert.equal(blameCalls(e).length, 2, 'not joined to the aborted run');
+    e.state.gate = undefined;
+    open();
+    await aborted;
+    assert.equal((await next).state, 'commit');
+  });
+
+  it('still answers the caller when a reset happens during the run', async () => {
+    let open!: () => void;
+    e.state.gate = new Promise<void>(r => { open = r; });
+    const pending = e.svc.lookupLine(doc(), 10);
+    await new Promise(r => setImmediate(r));
+    e.svc.reset();
+    e.state.gate = undefined;
+    open();
+    assert.equal((await pending).state, 'commit', 'not "There is no line here to trace"');
+  });
+
   it('marks unpublished commits via the upstream log', async () => {
     (e.repo.state as any).HEAD = { commit: C, ahead: 2, upstream: { remote: 'origin', name: 'main' } };
     e.repo.logEntries = [{ hash: A, message: 'm' }];
@@ -295,6 +347,21 @@ describe('BlameService.lookupLine', () => {
     assert.equal(logs.length, 1);
     assert.deepEqual(logs[0][1], { range: 'origin/main..HEAD', maxEntries: 1000 });
     assert.equal(e.rest.length, 0);
+  });
+
+  it('without an upstream a commit is unpublished when no remote branch contains it', async () => {
+    (e.repo.state as any).HEAD = { commit: C, ahead: 2 };
+    const asked: unknown[] = [];
+    (e.repo as any).getBranches = async (q: unknown) => { asked.push(q); return []; };
+    assert.equal((await e.svc.lookupLine(doc(), 10)).state, 'unpublished');
+    assert.deepEqual(asked[0], { remote: true, contains: A, count: 1 });
+    (e.repo as any).getBranches = async () => [{ name: 'origin/main' }];
+    assert.equal((await e.svc.lookupLine(doc({ version: 2 }), 10)).state, 'commit');
+    assert.equal((await e.svc.lookupLine(doc({ version: 3 }), 10)).state, 'commit');
+    assert.equal(asked.length, 1);
+    (e.repo as any).getBranches = async () => { throw new Error('old git'); };
+    e.state.output = porcelain(range(1, 41, B));
+    assert.equal((await e.svc.lookupLine(doc({ version: 4 }), 10)).state, 'commit', 'no claim without evidence');
   });
 
   it('continues as commit without upstream or when the log fails', async () => {
@@ -335,7 +402,7 @@ describe('BlameService.lookupCommit', () => {
     const r = await e.svc.lookupCommit(ROOT, A);
     assert.equal(r.state, 'commit');
     if (r.state !== 'commit') return;
-    assert.deepEqual(r.line, { kind: 'commit', sha: A, author: 'Marco Rossi', authorTime: 1700000000, summary: 'Fix cart total', origLine: 0, boundary: false });
+    assert.deepEqual(r.line, { kind: 'commit', sha: A, author: 'Marco Rossi', authorTime: 1700000000, summary: 'Fix cart total', boundary: false });
   });
 
   it('defaults a missing date to 0 and reports a missing commit', async () => {
@@ -446,12 +513,21 @@ describe('BlameService.pullRequest', () => {
     assert.equal(e.rest.filter(x => x.startsWith('query:')).length, 1);
 
     e.state.byMerge = [pr(4, { status: 'active' })];
-    await e.svc.pullRequest(e.local, B);
-    await e.svc.pullRequest(e.local, B);
+    await e.svc.pullRequest(e.local, B, { background: true });
+    await e.svc.pullRequest(e.local, B, { background: true });
     assert.equal(e.rest.filter(x => x.startsWith('query:')).length, 2);
     e.clock.t += 15 * 60 * 1000 + 1;
-    await e.svc.pullRequest(e.local, B);
+    await e.svc.pullRequest(e.local, B, { background: true });
     assert.equal(e.rest.filter(x => x.startsWith('query:')).length, 3);
+  });
+
+  it('an explicit trace asks again instead of trusting the cached "no pull request"', async () => {
+    e.state.byMerge = [];
+    assert.equal((await e.svc.pullRequest(e.local, B, { background: true }))?.match, undefined);
+    e.state.byMerge = [pr(5)];
+    assert.equal((await e.svc.pullRequest(e.local, B, { background: true }))?.match, undefined, 'the annotation keeps the cached answer');
+    assert.equal((await e.svc.pullRequest(e.local, B))?.match?.pr.pullRequestId, 5, 'the trace sees the new pull request');
+    assert.equal((await e.svc.pullRequest(e.local, B, { background: true }))?.match?.pr.pullRequestId, 5, 'and refreshes the cache');
   });
 
   it('shares parallel identical searches', async () => {
@@ -562,8 +638,12 @@ describe('BlameService.workItems', () => {
     const orig = e.deps.clientFor('p').getWorkItems;
     const failing: BlameDeps = { ...e.deps, clientFor: () => ({ ...e.deps.clientFor('p'), getWorkItems: async () => { throw new AdoError('x', 500); } }) };
     const s2 = new BlameService(failing);
-    await assert.rejects(s2.workItems(e.local, A, match));
-    await assert.rejects(s2.workItems(e.local, A, match));
+    // A failing getWorkItems counts as empty (documented on BlameLookups.workItems); an auth error still rejects.
+    assert.deepEqual(await s2.workItems(e.local, A, match), []);
+    const denied: BlameDeps = { ...e.deps, clientFor: () => ({ ...e.deps.clientFor('p'), getWorkItems: async () => { throw new AdoError('denied', 401, true); } }) };
+    const s3 = new BlameService(denied);
+    await assert.rejects(s3.workItems(e.local, A, match), /denied/);
+    await assert.rejects(s3.workItems(e.local, A, match), /denied/);
     assert.ok(orig);
     await assert.rejects(e.svc.workItems(e.local, 'bad', match));
   });
