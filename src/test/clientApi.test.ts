@@ -770,6 +770,17 @@ describe('AdoClient identity, auth and errors', () => {
     assert.equal(requests[1].opts.createIfNone, true, 'signIn may prompt');
   });
 
+  it('looks up the account silently, so the Accounts menu gets no sign-in entry', async () => {
+    vscode.settings['azureDevOps.authMethod'] = 'microsoft';
+    const opts: { createIfNone?: boolean; silent?: boolean }[] = [];
+    vscode.authentication.getSession = (async (_p: string, _s: string[], o: { createIfNone?: boolean; silent?: boolean }) => {
+      opts.push(o);
+      return { account: { id: 'acc-a' } };
+    }) as never;
+    assert.equal(await newClient().accountId(), 'acc-a');
+    assert.deepEqual(opts, [{ silent: true }]);
+  });
+
   it('tells a failing session lookup from being signed out', async () => {
     vscode.settings['azureDevOps.authMethod'] = 'microsoft';
     vscode.authentication.getSession = (async () => undefined) as never;

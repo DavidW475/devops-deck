@@ -128,7 +128,7 @@ export class AdoClient {
     if (this.usesPat()) {
       return undefined;
     }
-    return (await vscode.authentication.getSession('microsoft', this.scopes(), { createIfNone: false }))?.account.id;
+    return (await vscode.authentication.getSession('microsoft', this.scopes(), { silent: true }))?.account.id;
   }
 
   private scopes(): string[] {
