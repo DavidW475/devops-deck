@@ -94,9 +94,25 @@ function runReasons(f: Extract<RankFacts, { kind: 'run' }>, now: number): RankRe
   return out;
 }
 
-/** Working days after the day itself. */
+const isWorkingDay = (day: Date): boolean => day.getUTCDay() !== 0 && day.getUTCDay() !== 6;
+
+/** The calendar date of an instant in the user's time zone, as midnight UTC of that date (what `workingDays` counts with). */
+function localDay(ms: number): Date {
+  const d = new Date(ms);
+  return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+}
+
+/**
+ * Working days after the day itself, by the user's local calendar days. A pull request created on a weekend counts from
+ * the next working day: on Monday it has been open one working day, as one created on Friday evening.
+ */
 function daysOpen(from: string, now: number): number {
-  return Math.max(0, workingDays(from, new Date(now)) - 1);
+  const created = parse(from);
+  if (created === undefined) {
+    return 0;
+  }
+  const start = localDay(created);
+  return Math.max(0, workingDays(start, localDay(now)) - (isWorkingDay(start) ? 1 : 0));
 }
 
 function reviewReasons(f: Extract<RankFacts, { kind: 'review' }>, now: number): RankReason[] {
@@ -123,11 +139,14 @@ function sprintReasons(sprintFinish: string | undefined, now: number): RankReaso
   if (finish === undefined) {
     return [];
   }
-  const today = Math.floor(now / DAY) * DAY;
-  if (Math.floor(finish / DAY) * DAY < today) {
+  // Today is the user's calendar day; the sprint ends on a date (stored at midnight UTC), whatever the time zone.
+  const today = localDay(now);
+  const end = new Date(finish);
+  const last = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate()));
+  if (last < today) {
     return [reason('W4:over')];
   }
-  const left = Math.max(0, workingDays(new Date(now), new Date(finish)) - 1);
+  const left = Math.max(0, workingDays(today, last) - 1);
   if (left <= 2) {
     return [reason('W4:2', left)];
   }

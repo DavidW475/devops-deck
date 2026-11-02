@@ -78,6 +78,30 @@ describe('review rules', () => {
   it('P3 and W4 labels say "1 working day" in the singular', () => {
     assert.equal(rankItem({ ...base, creationDate: '2026-11-03T09:00:00Z' }, NOW).reasons[1].label, 'Open for 1 working day');
   });
+  it('P3 counts a weekend creation from the next working day', () => {
+    const monday = Date.UTC(2026, 10, 2, 12, 0, 0);
+    // Saturday 31 October: on Monday it has been open one working day, like one created on Friday evening.
+    assert.deepEqual(rankItem({ ...base, creationDate: '2026-10-31T09:00:00Z' }, monday).reasons.map(r => r.points), [40, 5]);
+    assert.deepEqual(rankItem({ ...base, creationDate: '2026-11-01T09:00:00Z' }, monday).reasons.map(r => r.points), [40, 5]);
+    assert.deepEqual(rankItem({ ...base, creationDate: '2026-11-02T09:00:00Z' }, monday).reasons.map(r => r.points), [40]);
+  });
+  it('counts days in the local time zone, not in UTC', () => {
+    const zone = process.env.TZ;
+    process.env.TZ = 'Pacific/Auckland'; // UTC+13: 12:00 UTC on Wednesday 4 November is 01:00 on Thursday 5 November
+    try {
+      // created Tuesday 3 November 23:00 UTC = Wednesday 4 November 12:00 local; now is Thursday local: one working day
+      assert.deepEqual(rankItem({ ...base, creationDate: '2026-11-03T23:00:00Z' }, NOW).reasons.map(r => r.points), [40, 5]);
+      const wi = { kind: 'workItem' as const };
+      // a sprint that ends on 4 November is over on the user's 5 November
+      assert.deepEqual(rankItem({ ...wi, sprintFinish: '2026-11-04T00:00:00Z' }, NOW).reasons.map(r => r.points), [RULES.W1.points, RULES['W4:over'].points]);
+    } finally {
+      if (zone === undefined) {
+        delete process.env.TZ;
+      } else {
+        process.env.TZ = zone;
+      }
+    }
+  });
   it('P4 conflicts', () => assert.deepEqual(rules({ ...base, conflicts: true, creationDate: ago(HOUR) }), ['P1:40', 'P4:-10']));
   it('a creation date in the future does not go below 0 days', () => {
     assert.deepEqual(rules({ ...base, creationDate: '2026-12-01T00:00:00Z' }), ['P1:40']);
