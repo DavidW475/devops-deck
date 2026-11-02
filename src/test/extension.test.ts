@@ -547,8 +547,10 @@ describe('activate', () => {
       auth.getSession = async () => ({ account: { id }, accessToken: 't' });
       await run('azureDevOps.signIn');
       const resets = resetSpy.calls;
+      const sameInvalidates = resetSpy.invalidates;
       await run('azureDevOps.signIn');
       assert.equal(resetSpy.calls, resets, 'the same account');
+      assert.equal(resetSpy.invalidates, sameInvalidates + 1, 'but the sidebar loads again after a successful sign-in');
       id = 'acc-2';
       const invalidates = resetSpy.invalidates;
       await run('azureDevOps.signIn');

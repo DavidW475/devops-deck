@@ -232,8 +232,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       signedIn = true;
     } finally {
       await noteAccount();
-      if (signedIn && !settingChanged && account !== before) {
-        resetState();
+      if (signedIn) {
+        if (!settingChanged && account !== before) {
+          resetState();
+        }
         refresh();
       }
     }
