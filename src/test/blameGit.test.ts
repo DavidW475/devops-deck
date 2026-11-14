@@ -39,11 +39,11 @@ describe('isFullSha / blameWindow', () => {
 describe('blameArgs', () => {
   const base = { path: 'src/a.ts', line: 0, lineCount: 5, ignoreWhitespace: false, detectCopies: false, dirty: false };
   it('builds the basic command', () => {
-    assert.deepEqual(blameArgs(base), ['blame', '--porcelain', '--no-textconv', '-M', '-L', '1,5', '--', 'src/a.ts']);
+    assert.deepEqual(blameArgs(base), ['-c', 'blame.showRoot=false', 'blame', '--porcelain', '--no-textconv', '-M', '-L', '1,5', '--', 'src/a.ts']);
   });
   it('adds flags, never -C twice', () => {
     const args = blameArgs({ ...base, ignoreWhitespace: true, detectCopies: true, dirty: true });
-    assert.deepEqual(args, ['blame', '--porcelain', '--no-textconv', '-w', '-M', '-C', '-L', '1,5', '--contents', '-', '--', 'src/a.ts']);
+    assert.deepEqual(args, ['-c', 'blame.showRoot=false', 'blame', '--porcelain', '--no-textconv', '-w', '-M', '-C', '-L', '1,5', '--contents', '-', '--', 'src/a.ts']);
     assert.equal(args.filter((a) => a === '-C').length, 1);
   });
   it('keeps --contents out when clean and the path after --', () => {
@@ -142,6 +142,15 @@ describe('makeGitRunner with real git', () => {
     assert.equal(l.summary, 'first');
     assert.equal(l.boundary, true);
     assert.ok(isFullSha(l.sha));
+  });
+  it('keeps the boundary flag of the root commit when the repository sets blame.showRoot', async () => {
+    git('config', 'blame.showRoot', 'true');
+    try {
+      const out = await run(dir, blameArgs({ path: 'a.txt', line: 1, lineCount: 3, ignoreWhitespace: false, detectCopies: false, dirty: false }));
+      assert.equal((parsePorcelain(out).get(2) as CommitLine).boundary, true, 'the graft commit of a shallow clone is still detected');
+    } finally {
+      git('config', '--unset', 'blame.showRoot');
+    }
   });
   it('blames a dirty buffer through stdin', async () => {
     const buf = 'one\ninserted\ntwo\nthree\n';

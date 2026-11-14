@@ -180,7 +180,7 @@ const validPrId = (id: unknown): id is number => typeof id === 'number' && Numbe
 function prLinks(d: HoverData, repoId: string, prId: number): string {
   const parts: string[] = [];
   if (GUID.test(repoId)) {
-    parts.push(link('Open', 'azureDevOps.pr.openOverview', [repoId, prId]));
+    parts.push(link('Open', 'azureDevOps.pr.openOverview', d.project ? [repoId, prId, d.project] : [repoId, prId]));
   }
   if (d.repoName && d.project) {
     parts.push(link('Browser', 'azureDevOps.pr.openInBrowser', [d.repoName, prId, d.project]));
@@ -272,7 +272,7 @@ function commitRow(d: TraceData, nowMs: number): TraceRow {
   return row;
 }
 
-function prRow(repoId: string, pr: PullRequest, note?: string): TraceRow {
+function prRow(repoId: string, pr: PullRequest, project: string | undefined, note?: string): TraceRow {
   const target = cleanText(shortRef(pr.targetRefName), 60);
   const status = cleanText(pr.status, 20);
   let description = `${status} → ${target}`;
@@ -286,7 +286,8 @@ function prRow(repoId: string, pr: PullRequest, note?: string): TraceRow {
     kind: 'item',
     label: `$(git-pull-request) ${prTitle}`,
     description,
-    action: { command: 'azureDevOps.pr.openOverview', args: [repoId, pr.pullRequestId] },
+    // The project of the remote: a repository outside the selected project opens with a client for its own project.
+    action: { command: 'azureDevOps.pr.openOverview', args: project ? [repoId, pr.pullRequestId, project] : [repoId, pr.pullRequestId] },
   };
 }
 
@@ -315,7 +316,7 @@ function prRows(d: TraceData): TraceRow[] {
   if (!match) {
     return [info(`$(circle-slash) ${NO_PR}`)];
   }
-  const rows = [sep('Pull request'), prRow(d.pr.repoId, match.pr, match.via === 'message' ? 'from commit message' : undefined)];
+  const rows = [sep('Pull request'), prRow(d.pr.repoId, match.pr, d.project, match.via === 'message' ? 'from commit message' : undefined)];
   return rows;
 }
 
@@ -324,7 +325,7 @@ function otherRows(d: TraceData): TraceRow[] {
   if (!d.pr || others.length === 0) {
     return [];
   }
-  return [sep('Other pull requests with this commit'), ...others.map(o => prRow(d.pr?.repoId ?? '', o))];
+  return [sep('Other pull requests with this commit'), ...others.map(o => prRow(d.pr?.repoId ?? '', o, d.project))];
 }
 
 function workItemRows(d: TraceData): TraceRow[] {

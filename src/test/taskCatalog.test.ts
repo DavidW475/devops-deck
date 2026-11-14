@@ -319,10 +319,100 @@ describe('TaskCatalog', () => {
     answer = async () => { throw new Error('old credentials'); };
     await c.refresh();
     assert.deepEqual([c.snapshot().status, c.snapshot().error], ['stale', 'old credentials']);
-    const epoch = c.epoch;
     c.clearBackoff();
     assert.deepEqual([c.snapshot().status, c.snapshot().error], ['stale', undefined]);
-    assert.notEqual(c.epoch, epoch);
+  });
+
+  it('runs a dropped refresh once more with the current credentials and marks it dropped only when that one is dropped too', async () => {
+    const c = newCatalog();
+    await c.ensure();
+    const releases: (() => void)[] = [];
+    answer = () => new Promise(res => { releases.push(() => res([def({ name: 'ContosoNew' })])); });
+    const once = c.refresh();
+    await flush();
+    c.clearBackoff();
+    releases[0]();
+    await flush();
+    releases[1]();
+    const again = await once;
+    assert.equal(again.dropped, undefined, 'the second run used the current credentials');
+    assert.ok(again.index!.knowsName('ContosoNew'));
+    const twice = c.refresh();
+    await flush();
+    c.clearBackoff();
+    releases[2]();
+    await flush();
+    c.clearBackoff();
+    releases[3]();
+    const result = await twice;
+    assert.equal(result.dropped, true);
+    assert.equal(result.status, 'ready', 'the snapshot is the current state: the old data stays');
+  });
+
+  it('marks a failed refresh that a credential change overtook as dropped, without arming the backoff', async () => {
+    const c = newCatalog();
+    await c.ensure();
+    const fails: (() => void)[] = [];
+    answer = () => new Promise((_, rej) => { fails.push(() => rej(new Error('old credentials'))); });
+    const run = c.refresh();
+    await flush();
+    c.clearBackoff();
+    fails[0]();
+    await flush();
+    c.clearBackoff();
+    fails[1]();
+    assert.equal((await run).dropped, true);
+    assert.equal(c.snapshot().error, undefined);
+  });
+
+  it('does not send a request for a refresh dropped while the cache file loads', async () => {
+    files.set(fileOf(ORG), cacheText());
+    const readFile = realFs.readFile as (u: unknown) => Promise<Uint8Array>;
+    const gates: (() => void)[] = [];
+    realFs.readFile = (u: unknown) => new Promise<Uint8Array>(res => { gates.push(() => res(readFile(u))); });
+    const c = newCatalog();
+    const run = c.refresh();
+    await flush();
+    c.clearBackoff();
+    gates[0]();
+    await flush();
+    gates[1]();
+    const snap = await run;
+    assert.equal(requests, 1, 'only the run with the current credentials asked the server');
+    assert.equal(snap.dropped, undefined);
+  });
+
+  it('keeps a refresh that succeeded when the credentials change while the cache file is written', async () => {
+    const c = newCatalog();
+    await c.ensure();
+    const write = realFs.writeFile as (u: unknown, b: Uint8Array) => Promise<void>;
+    let release: () => void = () => undefined;
+    realFs.writeFile = (u: unknown, b: Uint8Array) => new Promise<void>(res => { release = () => res(write(u, b)); });
+    answer = async () => [def({ name: 'ContosoNew' })];
+    const run = c.refresh();
+    await flush();
+    c.clearBackoff();
+    release();
+    const snap = await run;
+    assert.equal(snap.dropped, undefined);
+    assert.ok(snap.index!.knowsName('ContosoNew'));
+    assert.equal(requests, 2);
+  });
+
+  it('marks a refresh dropped when a reset forgot its data during the write', async () => {
+    const c = newCatalog();
+    await c.ensure();
+    const write = realFs.writeFile as (u: unknown, b: Uint8Array) => Promise<void>;
+    const releases: (() => void)[] = [];
+    realFs.writeFile = (u: unknown, b: Uint8Array) => new Promise<void>(res => { releases.push(() => res(write(u, b))); });
+    const run = c.refresh();
+    await flush();
+    c.reset();
+    releases[0]();
+    for (let i = 0; i < 50 && releases.length < 2; i++) { await flush(); }
+    c.reset();
+    releases[1]();
+    assert.equal((await run).dropped, true);
   });
 
   it('clearBackoff drops a refresh made with the old credentials, notifies, and keeps the data', async () => {
@@ -376,14 +466,14 @@ describe('TaskCatalog', () => {
     const second = c.refresh();
     await flush();
     releases[0]();
-    await first;
-    // The newer request is still running: a third caller must join it, not start another.
+    await flush();
+    // The newer request is still running: the dropped first refresh and a third caller join it, not start another.
     const third = c.refresh();
     await flush();
     assert.equal(requests, 2);
     releases[1]();
-    await Promise.all([second, third]);
-    assert.equal(c.snapshot().status, 'ready');
+    const [a, b, d] = await Promise.all([first, second, third]);
+    assert.deepEqual([a.status, b.status, d.status, a.dropped], ['ready', 'ready', 'ready', undefined]);
   });
 
   it('uses a generic message for a thrown non-error', async () => {
@@ -459,10 +549,12 @@ describe('TaskCatalog', () => {
     await flush();
     c.reset();
     release();
-    const s = await pending;
-    assert.equal(s.status, 'empty');
-    assert.equal(c.snapshot().index, undefined);
-    assert.equal(files.size, 0);
+    await flush();
+    assert.equal(c.snapshot().index, undefined, 'the old result is not used');
+    assert.equal(files.size, 0, 'nor written');
+    assert.equal(requests, 2, 'the explicit refresh runs once more for the current connection');
+    release();
+    assert.equal((await pending).status, 'ready');
   });
 
   it('reset clears the memory, fires, and keeps the files', async () => {

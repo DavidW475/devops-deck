@@ -131,9 +131,13 @@ describe('activate', () => {
   it('hands a panel a refresh that counts as the user\'s own change', async () => {
     const real = PullRequestPanel.show;
     let onChange: (() => void) | undefined;
-    PullRequestPanel.show = ((_c: unknown, _u: unknown, _r: unknown, _p: unknown, cb: () => void) => { onChange = cb; }) as typeof PullRequestPanel.show;
+    const clients: unknown[] = [];
+    PullRequestPanel.show = ((c: unknown, _u: unknown, _r: unknown, _p: unknown, cb: () => void) => { clients.push(c); onChange = cb; }) as typeof PullRequestPanel.show;
     try {
+      await run('azureDevOps.pr.openOverview', 'repo-1', 7, 'Fabrikam Extra');
       await run('azureDevOps.pr.openOverview', 'repo-1', 7);
+      assert.notEqual(clients[0], clients[1], 'a pull request of another project opens with that project\'s client');
+      assert.equal((clients[0] as { connection: { project: string } }).connection.project, 'Fabrikam Extra');
     } finally {
       PullRequestPanel.show = real;
     }
@@ -168,7 +172,7 @@ describe('activate', () => {
     taskReply = undefined;
   });
 
-  it('does not claim a missing organization when a refresh was dropped by a reset', async () => {
+  it('runs a refresh dropped by a reset once more with the new credentials', async () => {
     taskReply = [{ id: 'g1', name: 'ContosoDeploy', friendlyName: 'Contoso deploy', version: { major: 1, minor: 0, patch: 0 } }];
     let release: () => void = () => undefined;
     taskGate = new Promise<void>(resolve => { release = resolve; });
@@ -178,6 +182,28 @@ describe('activate', () => {
     inputs = ['pat-2'];
     await run('azureDevOps.setPat'); // resets the catalog while its request runs
     release();
+    await refreshing;
+    taskGate = undefined;
+    taskReply = undefined;
+    assert.equal(vscode.messages.at(-1), 'Task catalog refreshed: 1 task.');
+  });
+
+  it('asks to run the command again when the second run is dropped too', async () => {
+    taskReply = [{ id: 'g1', name: 'ContosoDeploy', friendlyName: 'Contoso deploy', version: { major: 1, minor: 0, patch: 0 } }];
+    const releases: (() => void)[] = [];
+    const gate = () => new Promise<void>(resolve => { releases.push(resolve); });
+    taskGate = gate();
+    w.showInformationMessage = async (m: string) => { vscode.messages.push(m); return undefined; };
+    const refreshing = run('azureDevOps.yaml.refreshTaskCatalog');
+    await flush();
+    inputs = ['pat-2'];
+    await run('azureDevOps.setPat');
+    taskGate = gate();
+    releases[0]();
+    await flush();
+    inputs = ['pat-3'];
+    await run('azureDevOps.setPat');
+    releases[1]();
     await refreshing;
     taskGate = undefined;
     taskReply = undefined;
@@ -207,7 +233,7 @@ describe('activate', () => {
     }
   });
 
-  it('reports a refresh dropped by new credentials as reset, not as a failure or success', async () => {
+  it('reports the outcome of the run with the new credentials when a refresh was dropped by them', async () => {
     taskReply = [{ id: 'g1', name: 'ContosoDeploy', friendlyName: 'Contoso deploy', version: { major: 1, minor: 0, patch: 0 } }];
     let release: () => void = () => undefined;
     w.showInformationMessage = async (m: string) => { vscode.messages.push(m); return undefined; };
@@ -219,7 +245,8 @@ describe('activate', () => {
       await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'microsoft'); // clears the backoff while the request runs
       release();
       await refreshing;
-      assert.equal(vscode.messages.at(-1), 'The task catalog was reset while it loaded. Run the command again.');
+      assert.match(vscode.messages.at(-1)!, /Could not read the tasks of the organization \(Not signed in to Microsoft\.\)/,
+        'the old result is not reported; the rerun with the new sign-in is');
     } finally {
       taskGate = undefined;
       taskReply = undefined;
@@ -566,8 +593,10 @@ describe('activate', () => {
     const auth = vscode.authentication as any;
     const realGet = auth.getSession;
     try {
+      auth.getSession = async () => undefined; // signed out before and after: the account does not change
       await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'microsoft');
-      auth.getSession = async () => undefined;
+      sessionListener!({ provider: { id: 'microsoft' } }); // the sign-out is noted before the sign-in starts
+      await flush();
       const resets = resetSpy.calls;
       const pauses = cleared.pauses;
       const invalidates = resetSpy.invalidates;
@@ -601,21 +630,56 @@ describe('activate', () => {
       await run('azureDevOps.signIn');
       assert.equal(resetSpy.calls, resets + 1, 'a new account');
       assert.equal(resetSpy.invalidates, invalidates + 1);
-      // A failed sign-in still records the account in use, so the session event that follows is not mistaken for a change.
+      // The account was switched (Accounts menu) while the prompt was open, then the prompt was cancelled: that is a real change.
       id = 'acc-3';
       const pending = auth.getSession;
       auth.getSession = async (_p: string, _s: string[], o: { silent?: boolean; createIfNone?: boolean }) => {
         if (o.silent) { return pending(); }
         throw new Error('cancelled');
       };
+      const beforeCancel = { calls: resetSpy.calls, invalidates: resetSpy.invalidates };
       await run('azureDevOps.signIn');
+      assert.deepEqual([resetSpy.calls, resetSpy.invalidates], [beforeCancel.calls + 1, beforeCancel.invalidates + 1],
+        'the cancelled sign-in resets for the new account and loads again');
       const after = resetSpy.calls;
       sessionListener!({ provider: { id: 'microsoft' } });
       await flush();
-      assert.equal(resetSpy.calls, after, 'acc-3 was noted by the failed sign-in');
+      assert.equal(resetSpy.calls, after, 'and the session event that follows does not reset a second time');
+      // Cancelled again with the same account: nothing to forget.
+      await run('azureDevOps.signIn');
+      assert.equal(resetSpy.calls, after);
     } finally {
       auth.getSession = realGet;
       await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'pat');
+    }
+  });
+
+  it('a sign-in that also switches the setting loads the sidebar once, after the sign-in', async () => {
+    const auth = vscode.authentication as any;
+    const realGet = auth.getSession;
+    try {
+      await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'pat');
+      await flush();
+      auth.getSession = async () => ({ account: { id: 'acc-9' }, accessToken: 't' });
+      const before = { calls: resetSpy.calls, invalidates: resetSpy.invalidates };
+      await run('azureDevOps.signIn');
+      await flush();
+      assert.deepEqual([resetSpy.calls, resetSpy.invalidates], [before.calls + 1, before.invalidates + 1], 'one reset by the settings handler, one load by the command');
+      // Cancelled while switching the setting: the settings handler reset, the command still loads once.
+      await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'pat');
+      await flush();
+      auth.getSession = async (_p: string, _s: string[], o: { silent?: boolean }) => {
+        if (o.silent) { return { account: { id: 'acc-9' }, accessToken: 't' }; }
+        throw new Error('cancelled');
+      };
+      const cancel = { calls: resetSpy.calls, invalidates: resetSpy.invalidates };
+      await run('azureDevOps.signIn');
+      await flush();
+      assert.deepEqual([resetSpy.calls, resetSpy.invalidates], [cancel.calls + 1, cancel.invalidates + 1]);
+    } finally {
+      auth.getSession = realGet;
+      await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'pat');
+      await flush();
     }
   });
 

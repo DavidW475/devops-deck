@@ -31,7 +31,8 @@ export interface BlameArgsOptions {
 
 export function blameArgs(o: BlameArgsOptions): string[] {
   const { from, to } = blameWindow(o.line, o.lineCount);
-  const args = ['blame', '--porcelain', '--no-textconv'];
+  // `blame.showRoot=true` would hide the boundary flag of a root commit, and with it the graft commit of a shallow clone.
+  const args = ['-c', 'blame.showRoot=false', 'blame', '--porcelain', '--no-textconv'];
   if (o.ignoreWhitespace) args.push('-w');
   args.push('-M');
   if (o.detectCopies) args.push('-C');

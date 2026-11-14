@@ -66,10 +66,10 @@ function fakeClient(buildId: number, overrides: Record<string, unknown> = {}): {
 
 function open(buildId: number, overrides: Record<string, unknown> = {}) {
   const f = fakeClient(buildId, overrides);
-  let changes = 0;
-  RunViewPanel.show(f.client, ext, buildId, () => changes++);
+  const changes: boolean[] = [];
+  RunViewPanel.show(f.client, ext, buildId, direct => changes.push(direct));
   const panel = lastPanel();
-  return { ...f, panel, web: panel.webview, changes: () => changes };
+  return { ...f, panel, web: panel.webview, changes: () => changes.length, directs: () => [...changes] };
 }
 
 const ws = workspace as unknown as { workspaceFolders: unknown[] };
@@ -150,7 +150,7 @@ describe('RunViewPanel loading', () => {
     settings['azureDevOps.pipelines.refreshInterval'] = 1; // raised to the 5 s minimum
     settings['azureDevOps.pipelines.showTimestamps'] = true;
     let status = 'inProgress';
-    const { web, calls, changes } = open(108, { getBuild: async () => build(108, status) });
+    const { web, calls, changes, directs } = open(108, { getBuild: async () => build(108, status) });
     await web.send({ type: 'ready' });
     assert.equal(web.last('data').showTimestamps, true);
     assert.equal(web.last('testRuns'), undefined);
@@ -162,6 +162,7 @@ describe('RunViewPanel loading', () => {
     await flush();
     assert.equal(web.ofType('data').length, 2);
     assert.equal(changes(), 1);
+    assert.deepEqual(directs(), [false], 'the polling timer honours the 429 pause');
     assert.ok(web.last('testRuns'));
     assert.equal(calls.listTestRuns.length, 1);
   });
@@ -217,7 +218,7 @@ describe('RunViewPanel messages', () => {
   });
 
   it('retries a stage after confirmation', async () => {
-    const { web, calls, changes } = open(114);
+    const { web, calls, changes, directs } = open(114);
     await web.send({ type: 'retryStage', identifier: 'Deploy' });
     assert.equal(calls.retryStage, undefined);
     assert.deepEqual(messages, ['Run stage "Deploy" again?']);
@@ -227,6 +228,7 @@ describe('RunViewPanel messages', () => {
     await web.send({ type: 'retryStage', identifier: 'Deploy' });
     assert.deepEqual(calls.retryStage, [[114, 'Deploy', true], [114, 'Deploy', false]]);
     assert.equal(changes(), 2);
+    assert.deepEqual(directs(), [true, true], 'a retry is a direct action, so My Day reloads even during a 429 pause');
     assert.equal(calls.listTestRuns.length, 2, 'test runs are loaded again after a retry');
   });
 

@@ -937,6 +937,30 @@ describe('PipelineDesignerPanel: task steps', () => {
     assert.equal(state().tasks.refreshing, false);
   });
 
+  it('keeps the spinner while overlapping reloads run and says when a reload was dropped twice', async () => {
+    const host = taskHost({ status: 'ready', index: INDEX, fetchedAt: NOW });
+    const { web, state } = await openTasks(0, TASK_PIPELINE, host);
+    await web.send({ type: 'catalogMode', mode: 'tasks' });
+    let release: () => void = () => undefined;
+    host.tasks.refresh = async () => { host.tasks.refreshed++; await new Promise<void>(r => { release = r; }); return host.tasks.snap; };
+    const first = web.send({ type: 'reloadTasks' });
+    const releaseFirst = release;
+    const second = web.send({ type: 'reloadTasks' });
+    releaseFirst();
+    await first;
+    await new Promise(r => setTimeout(r, 350));
+    assert.equal(state().tasks.refreshing, true, 'the second reload still runs');
+    release();
+    await second;
+    await new Promise(r => setTimeout(r, 350));
+    assert.equal(state().tasks.refreshing, false);
+    host.tasks.snap = { status: 'ready', index: INDEX, fetchedAt: NOW, dropped: true };
+    host.tasks.refresh = async () => host.tasks.snap;
+    await web.send({ type: 'reloadTasks' });
+    await new Promise(r => setTimeout(r, 350));
+    assert.equal(state().notices[0].title, 'Task catalog not reloaded');
+  });
+
   it('renders again when the catalog changes and reads it without a task selected only in Tasks mode', async () => {
     const host = taskHost({ status: 'empty' });
     const { web, state } = await open(12, host);

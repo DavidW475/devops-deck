@@ -143,7 +143,8 @@ export class PipelineDesignerPanel {
   private tasksRequested = false;
   /** the task list the page was last sent (it keeps it while `itemsUnchanged`) */
   private sentTaskItems?: unknown;
-  private tasksRefreshing = false;
+  /** Reloads of the task catalog started from this panel and not finished yet (they can overlap). */
+  private tasksRefreshing = 0;
   private alias = '';
   /** chosen ref of the catalog repository: undefined = as declared, '' = default branch */
   private refChoice?: string;
@@ -365,12 +366,16 @@ export class PipelineDesignerPanel {
     if (!this.host.tasks || !this.taskSupport()) {
       return;
     }
-    this.tasksRefreshing = true;
+    this.tasksRefreshing++;
     void this.render();
     try {
-      await this.host.tasks.refresh();
+      const snap = await this.host.tasks.refresh();
+      if (snap.dropped) {
+        this.notice = { level: 'warn', title: 'Task catalog not reloaded', detail: 'The sign-in or the connection changed while it loaded. Reload again.' };
+      }
     } finally {
-      this.tasksRefreshing = false;
+      this.tasksRefreshing--;
+      void this.render();
     }
   }
 
@@ -732,7 +737,7 @@ export class PipelineDesignerPanel {
 
   /** The task part of the catalog: state, age and (in Tasks mode) the short list items. */
   private tasksView() {
-    const t = taskListState(this.host.tasks!.snapshot(), Date.now(), this.host.orgUrl?.(), this.tasksRefreshing, this.catalogMode === 'tasks');
+    const t = taskListState(this.host.tasks!.snapshot(), Date.now(), this.host.orgUrl?.(), this.tasksRefreshing > 0, this.catalogMode === 'tasks');
     if (t.items.length === 0) {
       this.sentTaskItems = undefined; // the page drops its list now
       return t;

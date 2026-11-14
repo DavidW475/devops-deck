@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Template completion no longer glues a parameter name right behind the colon of a written key (`key:other: `)
+- Pipeline designer: deleting the first key of a list item no longer marks or rewrites the comment and blank lines before the next key, never moves the dash past the end of the item, and never hands it to an edit of the previous item
+- Run view: *Rerun failed jobs* during a 429 pause reloads My Day, like other actions of the user
+- Sign-in: when the account is switched through the Accounts menu while the sign-in prompt is open and the prompt is then cancelled, the data of the previous account is forgotten
+- Sign-in: a sign-in that also switches `azureDevOps.authMethod` loads the sidebar once instead of twice; *Set Personal Access Token* always loads it after the token is stored
+- Task catalog: a refresh overtaken by a new sign-in runs once more with the new credentials instead of reporting the old result, sends no request with the old ones, and a success is no longer reported as a reset when the sign-in changes while the cache is written. The designer keeps its spinner while overlapping reloads run
+- Blame: a repository with `blame.showRoot=true` no longer shows a shallow clone's graft commit as the author of old lines; commits of a branch more than 1000 commits ahead are checked against the remote branches instead of counting as pushed; pull requests found for a repository of another project open with that project
+
 ## 1.2.0
 
 ### Added

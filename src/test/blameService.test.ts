@@ -142,7 +142,7 @@ function doc(over: Partial<BlameDocument> = {}): BlameDocument {
   };
 }
 
-const blameCalls = (e: Env) => e.gitCalls.filter(c => c.args[0] === 'blame');
+const blameCalls = (e: Env) => e.gitCalls.filter(c => c.args.includes('blame'));
 
 describe('BlameService.lookupLine', () => {
   let e: Env;
@@ -183,7 +183,7 @@ describe('BlameService.lookupLine', () => {
     assert.equal(r.line.author, 'Lena Hoffmann');
     assert.equal(r.repo, e.local);
     const [call] = blameCalls(e);
-    assert.deepEqual(call.args, ['blame', '--porcelain', '--no-textconv', '-w', '-M', '-L', '1,31', '--', 'src/cart.ts']);
+    assert.deepEqual(call.args, ['-c', 'blame.showRoot=false', 'blame', '--porcelain', '--no-textconv', '-w', '-M', '-L', '1,31', '--', 'src/cart.ts']);
     assert.equal(call.options?.stdin, undefined);
     assert.equal(call.options?.timeoutMs, undefined);
     assert.equal(e.rest.length, 0);
@@ -388,6 +388,26 @@ describe('BlameService.lookupLine', () => {
     assert.equal(logs.length, 1);
     assert.deepEqual(logs[0][1], { range: 'origin/main..HEAD', maxEntries: 1000 });
     assert.equal(e.rest.length, 0);
+  });
+
+  it('asks git for a commit beyond a cut-off upstream log instead of counting it as published', async () => {
+    (e.repo.state as any).HEAD = { commit: C, ahead: 1500, upstream: { remote: 'origin', name: 'main' } };
+    e.repo.logEntries = Array.from({ length: 1000 }, (_, i) => ({ hash: i.toString(16).padStart(40, 'b'), message: 'm' }));
+    e.state.notOnRemote.add(A);
+    assert.equal((await e.svc.lookupLine(doc(), 10)).state, 'unpublished', 'older than the 1000 listed, but on no remote branch');
+    assert.equal(e.gitCalls.filter(c => c.args[0] === 'for-each-ref').length, 1);
+    e.state.notOnRemote.clear();
+    e.clock.t += 31_000;
+    assert.equal((await e.svc.lookupLine(doc({ version: 2 }), 10)).state, 'commit', 'a remote branch has it');
+    assert.equal(e.repo.calls.filter(c => c[0] === 'log').length, 1, 'the cut-off set is kept');
+  });
+
+  it('trusts a complete upstream log without asking the remote branches', async () => {
+    (e.repo.state as any).HEAD = { commit: C, ahead: 1, upstream: { remote: 'origin', name: 'main' } };
+    e.repo.logEntries = [{ hash: B, message: 'm' }];
+    e.state.notOnRemote.add(A);
+    assert.equal((await e.svc.lookupLine(doc(), 10)).state, 'commit');
+    assert.equal(e.gitCalls.filter(c => c.args[0] === 'for-each-ref').length, 0);
   });
 
   it('forgets the unpublished commits when a push changes the upstream or how far HEAD is ahead', async () => {

@@ -38,6 +38,12 @@ interface BlameFlight {
   explicit: boolean;
 }
 
+/** The commits ahead of the upstream; `complete` is false when the log was cut off at `UNPUBLISHED_LOG_MAX`. */
+interface UnpublishedSet {
+  hashes: Set<string>;
+  complete: boolean;
+}
+
 interface RepoInfo {
   id: string;
   projectId?: string;
@@ -150,7 +156,7 @@ export class BlameService implements BlameLookups {
   private readonly completed: Cache<PrLookup>;
   private readonly pending: Cache<PrLookup>;
   private readonly items: Cache<TraceWorkItem[]>;
-  private readonly unpublishedSets: Cache<Set<string>>;
+  private readonly unpublishedSets: Cache<UnpublishedSet>;
   private readonly shallowRoots = new Map<string, boolean>();
   private readonly repoInfos = new Map<string, Promise<RepoInfo>>();
   private readonly inflight = new Map<string, Promise<unknown>>();
@@ -384,25 +390,34 @@ export class BlameService implements BlameLookups {
     const key = [this.rootOf(repo), head.commit ?? '', upstream.commit ?? '', head.ahead, upstream.remote, upstream.name].join('|');
     const known = this.unpublishedSets.get(key);
     if (known) {
-      return known.has(sha);
+      return this.inUnpublished(known, repo, sha);
     }
     const set = await this.share(`unpublished|${key}`, async () => {
       const gen = this.gen;
-      const hashes = new Set<string>();
+      const found: UnpublishedSet = { hashes: new Set<string>(), complete: true };
       try {
         const commits: { hash: string }[] = await repo.repo.log({
           range: `${upstream.remote}/${upstream.name}..HEAD`, maxEntries: UNPUBLISHED_LOG_MAX,
         });
-        commits.forEach(c => hashes.add(c.hash));
+        commits.forEach(c => found.hashes.add(c.hash));
+        found.complete = commits.length < UNPUBLISHED_LOG_MAX;
       } catch {
-        return hashes; // empty and not cached: the next lookup tries again
+        return found; // empty and not cached: the next lookup tries again
       }
       if (gen === this.gen) {
-        this.unpublishedSets.set(key, hashes);
+        this.unpublishedSets.set(key, found);
       }
-      return hashes;
+      return found;
     });
-    return set.has(sha);
+    return this.inUnpublished(set, repo, sha);
+  }
+
+  /** In the set of commits ahead; beyond a cut-off list, git is asked whether a remote branch has the commit. */
+  private async inUnpublished(set: UnpublishedSet, repo: LocalRepo, sha: string): Promise<boolean> {
+    if (set.hashes.has(sha)) {
+      return true;
+    }
+    return !set.complete && !(await this.isOnRemote(repo, sha));
   }
 
   /**
