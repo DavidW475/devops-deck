@@ -79,6 +79,9 @@ function setup(): Harness {
     queryWiql: async () => (project === SHOP ? [101] : [202]),
     getWorkItems: async (ids: number[]) => ids.map(id => workItem(id, id === 101 ? SHOP : WEB)),
     listIterationDates: async (): Promise<ClassificationIteration[]> => [{ path: `${project}\\Sprint 1`, finishDate: new Date(START + 24 * HOUR).toISOString() }],
+    getPullRequest: async (_repoId: string, id: number) => pr(id),
+    getApproval: async (id: string) => approval(id),
+    getBuild: async (id: number) => build(id),
   });
   const clientFor = (project: string): MyDayClient => {
     const wrap = (name: keyof MyDayClient) => (...args: unknown[]) => {
@@ -89,6 +92,7 @@ function setup(): Harness {
     return {
       listPullRequests: wrap('listPullRequests'), listPendingApprovals: wrap('listPendingApprovals'), listBuildsSince: wrap('listBuildsSince'),
       queryWiql: wrap('queryWiql'), getWorkItems: wrap('getWorkItems'), listIterationDates: wrap('listIterationDates'),
+      getPullRequest: wrap('getPullRequest'), getApproval: wrap('getApproval'), getBuild: wrap('getBuild'),
     } as MyDayClient;
   };
   const deps: MyDayDeps = {
@@ -761,6 +765,156 @@ describe('MyDayService defers', () => {
     const r = await h.service.get();
     await flush();
     assert.ok(r.items.length > 0);
+  });
+});
+
+describe('MyDayService deferred items that are gone', () => {
+  const DAY = 24 * HOUR;
+  const entry = (source: 'reviews' | 'approvals' | 'runs' | 'workItems', kind: 'done' | 'hide' | 'snooze' = 'done') =>
+    ({ kind, fingerprint: 'x', seenAt: START, title: `Gone ${source}`, source, project: SHOP, ...(kind === 'snooze' ? { until: START + HOUR } : {}) });
+  const keys = (h: Harness): string[] => Object.keys(h.defers.all()).toSorted((a, b) => a.localeCompare(b));
+
+  it('forgets the entries the server proves finished and keeps the others', async () => {
+    const h = make();
+    await h.defers.set('pr:repo-1:5', entry('reviews'));
+    await h.defers.set('pr:repo-1:6', entry('reviews', 'hide'));
+    await h.defers.set('pr:repo-1:7', entry('reviews'));
+    await h.defers.set('approval:ap-done', entry('approvals'));
+    await h.defers.set('approval:ap-open', entry('approvals'));
+    h.overrides[SHOP] = {
+      getPullRequest: async (repoId: string, id: number) => {
+        assert.equal(repoId, 'repo-1');
+        const status: Record<number, string> = { 5: 'completed', 6: 'abandoned' };
+        return { ...pr(id), status: status[id] ?? 'active' };
+      },
+      getApproval: async (id: string) => ({ ...approval(id), status: id === 'ap-done' ? 'approved' : 'pending' }),
+    };
+    await h.service.get();
+    await flush(6);
+    assert.deepEqual(keys(h), ['approval:ap-open', 'pr:repo-1:7'], 'a pull request that is still active (a draft, another reviewer) keeps the decision');
+    assert.deepEqual(h.events.at(-1)?.deferred.map(d => d.key).toSorted((a, b) => a.localeCompare(b)), ['approval:ap-open', 'pr:repo-1:7']);
+  });
+
+  it('forgets a run that left the window or that a newer run of its pipeline and branch replaced', async () => {
+    const h = make();
+    await h.defers.set('run:Fabrikam Shop:1', entry('runs'));
+    await h.defers.set('run:Fabrikam Shop:5', entry('runs'));
+    await h.defers.set('run:Fabrikam Shop:99', entry('runs'));
+    await h.defers.set('run:Fabrikam Shop:98', entry('runs'));
+    await h.defers.set('run:Fabrikam Shop:97', entry('runs'));
+    h.overrides[SHOP] = {
+      getBuild: async (id: number) => {
+        switch (id) {
+          case 1: return { ...build(1), finishTime: new Date(START - 8 * DAY).toISOString() };
+          case 98: return { ...build(98), status: 'inProgress' }; // retried: it may fail again
+          case 97: return { ...build(97), sourceBranch: 'refs/heads/release', finishTime: undefined };
+          default: return build(id); // 5 is older than the listed run 10, 99 is newer
+        }
+      },
+    };
+    await h.service.get();
+    await flush(6);
+    assert.deepEqual(keys(h), ['run:Fabrikam Shop:97', 'run:Fabrikam Shop:98', 'run:Fabrikam Shop:99']);
+  });
+
+  it('forgets a work item that is completed or removed, not one that is active or not returned', async () => {
+    const h = make();
+    await h.defers.set('wi:301', entry('workItems'));
+    await h.defers.set('wi:302', entry('workItems'));
+    await h.defers.set('wi:303', entry('workItems'));
+    h.overrides[SHOP] = {
+      getWorkItems: async (ids: number[]) => ids.filter(id => id !== 303).map(id => workItem(id, SHOP, id === 301 ? 'Closed' : 'Active')),
+    };
+    await h.service.get();
+    await flush(6);
+    assert.deepEqual(keys(h), ['wi:302', 'wi:303']);
+  });
+
+  it('keeps the entry when the lookup or the state lookup fails', async () => {
+    const h = make();
+    await h.defers.set('pr:repo-1:5', entry('reviews'));
+    await h.defers.set('wi:301', entry('workItems'));
+    h.overrides[SHOP] = {
+      getPullRequest: async () => { throw new AdoError('Not found', 404); },
+      getWorkItems: async (ids: number[]) => ids.map(id => workItem(id, SHOP, id === 301 ? 'Closed' : 'Active')),
+    };
+    let calls = 0;
+    const states = h.state.states;
+    h.state.states = (...a: unknown[]) => (++calls > 1 ? Promise.reject(new Error('down')) : states(...a));
+    await h.service.get();
+    await flush(6);
+    assert.deepEqual(keys(h), ['pr:repo-1:5', 'wi:301']);
+  });
+
+  it('looks up nothing for a failed source, a listed item or a snooze', async () => {
+    const h = make();
+    const r = await h.service.get();
+    const review = r.items.find(i => i.source === 'reviews')!;
+    await h.service.applyDefer(review, 'done');
+    await h.defers.set('approval:ap-x', entry('approvals'));
+    await h.defers.set('pr:repo-1:5', entry('reviews', 'snooze'));
+    h.overrides[SHOP] = { listPendingApprovals: async () => { throw new Error('down'); } };
+    await h.service.get({ force: true });
+    await flush(6);
+    assert.equal(h.count('getApproval') + h.count('getPullRequest'), 0);
+    assert.equal(keys(h).length, 3);
+  });
+
+  it('looks up an entry at most once an hour and at most five per load', async () => {
+    const h = make();
+    for (let id = 11; id <= 17; id++) {
+      await h.defers.set(`pr:repo-1:${id}`, entry('reviews'));
+    }
+    await h.service.get();
+    await flush(6);
+    assert.equal(h.count('getPullRequest'), 5);
+    h.state.now += 10 * MINUTE;
+    await h.service.get({ force: true });
+    await flush(6);
+    assert.equal(h.count('getPullRequest'), 7, 'the next load looks up the rest');
+    h.state.now += 10 * MINUTE;
+    await h.service.get({ force: true });
+    await flush(6);
+    assert.equal(h.count('getPullRequest'), 7, 'none again within the hour');
+    h.state.now += HOUR;
+    await h.service.get({ force: true });
+    await flush(6);
+    assert.equal(h.count('getPullRequest'), 12);
+  });
+
+  it('looks up nothing while Azure DevOps asked for a pause, and stops when one starts', async () => {
+    const h = make();
+    for (let id = 11; id <= 15; id++) {
+      await h.defers.set(`pr:repo-1:${id}`, entry('reviews'));
+    }
+    h.state.throttledUntil = START + HOUR;
+    await h.service.get({ user: true });
+    await flush(6);
+    assert.equal(h.count('getPullRequest'), 0);
+    h.state.throttledUntil = 0;
+    h.overrides[SHOP] = { getPullRequest: async () => { h.state.throttledUntil = START + HOUR; throw new AdoError('Slow down', 429); } };
+    await h.service.get({ force: true, user: true });
+    await flush(6);
+    assert.equal(h.count('getPullRequest'), 4, 'the fifth lookup waits for a free slot and sees the pause');
+    assert.equal(keys(h).length, 5);
+  });
+
+  it('runs one check at a time and drops the answer after a reset', async () => {
+    const h = make();
+    await h.defers.set('pr:repo-1:5', entry('reviews'));
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    h.overrides[SHOP] = { getPullRequest: async (_r: string, id: number) => { await gate; return { ...pr(id), status: 'completed' }; } };
+    await h.service.get();
+    await flush();
+    h.state.now += 2 * HOUR;
+    await h.service.get({ force: true });
+    await flush();
+    assert.equal(h.count('getPullRequest'), 1, 'the running check is not started twice');
+    h.service.reset();
+    release();
+    await flush(6);
+    assert.deepEqual(keys(h), ['pr:repo-1:5']);
   });
 });
 

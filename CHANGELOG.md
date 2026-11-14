@@ -10,6 +10,7 @@
 - Sign-in: when the account is switched through the Accounts menu while the sign-in prompt is open and the prompt is then cancelled, the data of the previous account is forgotten
 - Sign-in: a sign-in that also switches `azureDevOps.authMethod` loads the sidebar once instead of twice; *Set Personal Access Token* always loads it after the token is stored
 - Task catalog: a refresh overtaken by a new sign-in runs once more with the new credentials instead of reporting the old result, sends no request with the old ones, and a success is no longer reported as a reset when the sign-in changes while the cache is written. The designer keeps its spinner while overlapping reloads run
+- My Day: a deferred pull request, approval, run or work item that is finished (merged, abandoned, approved, closed, replaced by a newer run) leaves *Deferred* within about an hour instead of staying for 30 days. An item that is merely missing from the lists keeps its entry
 - Blame: a repository with `blame.showRoot=true` no longer shows a shallow clone's graft commit as the author of old lines; commits of a branch more than 1000 commits ahead are checked against the remote branches instead of counting as pushed; pull requests found for a repository of another project open with that project
 
 ## 1.2.0
