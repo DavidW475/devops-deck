@@ -348,7 +348,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 
   // ----- pull requests -----
-  command('azureDevOps.pr.openOverview', async (repoId: string, prId: number, project?: string) =>
+  command('azureDevOps.pr.openOverview', (repoId: string, prId: number, project?: string) =>
     PullRequestPanel.show(at(project), context.extensionUri, repoId, prId, () => refresh(true)));
   command('azureDevOps.pr.openDiff', async (args: PrFileArgs) => openPrDiff(args));
   mutation('azureDevOps.pr.vote', (repoId: unknown, prId: unknown, project?: unknown) => voteOnPullRequest(at(project), repoId, prId));

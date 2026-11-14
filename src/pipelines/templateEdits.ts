@@ -393,10 +393,10 @@ function dashSourceLine(out: MarkedEdit[], j: number, at: number, text: string):
     prev.insert.push(text);
     prev.marks.push('~');
     prev.deleteCount++;
-    if (next && next.line === at + 1) {
+    if (next?.line === at + 1) {
       joinNext(out, j - 1);
     }
-  } else if (next && next.line === at + 1) {
+  } else if (next?.line === at + 1) {
     next.line = at;
     next.deleteCount++;
     next.insert.unshift(text);
