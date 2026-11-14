@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Requires VS Code 1.146 or newer
+
 ## 1.2.0
 
 ### Added
