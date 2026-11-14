@@ -4,7 +4,7 @@ import type { Approval, Build, ClassificationIteration, IdentityRef, PullRequest
 import { errorMessage, mapLimit } from '../util';
 import type { DeferTarget } from './commands';
 import { isDeferred, type MyDayDefers } from './defers';
-import { approvalItem, dedupe, reviewItem, runItems, workItemItem } from './model';
+import { approvalItem, dedupe, newerRun, reviewItem, runItems, workItemItem } from './model';
 import { compareItems } from './rank';
 import type { DeferEntry, DeferredDto, MyDayDeps, MyDayItem, MyDayResult, MyDaySource, SourceFailure } from './types';
 
@@ -21,6 +21,12 @@ const ITERATIONS_TTL = 60 * MINUTE;
 const RUN_WINDOW = 7 * 24 * 60 * MINUTE;
 const PROJECT_PARALLEL = 4;
 const MAX_WORK_ITEMS = 200;
+/** A deferred item that is no longer listed is looked up directly at most this often ... */
+const GONE_CHECK_INTERVAL = 60 * MINUTE;
+/** ... and at most this many per load, so a long list of old entries does not cost a burst of requests. */
+const GONE_CHECK_MAX = 5;
+/** Approval states that never return to pending. */
+const FINAL_APPROVAL = new Set(['approved', 'rejected', 'canceled', 'skipped', 'timedOut', 'failed']);
 const SOURCES: readonly MyDaySource[] = ['reviews', 'approvals', 'runs', 'workItems'];
 
 interface WorkItemEntry {
@@ -106,6 +112,9 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
   private me: IdentityRef | undefined;
   private lastItems: MyDayItem[] = [];
   private lastSignature = '';
+  /** deferred keys looked up by `checkGone` and when (ms); cleared by `reset`, since another account may see other items */
+  private readonly goneCheckedAt = new Map<string, number>();
+  private checkingGone = false;
 
   constructor(private readonly deps: MyDayDeps, private readonly defers: MyDayDefers) {}
 
@@ -173,6 +182,7 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
     this.me = undefined;
     this.lastItems = [];
     this.lastSignature = '';
+    this.goneCheckedAt.clear();
   }
 
   itemByKey(key: string): MyDayItem | undefined {
@@ -506,6 +516,82 @@ export class MyDayService implements vscode.Disposable, DeferTarget {
     }
     void this.defers.markSeen([...listed.keys()], now).catch(() => undefined);
     void this.defers.prune(ok, now).catch(() => undefined);
+    void this.checkGone(listed, ok, now).catch(() => undefined);
+  }
+
+  /**
+   * Looks up the "done" and "hide" entries whose item is no longer listed and forgets those the server proves finished
+   * (`isFinished`). Absence alone never deletes: a capped list, a failed source, a draft or another account would lose the
+   * user's decision. Only entries of sources that just loaded fine are checked, each at most once an hour, never during a pause.
+   */
+  private async checkGone(listed: Map<string, MyDayItem>, ok: (source: MyDaySource, project: string) => boolean, now: number): Promise<void> {
+    if (this.checkingGone || this.throttled()) {
+      return;
+    }
+    const due = Object.entries(this.defers.all())
+      .filter(([key, e]) => e.kind !== 'snooze' && !listed.has(key) && ok(e.source, e.project) && now - (this.goneCheckedAt.get(key) ?? -Infinity) >= GONE_CHECK_INTERVAL)
+      .slice(0, GONE_CHECK_MAX);
+    if (due.length === 0) {
+      return;
+    }
+    const generation = this.generation;
+    this.checkingGone = true;
+    try {
+      const gone: string[] = [];
+      await mapLimit(due, PROJECT_PARALLEL, async ([key, entry]) => {
+        if (generation !== this.generation || this.throttled()) {
+          return;
+        }
+        this.goneCheckedAt.set(key, now);
+        if (await this.isFinished(key, entry, now).catch(() => false)) {
+          gone.push(key);
+        }
+      });
+      if (generation === this.generation && gone.length > 0) {
+        await this.defers.removeMany(gone);
+        this.publish(true);
+      }
+    } finally {
+      this.checkingGone = false;
+    }
+  }
+
+  /** Whether the server says the item of a deferred entry is finished for good; an unknown state or a failed lookup says no. */
+  private async isFinished(key: string, entry: DeferEntry, now: number): Promise<boolean> {
+    const client = this.deps.clientFor(entry.project);
+    const last = key.lastIndexOf(':');
+    const id = key.slice(last + 1);
+    switch (entry.source) {
+      case 'reviews': {
+        // `pr:<repoId>:<id>`: merged or abandoned
+        const pr = await client.getPullRequest(key.slice('pr:'.length, last), Number(id));
+        return pr.status === 'completed' || pr.status === 'abandoned';
+      }
+      case 'approvals':
+        return FINAL_APPROVAL.has((await client.getApproval(key.slice('approval:'.length))).status);
+      case 'runs':
+        return this.runIsGone(await client.getBuild(Number(id)), entry.project, now);
+      default: {
+        const [wi] = await client.getWorkItems([Number(id)]);
+        if (!wi) {
+          return false; // deleted, or not visible to this account: no proof
+        }
+        const category = await this.categoryOf(wi, new Map());
+        return category === 'Completed' || category === 'Removed';
+      }
+    }
+  }
+
+  /** A run leaves My Day for good once it is older than the window or a newer run of its pipeline and branch is listed. */
+  private runIsGone(run: Build, project: string, now: number): boolean {
+    if (run.status !== 'completed') {
+      return false; // retried: it may fail again
+    }
+    if ((Date.parse(run.finishTime ?? '') || now) < now - RUN_WINDOW) {
+      return true;
+    }
+    const builds = (this.slots.get(slotKey('runs', project))?.data ?? []) as Build[];
+    return builds.some(b => b.id !== run.id && b.definition.id === run.definition.id && b.sourceBranch === run.sourceBranch && newerRun(b, run));
   }
 
   // ---------- shared raw lists ----------

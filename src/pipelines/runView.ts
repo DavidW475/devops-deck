@@ -23,7 +23,8 @@ export class RunViewPanel {
   private yamlDeps?: YamlStageDeps;
   private testRuns?: Promise<TestRun[]>;
 
-  static show(client: AdoClient, extensionUri: vscode.Uri, buildId: number, onChange: () => void): void {
+  /** `onChange(direct)`: the run changed; `direct` when the user caused it (a stage retry), so My Day reloads even during a 429 pause. */
+  static show(client: AdoClient, extensionUri: vscode.Uri, buildId: number, onChange: (direct: boolean) => void): void {
     const existing = RunViewPanel.panels.get(buildId);
     if (existing) {
       existing.panel.reveal();
@@ -46,7 +47,7 @@ export class RunViewPanel {
     private readonly panel: vscode.WebviewPanel,
     private readonly client: AdoClient,
     private readonly buildId: number,
-    private readonly onChange: () => void,
+    private readonly onChange: (direct: boolean) => void,
   ) {
     panel.webview.onDidReceiveMessage(guarded(m => this.handle(m)));
   }
@@ -135,7 +136,7 @@ export class RunViewPanel {
         const seconds = Math.max(5, vscode.workspace.getConfiguration('azureDevOps').get<number>('pipelines.refreshInterval', 10));
         this.timer = setTimeout(() => void this.load(), seconds * 1000);
       } else if (this.wasRunning) {
-        this.onChange();
+        this.onChange(false);
       }
       this.wasRunning = running;
     } catch (e) {
@@ -214,7 +215,7 @@ export class RunViewPanel {
     await this.client.retryStage(this.buildId, identifier, pick === 'Rerun all jobs');
     this.testRuns = undefined;
     vscode.window.setStatusBarMessage(`$(sync) Stage ${name} queued again`, 3000);
-    this.onChange();
+    this.onChange(true);
     await this.load();
   }
 

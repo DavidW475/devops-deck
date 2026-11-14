@@ -70,6 +70,11 @@ export interface CatalogSnapshot {
   fetchedAt?: number;
   /** Why the last refresh failed. */
   error?: string;
+  /**
+   * Only on the result of `refresh()`: a reset or a credential change overtook that refresh, so the snapshot is the
+   * catalog's current state, not the refresh's result.
+   */
+  dropped?: true;
 }
 
 /** A `- task:` step found in YAML text. Lines and columns are 0-based. */

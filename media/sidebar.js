@@ -873,7 +873,7 @@
             </div>
           </div>
           <div class="card-actions">
-            ${actionBtn('eye', 'Overview & review', 'azureDevOps.pr.openOverview', [pr.repoId, pr.id], 'accent')}
+            ${actionBtn('eye', 'Overview & review', 'azureDevOps.pr.openOverview', [pr.repoId, pr.id, pr.project], 'accent')}
             ${actionBtn('branch', 'Checkout branch', 'azureDevOps.pr.checkout', [pr.repoId, pr.id])}
             ${actionBtn('external', 'Open in browser', 'azureDevOps.pr.openInBrowser', [pr.repoName, pr.id, pr.project])}
           </div>
@@ -925,7 +925,7 @@
     const LETTERS = [['add', 'A', 'add'], ['delete', 'D', 'del'], ['rename', 'R', 'ren']];
     const letter = (t) => (LETTERS.find(([k]) => t.includes(k)) || [null, 'M', 'mod']).slice(1);
     return `<div class="files-head"><span>${plural(files.length, 'file')} changed · <span class="${done === files.length ? 'all-reviewed' : ''}">${done}/${files.length} reviewed</span></span>
-        <button class="link" data-cmd="azureDevOps.pr.openOverview" data-args="${attr([pr.repoId, pr.id])}">Open review ${icon('arrow')}</button></div>
+        <button class="link" data-cmd="azureDevOps.pr.openOverview" data-args="${attr([pr.repoId, pr.id, pr.project])}">Open review ${icon('arrow')}</button></div>
       <ul class="files">${files.map((f) => {
         const [l, cls] = letter(f.changeType);
         const parts = f.path.split('/');

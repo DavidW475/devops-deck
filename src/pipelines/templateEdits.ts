@@ -271,6 +271,8 @@ export type LineMark = '+' | '~';
 /** A merged edit with the mark of each inserted line. */
 interface MarkedEdit extends LineEdit {
   marks: LineMark[];
+  /** Index in `insert` where the lines of the edit carrying `dash` begin; lines before it belong to an earlier edit. */
+  dashFrom?: number;
 }
 
 /** Marks of one edit's inserted lines: the ones that take the place of a deleted line are changed (~), the others inserted (+). */
@@ -288,71 +290,141 @@ function mergeEdits(edits: LineEdit[], src: string[]): MarkedEdit[] {
     const last = out.at(-1);
     if (last && e.line <= last.line + last.deleteCount) {
       const extra = Math.max(0, e.line + e.deleteCount - (last.line + last.deleteCount));
+      const takesDash = !last.dash && e.dash !== undefined;
       out[out.length - 1] = {
         line: last.line, deleteCount: last.deleteCount + extra, insert: [...last.insert, ...e.insert], marks: [...last.marks, ...marksOf(e)],
-        dash: last.dash ?? e.dash,
+        dash: last.dash ?? e.dash, dashFrom: takesDash ? last.insert.length : last.dashFrom,
       };
     } else {
-      out.push({ ...e, insert: [...e.insert], marks: marksOf(e) });
+      out.push({ ...e, insert: [...e.insert], marks: marksOf(e), dashFrom: e.dash ? 0 : undefined });
     }
   }
   for (let i = 0; i < out.length; i++) {
-    if (out[i].dash) {
+    // A join while moving one dash can hand this edit the dash of a later one.
+    while (out[i].dash) {
       moveDash(out, i, src);
     }
   }
   return out;
 }
 
-const isKeyLine = (line: string) => /^\s*[^\s#]/.test(line);
+/**
+ * Where the dash of a list item goes, judged from one line: `key` is a key of the item (at `keyCol`), `end` a line that
+ * ends the item (a new dash or a line left of `keyCol`), `skip` a blank line, a comment or a line inside a nested value.
+ */
+function dashTarget(line: string, keyCol: number): 'key' | 'end' | 'skip' {
+  const col = line.length - line.trimStart().length;
+  const rest = line.slice(col);
+  if (rest === '' || rest.startsWith('#')) {
+    return 'skip';
+  }
+  if (col < keyCol || rest.startsWith('-')) {
+    return 'end';
+  }
+  return col === keyCol ? 'key' : 'skip';
+}
 
-/** Joins edit `i` and the next one; the unchanged lines between them are taken into the edit. */
-function joinNext(out: MarkedEdit[], i: number, src: string[]): void {
-  const m = out[i];
-  const n = out[i + 1];
-  const gap = src.slice(m.line + m.deleteCount, n.line);
-  m.insert.push(...gap, ...n.insert);
-  m.marks.push(...gap.map((): LineMark => '~'), ...n.marks);
-  m.deleteCount = n.line + n.deleteCount - m.line;
-  out.splice(i + 1, 1);
+/** The first line from `from` that takes the dash or ends the item. */
+function findDashLine(lines: string[], from: number, keyCol: number): { at: number; kind: 'key' | 'end' } | undefined {
+  for (let k = from; k < lines.length; k++) {
+    const kind = dashTarget(lines[k], keyCol);
+    if (kind !== 'skip') {
+      return { at: k, kind };
+    }
+  }
+  return undefined;
 }
 
 /**
- * The list dash of a deleted first key goes to the first key line the item has left once all edits are applied. Edits and
- * unchanged lines in between are taken into the merged edit until such a line is found.
+ * The list dash of a deleted first key goes to the first key line the item has left once all edits are applied. The search
+ * starts at the dash edit's own lines and stops at the end of the item; with no key left, the item becomes `- {}` where the
+ * deleted line was. A key line between edits gets an edit of its own, so blank and comment lines on the way stay untouched.
  */
 function moveDash(out: MarkedEdit[], i: number, src: string[]): void {
   const m = out[i];
   const { indent, keyCol } = m.dash!;
-  let k = m.insert.findIndex(isKeyLine);
-  while (k < 0) {
-    const end = m.line + m.deleteCount;
-    let to = end;
-    while (to < src.length && !isKeyLine(src[to])) {
-      to++;
-    }
-    if (out[i + 1] && out[i + 1].line <= to) {
-      joinNext(out, i, src);
-    } else if (to < src.length) {
-      m.insert.push(...src.slice(end, to + 1));
-      m.marks.push(...src.slice(end, to + 1).map((): LineMark => '~'));
-      m.deleteCount = to + 1 - m.line;
-      if (out[i + 1] && out[i + 1].line <= m.line + m.deleteCount) {
-        joinNext(out, i, src);
-      }
-    } else {
-      m.insert.push(`${' '.repeat(indent)}- {}`);
-      m.marks.push('+');
+  m.dash = undefined;
+  const dashed = (line: string) => `${line.slice(0, indent)}-${' '.repeat(keyCol - indent - 1)}${line.slice(keyCol)}`;
+  const empty = () => {
+    m.insert.push(`${' '.repeat(indent)}- {}`);
+    m.marks.push('+');
+  };
+  const own = findDashLine(m.insert, m.dashFrom ?? 0, keyCol);
+  m.dashFrom = undefined;
+  if (own?.kind === 'key') {
+    m.insert[own.at] = dashed(m.insert[own.at]);
+    return;
+  }
+  if (own) {
+    m.insert.splice(own.at, 0, `${' '.repeat(indent)}- {}`);
+    m.marks.splice(own.at, 0, '+');
+    return;
+  }
+  let pos = m.line + m.deleteCount;
+  for (let j = i + 1; ; j++) {
+    const next = out[j] as MarkedEdit | undefined;
+    const hit = findDashLine(src.slice(0, next ? next.line : src.length), pos, keyCol);
+    if (hit?.kind === 'key') {
+      dashSourceLine(out, j, hit.at, dashed(src[hit.at]));
       return;
     }
-    k = m.insert.findIndex(isKeyLine);
+    if (hit || !next) {
+      empty();
+      return;
+    }
+    const inNext = findDashLine(next.insert, 0, keyCol);
+    if (inNext?.kind === 'key') {
+      next.insert[inNext.at] = dashed(next.insert[inNext.at]);
+      return;
+    }
+    if (inNext) {
+      empty();
+      return;
+    }
+    pos = next.line + next.deleteCount;
   }
-  m.insert[k] = `${m.insert[k].slice(0, indent)}-${' '.repeat(keyCol - indent - 1)}${m.insert[k].slice(keyCol)}`;
-  m.dash = undefined;
+}
+
+/** Replaces unchanged line `at` (between edits `j - 1` and `j`) with `text`, joined to a neighbouring edit it touches. */
+function dashSourceLine(out: MarkedEdit[], j: number, at: number, text: string): void {
+  const prev = out[j - 1];
+  const next = out[j] as MarkedEdit | undefined;
+  if (at === prev.line + prev.deleteCount) {
+    prev.insert.push(text);
+    prev.marks.push('~');
+    prev.deleteCount++;
+    if (next?.line === at + 1) {
+      joinNext(out, j - 1);
+    }
+  } else if (next?.line === at + 1) {
+    next.line = at;
+    next.deleteCount++;
+    next.insert.unshift(text);
+    next.marks.unshift('~');
+    if (next.dashFrom !== undefined) {
+      next.dashFrom++;
+    }
+  } else {
+    out.splice(j, 0, { line: at, deleteCount: 1, insert: [text], marks: ['~'] });
+  }
+}
+
+/** Joins edit `i` and the next one, which starts right where edit `i` ends. */
+function joinNext(out: MarkedEdit[], i: number): void {
+  const m = out[i];
+  const n = out[i + 1];
+  if (n.dash) {
+    m.dash = n.dash;
+    m.dashFrom = m.insert.length + (n.dashFrom ?? 0);
+  }
+  m.insert.push(...n.insert);
+  m.marks.push(...n.marks);
+  m.deleteCount += n.deleteCount;
+  out.splice(i + 1, 1);
 }
 
 /** Sorts edits and merges the ones that touch, so the result has no overlapping or adjacent ranges. */
-export function normalizeEdits(edits: LineEdit[], src: string[] = []): LineEdit[] {
+export function normalizeEdits(edits: LineEdit[], src: string[]): LineEdit[] {
   return mergeEdits(edits, src).map(({ line, deleteCount, insert }) => ({ line, deleteCount, insert }));
 }
 

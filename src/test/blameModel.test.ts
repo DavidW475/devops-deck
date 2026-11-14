@@ -216,7 +216,7 @@ describe('hoverMarkdown', () => {
     assert.ok(md.includes('$(git-commit) a1b2c3d'));
     assert.ok(md.includes('$(git-pull-request) !1234 Fix VAT rounding'));
     assert.ok(md.includes('completed · feature/vat\\-rounding → main'));
-    assert.deepEqual(decode(md, 'azureDevOps.pr.openOverview'), [REPO_ID, 1234]);
+    assert.deepEqual(decode(md, 'azureDevOps.pr.openOverview'), [REPO_ID, 1234, 'Contoso'], 'opened with the client of the remote\'s project');
     assert.deepEqual(decode(md, 'azureDevOps.pr.openInBrowser'), ['Billing', 1234, 'Contoso']);
     assert.deepEqual(decode(md, 'azureDevOps.wi.open'), [4711]);
     assert.deepEqual(decode(md, 'azureDevOps.blame.openCommit'), ['Contoso', 'Billing', SHA]);
@@ -262,6 +262,8 @@ describe('hoverMarkdown', () => {
     const bad = hoverMarkdown(base({ pr: { repoId: 'not-a-guid', match } }), NOW);
     assert.ok(!bad.includes('openOverview'));
     assert.ok(bad.includes('openInBrowser'));
+    const noProject = hoverMarkdown(base({ project: undefined, pr: { repoId: REPO_ID, match } }), NOW);
+    assert.deepEqual(decode(noProject, 'azureDevOps.pr.openOverview'), [REPO_ID, match.pr.pullRequestId]);
   });
 
   it('escapes every text from the file or the server', () => {
@@ -310,7 +312,7 @@ describe('traceRows', () => {
     assert.equal(rows[1].description, 'Erika Muster, 3 days ago');
     assert.deepEqual(rows[1].action, { command: 'azureDevOps.blame.openCommit', args: ['Contoso', 'Billing', SHA] });
     assert.equal(rows[3].description, 'completed → main');
-    assert.deepEqual(rows[3].action, { command: 'azureDevOps.pr.openOverview', args: [REPO_ID, 1234] });
+    assert.deepEqual(rows[3].action, { command: 'azureDevOps.pr.openOverview', args: [REPO_ID, 1234, 'Contoso'] });
     assert.equal(rows[5].description, 'Active · linked to PR');
     assert.equal(rows[6].description, 'Closed · linked commit, mentioned');
     assert.deepEqual(rows[5].action, { command: 'azureDevOps.wi.open', args: [4711] });

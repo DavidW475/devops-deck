@@ -273,12 +273,6 @@ export class TaskCatalog implements vscode.Disposable {
     this.orgUrl = connections.current?.orgUrl;
   }
 
-  /** Changes whenever the catalog is reset or its credentials change: a refresh that spans a change was dropped. */
-  get epoch(): number {
-    this.sync();
-    return this.generation;
-  }
-
   snapshot(): CatalogSnapshot {
     this.sync();
     return { status: this.status, index: this.data?.index, fetchedAt: this.data?.fetchedAt, error: this.error };
@@ -301,8 +295,17 @@ export class TaskCatalog implements vscode.Disposable {
     return this.snapshot();
   }
 
-  /** Explicit refresh (the user asked): always tries now, callers share one request. Resolves with the snapshot, also when the request failed (see `error`). */
-  refresh(): Promise<CatalogSnapshot> {
+  /**
+   * Explicit refresh (the user asked): always tries now, callers share one request. Resolves with the snapshot, also when
+   * the request failed (see `error`). A refresh dropped by a reset or a credential change runs once more with the current
+   * ones; when that one is dropped too, the result says `dropped`.
+   */
+  async refresh(): Promise<CatalogSnapshot> {
+    const first = await this.refreshOnce();
+    return first.dropped ? this.refreshOnce() : first;
+  }
+
+  private refreshOnce(): Promise<CatalogSnapshot> {
     this.sync();
     if (!this.orgUrl) {
       return Promise.resolve(this.snapshot());
@@ -324,7 +327,7 @@ export class TaskCatalog implements vscode.Disposable {
     if (Date.now() < this.retryAfter) {
       return Promise.resolve(this.snapshot());
     }
-    return this.refresh();
+    return this.refreshOnce();
   }
 
   /** A document uses a task the catalog doesn't know: it may be new, so reload, but at most every 10 minutes. */
@@ -428,7 +431,10 @@ export class TaskCatalog implements vscode.Disposable {
 
   private async doRefresh(orgUrl: string, generation: number): Promise<CatalogSnapshot> {
     await this.load();
-    if (!this.data && generation === this.generation) {
+    if (generation !== this.generation) {
+      return this.dropped(); // no request with the old credentials
+    }
+    if (!this.data) {
       this.status = 'loading';
       this.emitter.fire();
     }
@@ -440,24 +446,31 @@ export class TaskCatalog implements vscode.Disposable {
         throw new Error('The server returned no usable task definitions.');
       }
       if (generation !== this.generation) {
-        return this.snapshot();
+        return this.dropped();
       }
       this.failures = 0;
       this.retryAfter = 0;
       this.setData(tasks, Date.now());
-      await this.writeFile(orgUrl);
-    } catch (e) {
-      if (generation === this.generation) {
-        this.failures++;
-        this.retryAfter = Date.now() + Math.min(FAILURE_BACKOFF_MS * 2 ** (this.failures - 1), MAX_FAILURE_BACKOFF_MS);
-        this.error = e instanceof Error ? e.message : 'Loading the tasks failed.';
-        this.status = this.data ? 'stale' : 'error';
-      }
-    }
-    if (generation === this.generation) {
+      const mine = this.data;
       this.emitter.fire();
+      await this.writeFile(orgUrl);
+      // A change during the write keeps the new data unless a reset forgot it.
+      return this.data === mine ? this.snapshot() : this.dropped();
+    } catch (e) {
+      if (generation !== this.generation) {
+        return this.dropped();
+      }
+      this.failures++;
+      this.retryAfter = Date.now() + Math.min(FAILURE_BACKOFF_MS * 2 ** (this.failures - 1), MAX_FAILURE_BACKOFF_MS);
+      this.error = e instanceof Error ? e.message : 'Loading the tasks failed.';
+      this.status = this.data ? 'stale' : 'error';
+      this.emitter.fire();
+      return this.snapshot();
     }
-    return this.snapshot();
+  }
+
+  private dropped(): CatalogSnapshot {
+    return { ...this.snapshot(), dropped: true };
   }
 
   /** The cache is an optimization: a failing write must not turn good data into an error. */

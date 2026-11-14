@@ -145,6 +145,13 @@ describe('completionContext', () => {
     assert.equal(completionContext(doc, 99, 0), undefined);
   });
 
+  it('offers nothing right behind the colon of a written key', () => {
+    const typed = ['- template: steps/build.yml', '  parameters:', '    configuration:', '    other:Rel'].join('\n');
+    assert.equal(completionContext(typed, 2, 18), undefined);
+    assert.equal(completionContext(typed, 3, 10), undefined);
+    assert.deepEqual(pick(completionContext(typed, 2, 8)), { kind: 'name' });
+  });
+
   it('ignores parameters blocks that do not belong to a template', () => {
     assert.equal(completionContext('parameters:\n  \n', 1, 2), undefined);
   });

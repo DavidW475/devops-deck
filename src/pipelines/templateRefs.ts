@@ -329,6 +329,10 @@ export function completionContext(text: string, line: number, col: number): Comp
     if (!ref) {
       return undefined;
     }
+    if (typed.trimStart().includes(':') && !typed.includes(': ')) {
+      // `key:` with the cursor behind the colon: the key is written, a name here would be glued to it.
+      return undefined;
+    }
     const colon = typed.indexOf(': ');
     return colon > indent ? { kind: 'value', ref, name: unquote(typed.slice(indent, colon)) } : { kind: 'name', ref };
   }

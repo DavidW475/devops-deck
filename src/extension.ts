@@ -138,6 +138,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const signingKey = (method = vscode.workspace.getConfiguration('azureDevOps').get<string>('authMethod')) =>
     `${method}|${vscode.workspace.getConfiguration('azureDevOps').get<string>('tenantId', '').trim()}`;
   let signing = signingKey();
+  /**
+   * The signing key a running `signIn` / `setPat` is writing. That command loads the sidebar itself once it is done, so the
+   * settings event it causes only resets. Cleared when the command ends: an event that arrives later loads by itself.
+   */
+  let commandSigning: string | undefined;
   // `null`: no connection was resolved yet, so there is nothing to forget when the first one appears.
   let lastOrg: string | undefined | null = null;
   const onSettingsChanged = async (e: vscode.ConfigurationChangeEvent) => {
@@ -150,6 +155,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // Blame and YAML settings need no reload of the sidebar; the two blame git options only drop the blame cache.
     const signingTouched = e.affectsConfiguration('azureDevOps.authMethod') || e.affectsConfiguration('azureDevOps.tenantId');
     const signingChanged = signingTouched && signingKey() !== signing;
+    const commandRefreshes = signingChanged && signingKey() === commandSigning;
     if (signingChanged) {
       signing = signingKey();
       resetState({ catalog: true });
@@ -161,7 +167,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const connectionChanged = await connections.resolve();
     // A changed connection was reset and refreshed by its own listener: refresh once, not twice.
     const noReload = e.affectsConfiguration('azureDevOps.blame') || e.affectsConfiguration('azureDevOps.yaml') || (signingTouched && !signingChanged);
-    if (!connectionChanged && (signingChanged || !noReload)) {
+    if (!connectionChanged && (signingChanged || !noReload) && !commandRefreshes) {
       refresh();
     }
   };
@@ -226,12 +232,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const settingChanged = signingKey('microsoft') !== signing;
     const before = account;
     let signedIn = false;
+    if (settingChanged) {
+      commandSigning = signingKey('microsoft');
+    }
     try {
       await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'microsoft', vscode.ConfigurationTarget.Global);
       await client.signIn();
       signedIn = true;
     } finally {
+      // The account seen just before this lookup: a session event handled during the prompt has already reset for it.
+      const seen = account;
       await noteAccount();
+      commandSigning = undefined;
       if (signedIn) {
         if (!settingChanged && account !== before) {
           resetState();
@@ -239,6 +251,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           taskCatalog.clearBackoff(); // the catalog may have failed with the session this sign-in replaced
         }
         refresh();
+      } else if (!settingChanged && account !== seen) {
+        // Cancelled, but the account was switched meanwhile (Accounts menu) and no session event has reset for it.
+        resetState();
+        refresh();
+      } else if (settingChanged) {
+        refresh(); // the settings handler reset for the new setting and left the reload to this command
       }
     }
   });
@@ -254,14 +272,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     const settingChanged = signingKey('pat') !== signing;
     await context.secrets.store(PAT_SECRET_KEY, pat.trim());
+    if (settingChanged) {
+      commandSigning = signingKey('pat');
+    }
     try {
       await vscode.workspace.getConfiguration('azureDevOps').update('authMethod', 'pat', vscode.ConfigurationTarget.Global);
     } finally {
       await noteAccount();
+      commandSigning = undefined;
       if (!settingChanged) { // a changed setting is reset by the settings handler; a new token under the same setting is not
         resetState();
-        refresh();
       }
+      refresh(); // after the token and the setting are written, so the sidebar does not keep an error of the old sign-in
     }
   });
   command('azureDevOps.configure', async () => {
@@ -326,8 +348,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 
   // ----- pull requests -----
-  command('azureDevOps.pr.openOverview', async (repoId: string, prId: number) =>
-    PullRequestPanel.show(client, context.extensionUri, repoId, prId, () => refresh(true)));
+  command('azureDevOps.pr.openOverview', (repoId: string, prId: number, project?: string) =>
+    PullRequestPanel.show(at(project), context.extensionUri, repoId, prId, () => refresh(true)));
   command('azureDevOps.pr.openDiff', async (args: PrFileArgs) => openPrDiff(args));
   mutation('azureDevOps.pr.vote', (repoId: unknown, prId: unknown, project?: unknown) => voteOnPullRequest(at(project), repoId, prId));
   command('azureDevOps.pr.checkout', async (repoId: string, prId: number) =>
@@ -456,11 +478,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     PipelineDesignerPanel.show(designerHost, context.extensionUri, doc, typeof line === 'number' && Number.isInteger(line) ? line : cursor);
   });
   command('azureDevOps.yaml.refreshTaskCatalog', async () => {
-    const epoch = taskCatalog.epoch;
     const snap = await taskCatalog.refresh();
     if (!connections.current) {
       void vscode.window.showInformationMessage('Configure an Azure DevOps organization first.');
-    } else if (taskCatalog.epoch !== epoch) {
+    } else if (snap.dropped) {
       void vscode.window.showInformationMessage('The task catalog was reset while it loaded. Run the command again.');
     } else if (snap.status === 'ready' && snap.index) {
       void vscode.window.showInformationMessage(`Task catalog refreshed: ${plural(snap.index.all().length, 'task')}.`);

@@ -67,7 +67,7 @@ export interface DeferEntry {
   /** only for `snooze` (ms) */
   until?: number;
   fingerprint: string;
-  /** last time the item was still listed (ms); entries unseen for 30 days are dropped */
+  /** last time the item was still listed (ms); entries unseen for 30 days are dropped, finished ones earlier (`MyDayService.checkGone`) */
   seenAt: number;
   title: string;
   source: MyDaySource;
@@ -114,6 +114,10 @@ export interface MyDayClient {
   queryWiql(wiql: string): Promise<number[]>;
   getWorkItems(ids: number[]): Promise<WorkItem[]>;
   listIterationDates(): Promise<ClassificationIteration[]>;
+  /** the direct lookups that tell whether a deferred item that is no longer listed is finished */
+  getPullRequest(repoId: string, prId: number): Promise<PullRequest>;
+  getApproval(approvalId: string): Promise<Approval>;
+  getBuild(id: number): Promise<Build>;
 }
 
 export interface MyDayDeps {

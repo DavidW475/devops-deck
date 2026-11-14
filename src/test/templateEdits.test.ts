@@ -404,9 +404,9 @@ describe('planRepositoryEdits', () => {
 
 describe('edit plumbing', () => {
   it('merges touching edits', () => {
-    assert.deepEqual(normalizeEdits([{ line: 3, deleteCount: 0, insert: ['b'] }, { line: 2, deleteCount: 1, insert: ['a'] }]),
+    assert.deepEqual(normalizeEdits([{ line: 3, deleteCount: 0, insert: ['b'] }, { line: 2, deleteCount: 1, insert: ['a'] }], []),
       [{ line: 2, deleteCount: 1, insert: ['a', 'b'] }]);
-    assert.deepEqual(normalizeEdits([{ line: 5, deleteCount: 0, insert: ['x'] }, { line: 1, deleteCount: 1, insert: [] }]).length, 2);
+    assert.deepEqual(normalizeEdits([{ line: 5, deleteCount: 0, insert: ['x'] }, { line: 1, deleteCount: 1, insert: [] }], []).length, 2);
   });
 
   it('converts to range edits, also at the end of the document and with CRLF', () => {

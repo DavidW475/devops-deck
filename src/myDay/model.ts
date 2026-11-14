@@ -134,7 +134,8 @@ function finishedAt(b: Build): number {
   return ms(b.finishTime) ?? 0;
 }
 
-function newerRun(a: Build, b: Build): boolean {
+/** Whether run `a` finished after run `b` (the higher id wins a tie). */
+export function newerRun(a: Build, b: Build): boolean {
   return finishedAt(a) > finishedAt(b) || (finishedAt(a) === finishedAt(b) && a.id > b.id);
 }
 
