@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.0
+
+### Changed
+
+- The extension now requires **VS Code 1.146 or newer**. Development dependencies (`@types/vscode`, `@vscode/vsce`, `minimatch` override) and Node.js 26 in CI and the devcontainer are updated; no change in behavior
+
 ## 1.2.0
 
 ### Added

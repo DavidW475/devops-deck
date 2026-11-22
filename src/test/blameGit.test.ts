@@ -119,10 +119,15 @@ describe('error classification', () => {
 });
 
 describe('makeGitRunner with real git', () => {
+  // GIT_* variables of the environment would win over `-c user.name`, so set the identity the same way
+  const IDENTITY = {
+    GIT_AUTHOR_NAME: 'Erika Muster', GIT_AUTHOR_EMAIL: 'erika@contoso.example',
+    GIT_COMMITTER_NAME: 'Erika Muster', GIT_COMMITTER_EMAIL: 'erika@contoso.example',
+  };
   let dir = '';
   const run = makeGitRunner('git');
   const git = (...args: string[]): string =>
-    execFileSync('git', ['-c', 'user.name=Erika Muster', '-c', 'user.email=erika@contoso.example', ...args], { cwd: dir, encoding: 'utf8' }); // NOSONAR: test helper, runs git from PATH only in a temporary repository
+    execFileSync('git', ['-c', 'user.name=Erika Muster', '-c', 'user.email=erika@contoso.example', ...args], { cwd: dir, encoding: 'utf8', env: { ...process.env, ...IDENTITY } }); // NOSONAR: test helper, runs git from PATH only in a temporary repository
 
   before(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'blamegit-'));
